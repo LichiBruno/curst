@@ -59,3 +59,4 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - run: cargo llvm-cov --workspace --locked --summary-only | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: cargo llvm-cov -p curst-core --locked --summary-only --fail-under-lines 85

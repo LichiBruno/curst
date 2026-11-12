@@ -1,0 +1,18 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 80, 14)"
+---
+"┌ Method ─┐┏ URL · sending… ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│   GET   │┃http://localhost:1/                                                ┃"
+"└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"┌ Request  Params  Headers  Body  Auth  ───────────────────────────────────────┐"
+"│no query parameters, press a to add one                                       │"
+"│                                                                              │"
+"│                                                                              │"
+"└──────────────────────────────────────────────────────────────────────────────┘"
+"┌ Response  Body  Headers  Timing  Raw  ───────────────────────────────────────┐"
+"│sending…                                                                      │"
+"│                                                                              │"
+"│                                                                              │"
+"└──────────────────────────────────────────────────────────────────────────────┘"
+" Enter send  Tab next  Esc cancel  Ctrl+C quit                                  "

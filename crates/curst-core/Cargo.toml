@@ -6,6 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+curl = { version = "0.4.51", default-features = false, features = ["static-curl", "rustls", "http2"] }
+serde_json = { version = "1.0.154", features = ["preserve_order", "arbitrary_precision"] }
+tempfile = "3.27.0"
+thiserror = "2.0.21"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+httpmock = "0.9.0"

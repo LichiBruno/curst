@@ -1,0 +1,18 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 80, 14)"
+---
+"┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│   GET   │┃http://localhost:1/                                                ┃"
+"└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"┌ Request  Params  Headers  Body  Auth  ───────────────────────────────────────┐"
+"│no query parameters, press a to add one                                       │"
+"│                                                                              │"
+"│                                                                              │"
+"└──────────────────────────────────────────────────────────────────────────────┘"
+"┌ Response  Body  Headers  Timing  Raw  ───────────────────────────────────────┐"
+"│the request failed                                                            │"
+"│could not connect: Failed to connect to localhost port 1                      │"
+"│                                                                              │"
+"└──────────────────────────────────────────────────────────────────────────────┘"
+" Enter send  Tab next  Ctrl+C quit                                              "
