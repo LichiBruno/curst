@@ -49,6 +49,7 @@ Rules:
 - `curst-core` targets 85 % line coverage or more, measured with `cargo llvm-cov`. CI reports workspace coverage and fails when `curst-core` drops below the target (`--fail-under-lines 85`). `secrets/keychain.rs` is excluded because CI cannot run an OS keychain; it is kept as a thin adapter with no logic of its own.
 - The TUI is tested through `update` unit tests and `insta` snapshots rendered with ratatui's `TestBackend`. After an intentional UI change, review new snapshots with `cargo insta review` (or run once with `INSTA_UPDATE=always` and read the diff). Never commit a `.snap.new` file.
 - The repository forces LF line endings (`.gitattributes`) so snapshots are identical on every platform.
+- HTTP tests run against `httpmock`, which answers plain HTTP and HTTPS on the same port. HTTPS tests trust `crates/curst-core/tests/fixtures/httpmock-ca.pem`, a copy of the CA in httpmock's `certs/ca.pem`; copy it again when httpmock is upgraded.
 
 ## Commits, branches and pull requests
 

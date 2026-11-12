@@ -10,9 +10,9 @@ use curst_core::model::{Method, Request};
 use ratatui::crossterm::event::KeyEvent;
 use ratatui_textarea::TextArea;
 
-pub(crate) use editor::{AuthEditor, AuthKind, BodyEditor, BodyKind, Column, Table};
+pub(crate) use editor::{AuthEditor, AuthKind, BodyEditor, BodyField, BodyKind, Column, Table};
 pub(crate) use keys::action_for;
-pub(crate) use view_model::ResponseView;
+pub(crate) use view_model::{ResponseView, skip_columns};
 
 use editor::{show_cursor, single_line, text_of};
 
@@ -121,9 +121,16 @@ pub(crate) struct State {
     pub(crate) outcome: Option<Outcome>,
     pub(crate) scroll: usize,
 
+    /// the first character shown of every response line
+    pub(crate) column: usize,
+
     /// rows the response pane showed in the last frame, recorded by the view
     /// so scrolling stops at the last full page
     pub(crate) response_height: Cell<usize>,
+
+    /// columns the response pane showed in the last frame, recorded by the
+    /// view so sideways scrolling stops at the longest line
+    pub(crate) response_width: Cell<usize>,
     pub(crate) in_flight: Option<u64>,
     pub(crate) save_prompt: Option<TextArea<'static>>,
     pub(crate) notice: Option<String>,
@@ -145,7 +152,9 @@ impl Default for State {
             response_tab: ResponseTab::default(),
             outcome: None,
             scroll: 0,
+            column: 0,
             response_height: Cell::new(PAGE),
+            response_width: Cell::new(0),
             in_flight: None,
             save_prompt: None,
             notice: None,
@@ -173,7 +182,7 @@ impl State {
             RequestTab::Body if self.body.kind == BodyKind::Form => {
                 self.body.form.editing.is_some()
             }
-            RequestTab::Body => self.body.typing,
+            RequestTab::Body => self.body.typing.is_some(),
             RequestTab::Auth => self.auth.typing,
         }
     }
@@ -196,11 +205,27 @@ impl State {
         }
     }
 
+    /// how far the response can scroll sideways before the longest line of
+    /// the tab ends
+    pub(crate) fn last_column(&self) -> usize {
+        match &self.outcome {
+            Some(Outcome::Response(view)) => view
+                .width(self.response_tab)
+                .saturating_sub(self.response_width.get()),
+            Some(Outcome::Error(_)) | None => 0,
+        }
+    }
+
+    fn reset_scroll(&mut self) {
+        self.scroll = 0;
+        self.column = 0;
+    }
+
     fn stop_editing(&mut self) {
         self.params.commit();
         self.headers.commit();
         self.body.form.commit();
-        self.body.typing = false;
+        self.body.typing = None;
         self.auth.typing = false;
     }
 
@@ -208,9 +233,16 @@ impl State {
         let request = self.focus == Focus::Request;
 
         show_cursor(&mut self.url, self.focus == Focus::Url);
+
+        let body = request && self.request_tab == RequestTab::Body;
+
         show_cursor(
             &mut self.body.text,
-            request && self.request_tab == RequestTab::Body && self.body.typing,
+            body && self.body.typing == Some(BodyField::Text),
+        );
+        show_cursor(
+            &mut self.body.content_type,
+            body && self.body.typing == Some(BodyField::ContentType),
         );
 
         let typing = request && self.request_tab == RequestTab::Auth && self.auth.typing;
@@ -244,7 +276,10 @@ pub(crate) enum Action {
     PageDown,
     Top,
     Bottom,
+    Left,
+    Right,
     Edit,
+    EditContentType,
     StopEdit,
     NextCell,
     AddRow,
@@ -281,12 +316,16 @@ pub(crate) enum Command {
 
 const PAGE: usize = 10;
 
+/// columns moved by one sideways scroll
+const PAN: usize = 8;
+
 pub(crate) fn update(state: &mut State, action: Action) -> Vec<Command> {
     if !matches!(action, Action::Responded { .. }) {
         state.notice = None;
     }
 
     let commands = apply(state, action);
+
     state.sync_cursors();
 
     commands
@@ -299,6 +338,7 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         Action::Cancel => {
             if state.in_flight.take().is_some() {
                 state.notice = Some("request cancelled".into());
+
                 return vec![Command::Cancel];
             }
         }
@@ -320,7 +360,7 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
                 }
                 Focus::Response => {
                     state.response_tab = step(&ResponseTab::ALL, state.response_tab, forward);
-                    state.scroll = 0;
+                    state.reset_scroll();
                 }
                 Focus::Method | Focus::Url => {}
             }
@@ -332,35 +372,30 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         | Action::PageUp
         | Action::PageDown
         | Action::Top
-        | Action::Bottom => navigate(state, &action),
+        | Action::Bottom
+        | Action::Left
+        | Action::Right => navigate(state, &action),
         Action::Edit => edit(state),
+        Action::EditContentType => {
+            if state.request_tab == RequestTab::Body && state.body.kind == BodyKind::Text {
+                state.body.typing = Some(BodyField::ContentType);
+            }
+        }
         Action::StopEdit => {
             if state.save_prompt.take().is_none() {
                 state.stop_editing();
             }
         }
         Action::NextCell => {
-            if state.request_tab == RequestTab::Auth {
+            if state.body.typing == Some(BodyField::ContentType) {
+                state.body.typing = Some(BodyField::Text);
+            } else if state.request_tab == RequestTab::Auth {
                 state.auth.select_next();
             } else if let Some(table) = state.active_table() {
                 table.next_cell();
             }
         }
-        Action::AddRow => {
-            if let Some(table) = state.active_table() {
-                table.add_row();
-            }
-        }
-        Action::DeleteRow => {
-            if let Some(table) = state.active_table() {
-                table.delete_selected();
-            }
-        }
-        Action::ToggleRow => {
-            if let Some(table) = state.active_table() {
-                table.toggle_selected();
-            }
-        }
+        Action::AddRow | Action::DeleteRow | Action::ToggleRow => change_row(state, &action),
         Action::CycleKind => match state.request_tab {
             RequestTab::Body => state.body.kind = state.body.kind.next(),
             RequestTab::Auth => state.auth.cycle_kind(),
@@ -380,7 +415,7 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         Action::Responded { id, result } => {
             if state.in_flight == Some(id) {
                 state.in_flight = None;
-                state.scroll = 0;
+                state.reset_scroll();
                 state.outcome = Some(match *result {
                     Ok(view) => Outcome::Response(Box::new(view)),
                     Err(err) => Outcome::Error(err.to_string()),
@@ -399,13 +434,27 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
     Vec::new()
 }
 
+fn change_row(state: &mut State, action: &Action) {
+    let Some(table) = state.active_table() else {
+        return;
+    };
+
+    match action {
+        Action::AddRow => table.add_row(),
+        Action::DeleteRow => table.delete_selected(),
+        _ => table.toggle_selected(),
+    }
+}
+
 fn send(state: &mut State) -> Vec<Command> {
     state.stop_editing();
+
     let request = state.request();
 
     if request.url.is_empty() {
         state.notice = Some("type a URL first".into());
         state.focus = Focus::Url;
+
         return Vec::new();
     }
 
@@ -417,6 +466,7 @@ fn send(state: &mut State) -> Vec<Command> {
 
     state.next_id += 1;
     state.in_flight = Some(state.next_id);
+
     commands.push(Command::Send {
         id: state.next_id,
         request,
@@ -430,15 +480,21 @@ fn navigate(state: &mut State, action: &Action) {
         Focus::Response => {
             let page = state.response_height.get().max(1);
             let last = state.response_line_count().saturating_sub(page);
-            state.scroll = match action {
-                Action::Up => state.scroll.saturating_sub(1),
-                Action::Down => state.scroll + 1,
-                Action::PageUp => state.scroll.saturating_sub(page),
-                Action::PageDown => state.scroll + page,
-                Action::Top => 0,
-                _ => last,
+            let last_column = state.last_column();
+
+            match action {
+                Action::Up => state.scroll = state.scroll.saturating_sub(1).min(last),
+                Action::Down => state.scroll = (state.scroll + 1).min(last),
+                Action::PageUp => state.scroll = state.scroll.saturating_sub(page).min(last),
+                Action::PageDown => state.scroll = (state.scroll + page).min(last),
+                Action::Top => state.scroll = 0,
+                Action::Bottom => state.scroll = last,
+                Action::Left => {
+                    state.column = state.column.saturating_sub(PAN).min(last_column);
+                }
+                Action::Right => state.column = (state.column + PAN).min(last_column),
+                _ => {}
             }
-            .min(last);
         }
         Focus::Request if state.request_tab == RequestTab::Auth => match action {
             Action::Up => state.auth.select_previous(),
@@ -463,7 +519,9 @@ fn edit(state: &mut State) {
         RequestTab::Body if state.body.kind == BodyKind::None => {
             state.notice = Some("choose a body type first, press t".into());
         }
-        RequestTab::Body if state.body.kind != BodyKind::Form => state.body.typing = true,
+        RequestTab::Body if state.body.kind != BodyKind::Form => {
+            state.body.typing = Some(BodyField::Text);
+        }
         RequestTab::Auth => state.auth.typing = state.auth.kind != AuthKind::None,
         _ => {
             if let Some(table) = state.active_table() {
@@ -480,6 +538,7 @@ fn edit(state: &mut State) {
 fn type_key(state: &mut State, key: KeyEvent) {
     if let Some(prompt) = &mut state.save_prompt {
         prompt.input(key);
+
         return;
     }
 
@@ -489,7 +548,9 @@ fn type_key(state: &mut State, key: KeyEvent) {
         }
         Focus::Request => match state.request_tab {
             RequestTab::Body if state.body.kind != BodyKind::Form => {
-                state.body.text.input(key);
+                if let Some(field) = state.body.field() {
+                    field.input(key);
+                }
             }
             RequestTab::Auth => {
                 if let Some(field) = state.auth.selected_field() {
@@ -509,10 +570,12 @@ fn type_key(state: &mut State, key: KeyEvent) {
 fn open_save(state: &mut State) {
     let Some(Outcome::Response(view)) = &state.outcome else {
         state.notice = Some("nothing to save yet".into());
+
         return;
     };
 
     let name = format!("response.{}", view.extension());
+
     state.save_prompt = Some(single_line(&name, "file name"));
 }
 

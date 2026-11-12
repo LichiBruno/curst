@@ -316,6 +316,7 @@ mod tests {
     fn full_url_skips_disabled_and_nameless_params() {
         let mut off = KeyValue::new("off", "1");
         off.enabled = false;
+
         let request = with_params(
             "http://h/p",
             vec![KeyValue::new("a", "1"), off, KeyValue::new("", "x")],
@@ -373,6 +374,7 @@ mod tests {
     fn header_lookup_ignores_case_and_disabled() {
         let mut off = KeyValue::new("Accept", "x");
         off.enabled = false;
+
         let request = Request {
             headers: vec![KeyValue::new("accept", "a"), off],
             ..Request::default()

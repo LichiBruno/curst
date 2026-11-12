@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 
-use crate::app::{AuthKind, BodyKind, Focus, RequestTab, State};
+use crate::app::{AuthKind, BodyField, BodyKind, Focus, RequestTab, State};
 
 const WIDE: u16 = 110;
 
@@ -58,6 +58,7 @@ pub(super) fn tab_titles<T: Copy + PartialEq>(
 
     for tab in all {
         let text = format!(" {} ", label(*tab));
+
         spans.push(if *tab == selected {
             Span::styled(text, Style::default().add_modifier(Modifier::REVERSED))
         } else {
@@ -75,6 +76,7 @@ fn url_bar(state: &State, frame: &mut Frame, area: Rect) {
         Layout::horizontal([Constraint::Length(11), Constraint::Fill(1)]).areas(area);
     let method = Paragraph::new(Line::from(state.method.as_str()).bold().centered())
         .block(pane(Line::from(" Method "), state.focus == Focus::Method));
+
     frame.render_widget(method, method_area);
 
     let title = if state.in_flight.is_some() {
@@ -84,6 +86,7 @@ fn url_bar(state: &State, frame: &mut Frame, area: Rect) {
     };
     let block = pane(title, state.focus == Focus::Url);
     let inner = block.inner(url_area);
+
     frame.render_widget(block, url_area);
     frame.render_widget(&state.url, inner);
 }
@@ -138,7 +141,7 @@ pub(crate) fn hints(state: &State) -> Vec<(&'static str, &'static str)> {
         Focus::Method => hints.extend([("←→", "change method"), ("Tab", "next")]),
         Focus::Request if state.request_typing() => {
             let multi_line =
-                state.request_tab == RequestTab::Body && state.body.kind != BodyKind::Form;
+                state.request_tab == RequestTab::Body && state.body.typing == Some(BodyField::Text);
 
             if multi_line {
                 hints.push(("Esc", "done"));
@@ -148,6 +151,7 @@ pub(crate) fn hints(state: &State) -> Vec<(&'static str, &'static str)> {
         }
         Focus::Request => {
             hints.push(("←→", "tab"));
+
             let table = matches!(state.request_tab, RequestTab::Params | RequestTab::Headers)
                 || (state.request_tab == RequestTab::Body && state.body.kind == BodyKind::Form);
 
@@ -164,11 +168,23 @@ pub(crate) fn hints(state: &State) -> Vec<(&'static str, &'static str)> {
                 hints.push(("Enter", "edit"));
             }
 
+            if state.request_tab == RequestTab::Body && state.body.kind == BodyKind::Text {
+                hints.push(("c", "content type"));
+            }
+
             if matches!(state.request_tab, RequestTab::Body | RequestTab::Auth) {
                 hints.push(("t", "type"));
             }
         }
-        Focus::Response => hints.extend([("←→", "tab"), ("↑↓", "scroll"), ("s", "save")]),
+        Focus::Response => {
+            hints.extend([("←→", "tab"), ("↑↓", "scroll")]);
+
+            if state.last_column() > 0 || state.column > 0 {
+                hints.push(("h l", "sideways"));
+            }
+
+            hints.push(("s", "save"));
+        }
     }
 
     if state.in_flight.is_some() {

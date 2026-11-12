@@ -4,6 +4,7 @@
 mod curl_executor;
 mod response;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -65,6 +66,13 @@ pub struct Config {
     /// how many body bytes are kept in memory; the rest goes to a
     /// temporary file
     pub body_cap: usize,
+
+    /// skips the certificate and host name checks, like `curl -k`
+    pub insecure: bool,
+
+    /// a PEM bundle trusted instead of the system certificates, like
+    /// `curl --cacert`
+    pub ca_file: Option<PathBuf>,
 }
 
 impl Default for Config {
@@ -75,6 +83,8 @@ impl Default for Config {
             follow_redirects: true,
             max_redirects: 10,
             body_cap: 10 * 1024 * 1024,
+            insecure: false,
+            ca_file: None,
         }
     }
 }
@@ -141,5 +151,7 @@ mod tests {
 
         assert_eq!(config.body_cap, 10 * 1024 * 1024);
         assert!(config.follow_redirects);
+        assert!(!config.insecure);
+        assert_eq!(config.ca_file, None);
     }
 }

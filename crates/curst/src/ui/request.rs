@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::{pane, tab_titles};
-use crate::app::{AuthKind, BodyKind, Column, Focus, RequestTab, State, Table};
+use crate::app::{AuthKind, BodyField, BodyKind, Column, Focus, RequestTab, State, Table};
 
 pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
     let focused = state.focus == Focus::Request;
@@ -15,8 +15,10 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
         state.request_tab,
         RequestTab::label,
     ));
+
     let block = pane(Line::from(title), focused);
     let inner = block.inner(area);
+
     frame.render_widget(block, area);
 
     match state.request_tab {
@@ -53,6 +55,7 @@ fn kind_line(label: &str, value: &str) -> Paragraph<'static> {
 fn body(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
     let [kind_area, content] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+
     frame.render_widget(kind_line("Body type", state.body.kind.label()), kind_area);
 
     match state.body.kind {
@@ -64,13 +67,33 @@ fn body(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
             frame,
             content,
         ),
-        BodyKind::Json | BodyKind::Text => frame.render_widget(&state.body.text, content),
+        BodyKind::Json => frame.render_widget(&state.body.text, content),
+        BodyKind::Text => {
+            let [type_area, text_area] =
+                Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(content);
+            let [label_area, field_area] =
+                Layout::horizontal([Constraint::Length(14), Constraint::Fill(1)]).areas(type_area);
+            let selected = focused && state.body.typing == Some(BodyField::ContentType);
+            let style = if selected {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+
+            frame.render_widget(
+                Paragraph::new(Span::styled("Content-Type:", style)),
+                label_area,
+            );
+            frame.render_widget(&state.body.content_type, field_area);
+            frame.render_widget(&state.body.text, text_area);
+        }
     }
 }
 
 fn auth(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
     let [kind_area, content] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
+
     frame.render_widget(kind_line("Auth type", state.auth.kind.label()), kind_area);
 
     if state.auth.kind == AuthKind::None {
@@ -96,6 +119,7 @@ fn auth(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
             Style::default().fg(Color::DarkGray)
         };
         let marker = if selected { "› " } else { "  " };
+
         frame.render_widget(
             Paragraph::new(Span::styled(format!("{marker}{label}"), style)),
             label_area,
@@ -106,6 +130,7 @@ fn auth(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
 
 fn row_area(area: Rect, index: usize) -> Option<Rect> {
     let offset = u16::try_from(index).ok()?;
+
     (offset < area.height).then(|| Rect {
         y: area.y + offset,
         height: 1,
@@ -122,6 +147,7 @@ fn table(table: &Table, focused: bool, empty: &str, frame: &mut Frame, area: Rec
             )),
             area,
         );
+
         return;
     }
 
@@ -154,7 +180,9 @@ fn table(table: &Table, focused: bool, empty: &str, frame: &mut Frame, area: Rec
         }
 
         let mark = if row.enabled { "[x]" } else { "[ ]" };
+
         frame.render_widget(Paragraph::new(Span::raw(mark)), check);
+
         let editing = table
             .editing
             .as_ref()

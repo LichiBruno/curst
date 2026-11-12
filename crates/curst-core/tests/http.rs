@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,6 +14,20 @@ fn send(request: &Request) -> Result<Response, HttpError> {
 
 fn send_with(config: Config, request: &Request) -> Result<Response, HttpError> {
     CurlExecutor::new(config).execute(request, &Cancel::new())
+}
+
+/// a plain HTTP URL on the mock server, which answers HTTP and HTTPS on the
+/// same port
+fn http(server: &MockServer, path: &str) -> String {
+    format!("http://{}{path}", server.address())
+}
+
+fn https(server: &MockServer, path: &str) -> String {
+    format!("https://localhost:{}{path}", server.port())
+}
+
+fn mock_ca() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/httpmock-ca.pem")
 }
 
 fn get(url: String) -> Request {
@@ -34,7 +49,7 @@ fn every_method_reaches_the_server() {
 
         let response = send(&Request {
             method,
-            ..get(server.url("/m"))
+            ..get(http(&server, "/m"))
         })
         .unwrap();
 
@@ -50,6 +65,7 @@ fn headers_params_and_default_user_agent_are_sent() {
     let server = MockServer::start();
     let mut disabled = KeyValue::new("X-Off", "1");
     disabled.enabled = false;
+
     let mock = server.mock(|when, then| {
         when.method("GET")
             .path("/search")
@@ -67,7 +83,7 @@ fn headers_params_and_default_user_agent_are_sent() {
     let response = send(&Request {
         params: vec![KeyValue::new("q", "a b"), KeyValue::new("page", "2")],
         headers: vec![KeyValue::new("X-Trace", "abc"), disabled],
-        ..get(server.url("/search"))
+        ..get(http(&server, "/search"))
     })
     .unwrap();
 
@@ -95,7 +111,7 @@ fn user_headers_override_defaults() {
             KeyValue::new("Content-Type", "application/vnd.api+json"),
         ],
         body: Body::Json("{}".into()),
-        ..get(server.url("/"))
+        ..get(http(&server, "/"))
     })
     .unwrap();
 
@@ -125,14 +141,14 @@ fn json_and_form_bodies() {
     send(&Request {
         method: Method::Put,
         body: Body::Json(r#"{"name":"curst"}"#.into()),
-        ..get(server.url("/json"))
+        ..get(http(&server, "/json"))
     })
     .unwrap();
 
     send(&Request {
         method: Method::Post,
         body: Body::Form(vec![KeyValue::new("a", "1 2"), KeyValue::new("b", "&")]),
-        ..get(server.url("/form"))
+        ..get(http(&server, "/form"))
     })
     .unwrap();
 
@@ -154,7 +170,7 @@ fn large_post_body_does_not_wait_for_100_continue() {
             content_type: "text/plain".into(),
             text: "x".repeat(64 * 1024),
         },
-        ..get(server.url("/big"))
+        ..get(http(&server, "/big"))
     })
     .unwrap();
 
@@ -180,7 +196,7 @@ fn basic_and_bearer_auth() {
             username: "user".into(),
             password: "pass".into(),
         },
-        ..get(server.url("/basic"))
+        ..get(http(&server, "/basic"))
     })
     .unwrap();
 
@@ -188,7 +204,7 @@ fn basic_and_bearer_auth() {
         auth: Auth::Bearer {
             token: "t0k".into(),
         },
-        ..get(server.url("/bearer"))
+        ..get(http(&server, "/bearer"))
     })
     .unwrap();
 
@@ -199,6 +215,7 @@ fn basic_and_bearer_auth() {
 #[test]
 fn redirects_are_followed_and_only_final_headers_kept() {
     let server = MockServer::start();
+
     server.mock(|when, then| {
         when.path("/old");
 
@@ -212,7 +229,7 @@ fn redirects_are_followed_and_only_final_headers_kept() {
         then.status(200).header("x-final", "1").body("done");
     });
 
-    let response = send(&get(server.url("/old"))).unwrap();
+    let response = send(&get(http(&server, "/old"))).unwrap();
 
     assert_eq!(response.status, 200);
     assert_eq!(response.redirects, 1);
@@ -225,6 +242,7 @@ fn redirects_are_followed_and_only_final_headers_kept() {
 #[test]
 fn redirects_can_be_turned_off_and_are_limited() {
     let server = MockServer::start();
+
     server.mock(|when, then| {
         when.path("/loop");
         then.status(302).header("location", "/loop");
@@ -234,7 +252,8 @@ fn redirects_can_be_turned_off_and_are_limited() {
         follow_redirects: false,
         ..Config::default()
     };
-    let response = send_with(no_follow, &get(server.url("/loop"))).unwrap();
+
+    let response = send_with(no_follow, &get(http(&server, "/loop"))).unwrap();
 
     assert_eq!(response.status, 302);
     assert_eq!(response.header("location"), Some("/loop"));
@@ -243,7 +262,8 @@ fn redirects_can_be_turned_off_and_are_limited() {
         max_redirects: 3,
         ..Config::default()
     };
-    let err = send_with(limited, &get(server.url("/loop"))).unwrap_err();
+
+    let err = send_with(limited, &get(http(&server, "/loop"))).unwrap_err();
 
     assert!(matches!(err, HttpError::TooManyRedirects), "{err:?}");
 }
@@ -251,6 +271,7 @@ fn redirects_can_be_turned_off_and_are_limited() {
 #[test]
 fn timeout() {
     let server = MockServer::start();
+
     server.mock(|when, then| {
         when.path("/slow");
         then.status(200).delay(Duration::from_secs(5));
@@ -260,7 +281,8 @@ fn timeout() {
         timeout: Some(Duration::from_millis(300)),
         ..Config::default()
     };
-    let err = send_with(config, &get(server.url("/slow"))).unwrap_err();
+
+    let err = send_with(config, &get(http(&server, "/slow"))).unwrap_err();
 
     assert!(matches!(err, HttpError::Timeout(_)), "{err:?}");
 }
@@ -268,6 +290,7 @@ fn timeout() {
 #[test]
 fn cancel_stops_a_request_in_flight() {
     let server = MockServer::start();
+
     server.mock(|when, then| {
         when.path("/slow");
         then.status(200).delay(Duration::from_secs(5));
@@ -282,7 +305,7 @@ fn cancel_stops_a_request_in_flight() {
 
     let started = Instant::now();
     let err = CurlExecutor::default()
-        .execute(&get(server.url("/slow")), &cancel)
+        .execute(&get(http(&server, "/slow")), &cancel)
         .unwrap_err();
     canceller.join().unwrap();
 
@@ -294,6 +317,7 @@ fn cancel_stops_a_request_in_flight() {
 fn body_over_the_cap_goes_to_a_temporary_file() {
     let server = MockServer::start();
     let payload = "0123456789".repeat(1000);
+
     server.mock(|when, then| {
         when.path("/big");
         then.status(200).body(&payload);
@@ -303,7 +327,8 @@ fn body_over_the_cap_goes_to_a_temporary_file() {
         body_cap: 100,
         ..Config::default()
     };
-    let response = send_with(config, &get(server.url("/big"))).unwrap();
+
+    let response = send_with(config, &get(http(&server, "/big"))).unwrap();
 
     assert!(response.body.is_truncated());
     assert_eq!(response.body.len(), 10_000);
@@ -311,6 +336,7 @@ fn body_over_the_cap_goes_to_a_temporary_file() {
 
     let dir = tempfile::tempdir().unwrap();
     let saved = dir.path().join("body");
+
     response.body.save_to(&saved).unwrap();
 
     assert_eq!(std::fs::read(saved).unwrap(), payload.as_bytes());
@@ -321,6 +347,7 @@ fn connection_and_url_errors() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let closed = format!("http://{}/", listener.local_addr().unwrap());
     drop(listener);
+
     let err = send(&get(closed)).unwrap_err();
 
     assert!(matches!(err, HttpError::Connect(_)), "{err:?}");
@@ -348,7 +375,7 @@ fn bodyless_post_sends_an_empty_body() {
 
     let response = send(&Request {
         method: Method::Post,
-        ..get(server.url("/empty"))
+        ..get(http(&server, "/empty"))
     })
     .unwrap();
 
@@ -359,6 +386,7 @@ fn bodyless_post_sends_an_empty_body() {
 #[test]
 fn redirects_keep_or_drop_method_and_body_like_curl() {
     let server = MockServer::start();
+
     server.mock(|when, then| {
         when.path("/see-other");
         then.status(303).header("location", "/target");
@@ -397,7 +425,7 @@ fn redirects_keep_or_drop_method_and_body_like_curl() {
                 content_type: "text/plain".into(),
                 text: "payload".into(),
             },
-            ..get(server.url(path))
+            ..get(http(&server, path))
         })
         .unwrap();
 
@@ -411,6 +439,7 @@ fn redirects_keep_or_drop_method_and_body_like_curl() {
 #[test]
 fn credentials_stay_on_the_same_origin() {
     let server = MockServer::start();
+
     server.mock(|when, then| {
         when.path("/a");
         then.status(302).header("location", "/b");
@@ -428,7 +457,7 @@ fn credentials_stay_on_the_same_origin() {
         auth: Auth::Bearer {
             token: "t0k".into(),
         },
-        ..get(server.url("/a"))
+        ..get(http(&server, "/a"))
     })
     .unwrap();
 
@@ -439,9 +468,11 @@ fn credentials_stay_on_the_same_origin() {
 fn credentials_are_dropped_when_a_redirect_leaves_the_origin() {
     let first = MockServer::start();
     let other = MockServer::start();
+
     first.mock(|when, then| {
         when.path("/out");
-        then.status(307).header("location", other.url("/landing"));
+        then.status(307)
+            .header("location", http(&other, "/landing"));
     });
 
     let landing = other.mock(|when, then| {
@@ -467,13 +498,13 @@ fn credentials_are_dropped_when_a_redirect_leaves_the_origin() {
                 KeyValue::new("X-Trace", "1"),
             ],
             auth,
-            ..get(first.url("/out"))
+            ..get(http(&first, "/out"))
         })
         .unwrap();
 
         assert_eq!(response.status, 200);
         assert_eq!(response.redirects, 1);
-        assert_eq!(response.effective_url, other.url("/landing"));
+        assert_eq!(response.effective_url, http(&other, "/landing"));
     }
 
     landing.assert_calls(2);
@@ -482,6 +513,7 @@ fn credentials_are_dropped_when_a_redirect_leaves_the_origin() {
 #[test]
 fn head_stays_head_through_a_303() {
     let server = MockServer::start();
+
     server.mock(|when, then| {
         when.path("/h");
         then.status(303).header("location", "/i");
@@ -494,7 +526,7 @@ fn head_stays_head_through_a_303() {
 
     send(&Request {
         method: Method::Head,
-        ..get(server.url("/h"))
+        ..get(http(&server, "/h"))
     })
     .unwrap();
 
@@ -504,6 +536,7 @@ fn head_stays_head_through_a_303() {
 #[test]
 fn the_body_cap_applies_after_a_redirect() {
     let server = MockServer::start();
+
     server.mock(|when, then| {
         when.path("/from");
         then.status(302).header("location", "/to");
@@ -518,8 +551,110 @@ fn the_body_cap_applies_after_a_redirect() {
         body_cap: 4,
         ..Config::default()
     };
-    let response = send_with(config, &get(server.url("/from"))).unwrap();
+
+    let response = send_with(config, &get(http(&server, "/from"))).unwrap();
 
     assert_eq!(response.body.preview(), b"abcd");
     assert_eq!(response.body.len(), 6);
+}
+
+const GZIPPED: [u8; 35] = [
+    0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xab, 0x56, 0xaa, 0xca, 0x2c, 0x28,
+    0x48, 0x4d, 0x51, 0xb2, 0x2a, 0x29, 0x2a, 0x4d, 0xad, 0x05, 0x00, 0x84, 0x28, 0xbc, 0x08, 0x0f,
+    0x00, 0x00, 0x00,
+];
+
+#[test]
+fn compressed_responses_are_asked_for_and_decoded() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.path("/zip").header_includes("accept-encoding", "gzip");
+        then.status(200)
+            .header("content-type", "application/json")
+            .header("content-encoding", "gzip")
+            .body(GZIPPED);
+    });
+
+    let response = send(&get(http(&server, "/zip"))).unwrap();
+
+    mock.assert();
+    assert_eq!(response.body.preview(), br#"{"zipped":true}"#);
+    assert_eq!(response.header("content-encoding"), Some("gzip"));
+}
+
+#[test]
+fn a_user_accept_encoding_replaces_the_default() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.path("/plain").header("accept-encoding", "identity");
+        then.status(200).body("plain");
+    });
+
+    let response = send(&Request {
+        headers: vec![KeyValue::new("Accept-Encoding", "identity")],
+        ..get(http(&server, "/plain"))
+    })
+    .unwrap();
+
+    mock.assert();
+    assert_eq!(response.body.preview(), b"plain");
+}
+
+#[test]
+fn https_is_checked_against_the_system_store_by_default() {
+    let server = MockServer::start();
+
+    let err = send(&get(https(&server, "/secure"))).unwrap_err();
+
+    assert!(matches!(err, HttpError::Tls(_)), "{err:?}");
+}
+
+#[test]
+fn a_ca_file_is_trusted_instead_of_the_system_store() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.path("/secure");
+        then.status(200).body("ok");
+    });
+    let config = Config {
+        ca_file: Some(mock_ca()),
+        ..Config::default()
+    };
+
+    let response = send_with(config, &get(https(&server, "/secure"))).unwrap();
+
+    mock.assert();
+    assert_eq!(response.status, 200);
+}
+
+#[test]
+fn insecure_skips_the_certificate_check() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.path("/secure");
+        then.status(200);
+    });
+    let config = Config {
+        insecure: true,
+        ..Config::default()
+    };
+
+    let response = send_with(config, &get(https(&server, "/secure"))).unwrap();
+
+    mock.assert();
+    assert_eq!(response.status, 200);
+}
+
+#[test]
+fn a_missing_ca_file_is_a_tls_error() {
+    let server = MockServer::start();
+    let config = Config {
+        ca_file: Some(PathBuf::from("does/not/exist.pem")),
+        ..Config::default()
+    };
+
+    let err = send_with(config, &get(https(&server, "/secure"))).unwrap_err();
+
+    assert!(matches!(err, HttpError::Tls(_)), "{err:?}");
+    assert!(err.to_string().contains("trusted certificates"), "{err}");
 }

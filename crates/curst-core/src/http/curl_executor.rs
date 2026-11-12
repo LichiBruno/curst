@@ -48,6 +48,7 @@ impl HttpExecutor for CurlExecutor {
 
         loop {
             let mut response = perform(&mut easy, request, &hop, &self.config, cancel)?;
+
             timings = add(timings, response.timings);
 
             let location = response
@@ -57,6 +58,7 @@ impl HttpExecutor for CurlExecutor {
             let Some(next) = location.filter(|_| is_redirect(response.status)) else {
                 response.timings = timings;
                 response.redirects = redirects;
+
                 return Ok(response);
             };
 
@@ -65,6 +67,7 @@ impl HttpExecutor for CurlExecutor {
             }
 
             redirects += 1;
+
             let to_get = response.status == 303 && hop.method != Method::Head
                 || matches!(response.status, 301 | 302) && hop.method == Method::Post;
 
@@ -102,6 +105,7 @@ fn perform(
 ) -> Result<Response, HttpError> {
     easy.reset();
     easy.get_mut().clear();
+
     configure(easy, request, hop, config).map_err(|e| map_error(&e))?;
 
     let outcome = easy.perform();
@@ -117,6 +121,7 @@ fn perform(
             map_error(&err)
         });
     }
+
     finish(easy, &hop.url).map_err(|e| map_error(&e))
 }
 
@@ -127,10 +132,24 @@ fn configure(
     config: &Config,
 ) -> Result<(), curl::Error> {
     easy.url(&hop.url)?;
-    easy.ssl_options(SslOpt::new().native_ca(true))?;
     easy.http_version(HttpVersion::V2TLS)?;
     easy.progress(true)?;
     easy.connect_timeout(config.connect_timeout)?;
+
+    // an empty list asks for every encoding libcurl can decode
+    easy.accept_encoding("")?;
+
+    // libcurl ignores a CA file while the system store is in use
+    easy.ssl_options(SslOpt::new().native_ca(config.ca_file.is_none()))?;
+
+    if let Some(ca_file) = &config.ca_file {
+        easy.cainfo(ca_file)?;
+    }
+
+    if config.insecure {
+        easy.ssl_verify_peer(false)?;
+        easy.ssl_verify_host(false)?;
+    }
 
     if let Some(timeout) = config.timeout {
         easy.timeout(timeout)?;
@@ -192,6 +211,7 @@ fn configure(
         Auth::None => {}
         Auth::Basic { username, password } => {
             let mut auth = curl::easy::Auth::new();
+
             auth.basic(true);
             easy.http_auth(&auth)?;
             easy.username(username)?;

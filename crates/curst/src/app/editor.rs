@@ -114,6 +114,7 @@ impl Table {
     /// moves from the name to the value, and finishes after the value
     pub(crate) fn next_cell(&mut self) {
         let column = self.editing.as_ref().map(|(column, _)| *column);
+
         self.commit();
 
         if column == Some(Column::Name) {
@@ -180,12 +181,22 @@ impl BodyKind {
     }
 }
 
+/// the text field of the body tab that receives keys
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyField {
+    Text,
+    ContentType,
+}
+
+const TEXT_TYPE: &str = "text/plain";
+
 #[derive(Debug)]
 pub(crate) struct BodyEditor {
     pub(crate) kind: BodyKind,
     pub(crate) text: TextArea<'static>,
+    pub(crate) content_type: TextArea<'static>,
     pub(crate) form: Table,
-    pub(crate) typing: bool,
+    pub(crate) typing: Option<BodyField>,
 }
 
 impl Default for BodyEditor {
@@ -193,8 +204,9 @@ impl Default for BodyEditor {
         Self {
             kind: BodyKind::None,
             text: multi_line("", "press Enter to write the body"),
+            content_type: single_line(TEXT_TYPE, TEXT_TYPE),
             form: Table::default(),
-            typing: false,
+            typing: None,
         }
     }
 }
@@ -204,11 +216,27 @@ impl BodyEditor {
         match self.kind {
             BodyKind::None => Body::None,
             BodyKind::Json => Body::Json(text_of(&self.text)),
-            BodyKind::Text => Body::Text {
-                content_type: "text/plain".into(),
-                text: text_of(&self.text),
-            },
+            BodyKind::Text => {
+                let content_type = text_of(&self.content_type).trim().to_owned();
+
+                Body::Text {
+                    content_type: if content_type.is_empty() {
+                        TEXT_TYPE.into()
+                    } else {
+                        content_type
+                    },
+                    text: text_of(&self.text),
+                }
+            }
             BodyKind::Form => Body::Form(self.form.pairs()),
+        }
+    }
+
+    /// the field keys go to, if any
+    pub(crate) fn field(&mut self) -> Option<&mut TextArea<'static>> {
+        match self.typing? {
+            BodyField::Text => Some(&mut self.text),
+            BodyField::ContentType => Some(&mut self.content_type),
         }
     }
 }
@@ -335,6 +363,7 @@ mod tests {
     #[test]
     fn add_and_fill_a_row() {
         let mut table = Table::default();
+
         table.add_row();
         type_text(&mut table, "Accept");
         table.next_cell();
@@ -348,6 +377,7 @@ mod tests {
     #[test]
     fn empty_rows_are_dropped_on_commit() {
         let mut table = Table::default();
+
         table.add_row();
         table.commit();
 
@@ -410,10 +440,42 @@ mod tests {
             }
         );
 
+        body.content_type = single_line("  application/xml ", "");
+
+        assert_eq!(
+            body.body(),
+            Body::Text {
+                content_type: "application/xml".into(),
+                text: "{}".into()
+            }
+        );
+
+        body.content_type = single_line("", "");
+
+        assert!(matches!(
+            body.body(),
+            Body::Text { content_type, .. } if content_type == "text/plain"
+        ));
+
         body.kind = body.kind.next();
 
         assert_eq!(body.body(), Body::Form(vec![]));
         assert_eq!(body.kind.next(), BodyKind::None);
+    }
+
+    #[test]
+    fn the_typed_body_field_takes_the_keys() {
+        let mut body = BodyEditor::default();
+
+        assert!(body.field().is_none());
+
+        body.typing = Some(BodyField::ContentType);
+
+        assert_eq!(body.field().map(|f| text_of(f)), Some("text/plain".into()));
+
+        body.typing = Some(BodyField::Text);
+
+        assert_eq!(body.field().map(|f| text_of(f)), Some(String::new()));
     }
 
     #[test]
