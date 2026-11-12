@@ -6,3 +6,7 @@
 
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::panic))]
+
+pub mod http;
+pub mod model;
+pub mod url;

@@ -46,7 +46,7 @@ Rules:
 ## Tests
 
 - Tests ship with the code, in the same pull request. Every bug fix comes with a test that fails before the fix.
-- `curst-core` targets 85 % line coverage or more, measured with `cargo llvm-cov`. CI reports coverage and will enforce the target with `--fail-under-lines` once the core has code to measure. `secrets/keychain.rs` is excluded because CI cannot run an OS keychain; it is kept as a thin adapter with no logic of its own.
+- `curst-core` targets 85 % line coverage or more, measured with `cargo llvm-cov`. CI reports workspace coverage and fails when `curst-core` drops below the target (`--fail-under-lines 85`). `secrets/keychain.rs` is excluded because CI cannot run an OS keychain; it is kept as a thin adapter with no logic of its own.
 - The TUI is tested through `update` unit tests and `insta` snapshots rendered with ratatui's `TestBackend`. After an intentional UI change, review new snapshots with `cargo insta review` (or run once with `INSTA_UPDATE=always` and read the diff). Never commit a `.snap.new` file.
 - The repository forces LF line endings (`.gitattributes`) so snapshots are identical on every platform.
 
@@ -74,11 +74,12 @@ The scope is optional and names the area touched, for example `core`, `tui`, `cl
 
 **Pull request titles**: the same format as a commit, `<type>(<scope>): <summary>`. Pull requests are squash-merged, and the title becomes the commit message on `main`, so the title is what ends up in the history and the changelog. Use the type of the most significant change. If a pull request needs two types, it is probably two pull requests.
 
-### HTTP: `curl` 0.4.91 (libcurl 8.22)
+### HTTP: `curl` 0.4.51 (`curl-sys` 0.4.91, libcurl 8.22)
 
 - Features: `default-features = false`, with `static-curl`, `rustls` and `http2`.
 - The same choice on every platform, in CI and in releases: a bundled, statically linked libcurl that uses rustls (`aws-lc-rs` crypto) and nghttp2. It needs no system libcurl or OpenSSL, so all platforms behave the same way. `cargo tree -i openssl-sys` finds nothing for macOS, `x86_64-unknown-linux-gnu` or `x86_64-pc-windows-msvc`. On Linux, `openssl-probe` is pulled in, but it only looks for certificate paths and links no OpenSSL.
-- Certificates: rustls in libcurl has no certificate verifier by default. Every handle must set `SslOpt::native_ca(true)` so it uses the OS trust store. Without it, every HTTPS request fails with `failed to build client config: no server certificate verifier`. The probe got a 200 over HTTPS with this setting on macOS. Linux and Windows are *unconfirmed*, as is whether `ssl_verify_peer(false)` (`curl -k`) and a custom CA file work with the rustls backend.
+- Certificates: rustls in libcurl has no certificate verifier by default. Every handle must set `SslOpt::native_ca(true)` so it uses the OS trust store. Without it, every HTTPS request fails with `failed to build client config: no server certificate verifier`. The probe got a 200 over HTTPS with this setting on macOS. Linux and Windows are *unconfirmed*.
+- Against a local self-signed server: `ssl_verify_peer(false)` (`curl -k`) works, and so does `cainfo(<file>)`, but only when `native_ca` is off. With both set, libcurl ignores the CA file. A custom CA therefore replaces the OS trust store instead of adding to it.
 - Building needs a C compiler (and, for `aws-lc-rs`, possibly CMake or NASM on some targets). The Windows MSVC and Linux builds are *unconfirmed*.
 
 ### OS keychain: `keyring-core` plus one store crate per platform

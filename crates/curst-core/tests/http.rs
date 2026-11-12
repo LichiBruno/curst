@@ -1,0 +1,525 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
+use std::thread;
+use std::time::{Duration, Instant};
+
+use curst_core::http::{Cancel, Config, CurlExecutor, HttpError, HttpExecutor, Response};
+use curst_core::model::{Auth, Body, KeyValue, Method, Request};
+use httpmock::MockServer;
+
+fn send(request: &Request) -> Result<Response, HttpError> {
+    CurlExecutor::default().execute(request, &Cancel::new())
+}
+
+fn send_with(config: Config, request: &Request) -> Result<Response, HttpError> {
+    CurlExecutor::new(config).execute(request, &Cancel::new())
+}
+
+fn get(url: String) -> Request {
+    Request {
+        url,
+        ..Request::default()
+    }
+}
+
+#[test]
+fn every_method_reaches_the_server() {
+    let server = MockServer::start();
+
+    for method in Method::ALL {
+        let mut mock = server.mock(|when, then| {
+            when.method(method.as_str()).path("/m");
+            then.status(204);
+        });
+
+        let response = send(&Request {
+            method,
+            ..get(server.url("/m"))
+        })
+        .unwrap();
+
+        assert_eq!(response.status, 204, "{method}");
+        mock.assert();
+
+        mock.delete();
+    }
+}
+
+#[test]
+fn headers_params_and_default_user_agent_are_sent() {
+    let server = MockServer::start();
+    let mut disabled = KeyValue::new("X-Off", "1");
+    disabled.enabled = false;
+    let mock = server.mock(|when, then| {
+        when.method("GET")
+            .path("/search")
+            .query_param("q", "a b")
+            .query_param("page", "2")
+            .header("x-trace", "abc")
+            .header("user-agent", concat!("curst/", env!("CARGO_PKG_VERSION")))
+            .header_missing("x-off");
+
+        then.status(200)
+            .header("content-type", "application/json")
+            .body(r#"{"ok":true}"#);
+    });
+
+    let response = send(&Request {
+        params: vec![KeyValue::new("q", "a b"), KeyValue::new("page", "2")],
+        headers: vec![KeyValue::new("X-Trace", "abc"), disabled],
+        ..get(server.url("/search"))
+    })
+    .unwrap();
+
+    mock.assert();
+    assert_eq!(response.header("content-type"), Some("application/json"));
+    assert_eq!(response.body.preview(), br#"{"ok":true}"#);
+    assert!(response.status_line.starts_with("HTTP/1.1 200"));
+    assert!(response.timings.total >= response.timings.first_byte);
+    assert_eq!(response.redirects, 0);
+}
+
+#[test]
+fn user_headers_override_defaults() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.header("user-agent", "mine")
+            .header("content-type", "application/vnd.api+json");
+        then.status(200);
+    });
+
+    send(&Request {
+        method: Method::Post,
+        headers: vec![
+            KeyValue::new("User-Agent", "mine"),
+            KeyValue::new("Content-Type", "application/vnd.api+json"),
+        ],
+        body: Body::Json("{}".into()),
+        ..get(server.url("/"))
+    })
+    .unwrap();
+
+    mock.assert();
+}
+
+#[test]
+fn json_and_form_bodies() {
+    let server = MockServer::start();
+    let json = server.mock(|when, then| {
+        when.method("PUT")
+            .path("/json")
+            .header("content-type", "application/json")
+            .json_body(serde_json::json!({"name": "curst"}));
+        then.status(200);
+    });
+
+    let form = server.mock(|when, then| {
+        when.method("POST")
+            .path("/form")
+            .header("content-type", "application/x-www-form-urlencoded")
+            .form_urlencoded_tuple("a", "1 2")
+            .form_urlencoded_tuple("b", "&");
+        then.status(200);
+    });
+
+    send(&Request {
+        method: Method::Put,
+        body: Body::Json(r#"{"name":"curst"}"#.into()),
+        ..get(server.url("/json"))
+    })
+    .unwrap();
+
+    send(&Request {
+        method: Method::Post,
+        body: Body::Form(vec![KeyValue::new("a", "1 2"), KeyValue::new("b", "&")]),
+        ..get(server.url("/form"))
+    })
+    .unwrap();
+
+    json.assert();
+    form.assert();
+}
+
+#[test]
+fn large_post_body_does_not_wait_for_100_continue() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method("POST").path("/big").header_missing("expect");
+        then.status(200);
+    });
+
+    send(&Request {
+        method: Method::Post,
+        body: Body::Text {
+            content_type: "text/plain".into(),
+            text: "x".repeat(64 * 1024),
+        },
+        ..get(server.url("/big"))
+    })
+    .unwrap();
+
+    mock.assert();
+}
+
+#[test]
+fn basic_and_bearer_auth() {
+    let server = MockServer::start();
+    let basic = server.mock(|when, then| {
+        when.path("/basic")
+            .header("authorization", "Basic dXNlcjpwYXNz");
+        then.status(200);
+    });
+
+    let bearer = server.mock(|when, then| {
+        when.path("/bearer").header("authorization", "Bearer t0k");
+        then.status(200);
+    });
+
+    send(&Request {
+        auth: Auth::Basic {
+            username: "user".into(),
+            password: "pass".into(),
+        },
+        ..get(server.url("/basic"))
+    })
+    .unwrap();
+
+    send(&Request {
+        auth: Auth::Bearer {
+            token: "t0k".into(),
+        },
+        ..get(server.url("/bearer"))
+    })
+    .unwrap();
+
+    basic.assert();
+    bearer.assert();
+}
+
+#[test]
+fn redirects_are_followed_and_only_final_headers_kept() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.path("/old");
+
+        then.status(301)
+            .header("location", "/new")
+            .header("x-hop", "1");
+    });
+
+    server.mock(|when, then| {
+        when.path("/new");
+        then.status(200).header("x-final", "1").body("done");
+    });
+
+    let response = send(&get(server.url("/old"))).unwrap();
+
+    assert_eq!(response.status, 200);
+    assert_eq!(response.redirects, 1);
+    assert!(response.effective_url.ends_with("/new"));
+    assert_eq!(response.header("x-final"), Some("1"));
+    assert_eq!(response.header("x-hop"), None);
+    assert_eq!(response.body.preview(), b"done");
+}
+
+#[test]
+fn redirects_can_be_turned_off_and_are_limited() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.path("/loop");
+        then.status(302).header("location", "/loop");
+    });
+
+    let no_follow = Config {
+        follow_redirects: false,
+        ..Config::default()
+    };
+    let response = send_with(no_follow, &get(server.url("/loop"))).unwrap();
+
+    assert_eq!(response.status, 302);
+    assert_eq!(response.header("location"), Some("/loop"));
+
+    let limited = Config {
+        max_redirects: 3,
+        ..Config::default()
+    };
+    let err = send_with(limited, &get(server.url("/loop"))).unwrap_err();
+
+    assert!(matches!(err, HttpError::TooManyRedirects), "{err:?}");
+}
+
+#[test]
+fn timeout() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.path("/slow");
+        then.status(200).delay(Duration::from_secs(5));
+    });
+
+    let config = Config {
+        timeout: Some(Duration::from_millis(300)),
+        ..Config::default()
+    };
+    let err = send_with(config, &get(server.url("/slow"))).unwrap_err();
+
+    assert!(matches!(err, HttpError::Timeout(_)), "{err:?}");
+}
+
+#[test]
+fn cancel_stops_a_request_in_flight() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.path("/slow");
+        then.status(200).delay(Duration::from_secs(5));
+    });
+
+    let cancel = Cancel::new();
+    let trigger = cancel.clone();
+    let canceller = thread::spawn(move || {
+        thread::sleep(Duration::from_millis(200));
+        trigger.cancel();
+    });
+
+    let started = Instant::now();
+    let err = CurlExecutor::default()
+        .execute(&get(server.url("/slow")), &cancel)
+        .unwrap_err();
+    canceller.join().unwrap();
+
+    assert!(matches!(err, HttpError::Cancelled), "{err:?}");
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[test]
+fn body_over_the_cap_goes_to_a_temporary_file() {
+    let server = MockServer::start();
+    let payload = "0123456789".repeat(1000);
+    server.mock(|when, then| {
+        when.path("/big");
+        then.status(200).body(&payload);
+    });
+
+    let config = Config {
+        body_cap: 100,
+        ..Config::default()
+    };
+    let response = send_with(config, &get(server.url("/big"))).unwrap();
+
+    assert!(response.body.is_truncated());
+    assert_eq!(response.body.len(), 10_000);
+    assert_eq!(response.body.preview(), &payload.as_bytes()[..100]);
+
+    let dir = tempfile::tempdir().unwrap();
+    let saved = dir.path().join("body");
+    response.body.save_to(&saved).unwrap();
+
+    assert_eq!(std::fs::read(saved).unwrap(), payload.as_bytes());
+}
+
+#[test]
+fn connection_and_url_errors() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let closed = format!("http://{}/", listener.local_addr().unwrap());
+    drop(listener);
+    let err = send(&get(closed)).unwrap_err();
+
+    assert!(matches!(err, HttpError::Connect(_)), "{err:?}");
+
+    let err = send(&get("nope://host/".into())).unwrap_err();
+
+    assert!(matches!(err, HttpError::InvalidUrl(_)), "{err:?}");
+
+    let err = send(&get("http://host.invalid/".into())).unwrap_err();
+
+    assert!(matches!(err, HttpError::Resolve(_)), "{err:?}");
+}
+
+#[test]
+fn bodyless_post_sends_an_empty_body() {
+    let server = MockServer::start();
+    let mock = server.mock(|when, then| {
+        when.method("POST")
+            .path("/empty")
+            .header("content-length", "0")
+            .header_missing("transfer-encoding")
+            .header_missing("content-type");
+        then.status(201);
+    });
+
+    let response = send(&Request {
+        method: Method::Post,
+        ..get(server.url("/empty"))
+    })
+    .unwrap();
+
+    assert_eq!(response.status, 201);
+    mock.assert();
+}
+
+#[test]
+fn redirects_keep_or_drop_method_and_body_like_curl() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.path("/see-other");
+        then.status(303).header("location", "/target");
+    });
+
+    server.mock(|when, then| {
+        when.path("/temporary");
+        then.status(307).header("location", "/target");
+    });
+
+    let cases = [
+        (Method::Post, "/see-other", "GET", ""),
+        (Method::Put, "/see-other", "GET", ""),
+        (Method::Delete, "/see-other", "GET", ""),
+        (Method::Post, "/temporary", "POST", "payload"),
+        (Method::Put, "/temporary", "PUT", "payload"),
+        (Method::Delete, "/temporary", "DELETE", "payload"),
+    ];
+
+    for (method, path, expected_method, expected_body) in cases {
+        let mut target = server.mock(|when, then| {
+            let when = when.path("/target").method(expected_method);
+
+            if expected_body.is_empty() {
+                when.header_missing("content-length");
+            } else {
+                when.body(expected_body);
+            }
+
+            then.status(200);
+        });
+
+        let response = send(&Request {
+            method,
+            body: Body::Text {
+                content_type: "text/plain".into(),
+                text: "payload".into(),
+            },
+            ..get(server.url(path))
+        })
+        .unwrap();
+
+        assert_eq!(response.status, 200, "{method} {path}");
+        target.assert();
+
+        target.delete();
+    }
+}
+
+#[test]
+fn credentials_stay_on_the_same_origin() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.path("/a");
+        then.status(302).header("location", "/b");
+    });
+
+    let target = server.mock(|when, then| {
+        when.path("/b")
+            .header("authorization", "Bearer t0k")
+            .header("cookie", "s=1");
+        then.status(200);
+    });
+
+    send(&Request {
+        headers: vec![KeyValue::new("Cookie", "s=1")],
+        auth: Auth::Bearer {
+            token: "t0k".into(),
+        },
+        ..get(server.url("/a"))
+    })
+    .unwrap();
+
+    target.assert();
+}
+
+#[test]
+fn credentials_are_dropped_when_a_redirect_leaves_the_origin() {
+    let first = MockServer::start();
+    let other = MockServer::start();
+    first.mock(|when, then| {
+        when.path("/out");
+        then.status(307).header("location", other.url("/landing"));
+    });
+
+    let landing = other.mock(|when, then| {
+        when.path("/landing")
+            .header_missing("authorization")
+            .header_missing("cookie")
+            .header("x-trace", "1");
+        then.status(200);
+    });
+
+    for auth in [
+        Auth::Bearer {
+            token: "t0k".into(),
+        },
+        Auth::Basic {
+            username: "u".into(),
+            password: "p".into(),
+        },
+    ] {
+        let response = send(&Request {
+            headers: vec![
+                KeyValue::new("Cookie", "s=1"),
+                KeyValue::new("X-Trace", "1"),
+            ],
+            auth,
+            ..get(first.url("/out"))
+        })
+        .unwrap();
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.redirects, 1);
+        assert_eq!(response.effective_url, other.url("/landing"));
+    }
+
+    landing.assert_calls(2);
+}
+
+#[test]
+fn head_stays_head_through_a_303() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.path("/h");
+        then.status(303).header("location", "/i");
+    });
+
+    let target = server.mock(|when, then| {
+        when.method("HEAD").path("/i");
+        then.status(200);
+    });
+
+    send(&Request {
+        method: Method::Head,
+        ..get(server.url("/h"))
+    })
+    .unwrap();
+
+    target.assert();
+}
+
+#[test]
+fn the_body_cap_applies_after_a_redirect() {
+    let server = MockServer::start();
+    server.mock(|when, then| {
+        when.path("/from");
+        then.status(302).header("location", "/to");
+    });
+
+    server.mock(|when, then| {
+        when.path("/to");
+        then.status(200).body("abcdef");
+    });
+
+    let config = Config {
+        body_cap: 4,
+        ..Config::default()
+    };
+    let response = send_with(config, &get(server.url("/from"))).unwrap();
+
+    assert_eq!(response.body.preview(), b"abcd");
+    assert_eq!(response.body.len(), 6);
+}
