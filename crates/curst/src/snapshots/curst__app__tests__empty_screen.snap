@@ -1,0 +1,10 @@
+---
+source: crates/curst/src/app.rs
+expression: terminal.backend()
+---
+"┌ curst ───────────────────────────────┐"
+"│                                      │"
+"│                                      │"
+"│                                      │"
+"└──────────────────────────────────────┘"
+" q  Quit                                "
