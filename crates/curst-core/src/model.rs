@@ -202,7 +202,6 @@ impl Request {
     /// let request = Request {
     ///     url: "https://example.com/search?lang=en".into(),
     ///     params: vec![KeyValue::new("q", "rust & curl")],
-
     ///     ..Request::default()
     /// };
     /// assert_eq!(
