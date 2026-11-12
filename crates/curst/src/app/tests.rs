@@ -60,6 +60,7 @@ fn sent(commands: &[Command]) -> (u64, &curst_core::model::Request) {
 #[test]
 fn quit_keys() {
     let mut state = State::default();
+
     press_key(&mut state, ctrl('c'));
 
     assert!(state.should_quit);
@@ -76,6 +77,7 @@ fn quit_keys() {
 #[test]
 fn q_is_typed_into_the_url() {
     let mut state = State::default();
+
     type_text(&mut state, "q");
 
     assert!(!state.should_quit);
@@ -97,7 +99,9 @@ fn key_releases_are_ignored() {
 #[test]
 fn enter_in_the_url_sends_the_request() {
     let mut state = State::default();
+
     type_text(&mut state, " http://localhost/x ");
+
     let commands = press(&mut state, KeyCode::Enter);
     let (id, request) = sent(&commands);
 
@@ -112,6 +116,7 @@ fn sending_without_a_url_asks_for_one() {
         focus: Focus::Response,
         ..State::default()
     };
+
     let commands = press_key(&mut state, ctrl('r'));
 
     assert_eq!(commands, Vec::new());
@@ -122,6 +127,7 @@ fn sending_without_a_url_asks_for_one() {
 #[test]
 fn method_changes_with_arrows() {
     let mut state = State::default();
+
     press(&mut state, KeyCode::BackTab);
 
     assert_eq!(state.focus, Focus::Method);
@@ -145,6 +151,7 @@ fn focus_cycles_both_ways() {
 
         assert_eq!(state.focus, expected);
     }
+
     press(&mut state, KeyCode::BackTab);
 
     assert_eq!(state.focus, Focus::Method);
@@ -153,6 +160,7 @@ fn focus_cycles_both_ways() {
 #[test]
 fn headers_and_params_are_edited_as_rows() {
     let mut state = State::default();
+
     type_text(&mut state, "http://h/");
     press(&mut state, KeyCode::Tab);
     press(&mut state, KeyCode::Char('a'));
@@ -240,6 +248,7 @@ fn form_body_uses_rows() {
     for _ in 0..3 {
         press(&mut state, KeyCode::Char('t'));
     }
+
     press(&mut state, KeyCode::Char('a'));
     type_text(&mut state, "a");
     press(&mut state, KeyCode::Tab);
@@ -296,8 +305,11 @@ fn bearer_and_basic_auth() {
 #[test]
 fn response_arrives_and_is_shown() {
     let mut state = State::default();
+
     type_text(&mut state, "http://h/");
+
     let (id, _) = sent(&press(&mut state, KeyCode::Enter)).to_owned();
+
     update(
         &mut state,
         Action::responded(id, Ok(response(r#"{"a":1}"#))),
@@ -315,8 +327,11 @@ fn response_arrives_and_is_shown() {
 #[test]
 fn errors_are_shown() {
     let mut state = State::default();
+
     type_text(&mut state, "http://h/");
+
     let (id, _) = sent(&press(&mut state, KeyCode::Enter));
+
     update(
         &mut state,
         Action::responded(id, Err(HttpError::Connect("refused".into()))),
@@ -328,7 +343,9 @@ fn errors_are_shown() {
 #[test]
 fn stale_and_cancelled_results_are_dropped() {
     let mut state = State::default();
+
     type_text(&mut state, "http://h/");
+
     let (first, _) = sent(&press(&mut state, KeyCode::Enter));
     let commands = press_key(&mut state, ctrl('r'));
 
@@ -357,8 +374,11 @@ fn stale_and_cancelled_results_are_dropped() {
 
 fn with_response(body: &str) -> State {
     let mut state = State::default();
+
     type_text(&mut state, "http://h/");
+
     let (id, _) = sent(&press(&mut state, KeyCode::Enter));
+
     update(&mut state, Action::responded(id, Ok(response(body))));
     state.focus = Focus::Response;
 
@@ -369,6 +389,7 @@ fn with_response(body: &str) -> State {
 fn response_scrolls_within_bounds() {
     let body = format!("[{}]", vec!["1"; 40].join(","));
     let mut state = with_response(&body);
+
     press(&mut state, KeyCode::Down);
 
     assert_eq!(state.scroll, 1);
@@ -429,7 +450,9 @@ fn save_prompt_flow() {
     assert_eq!(state.notice.as_deref(), Some("nothing to save yet"));
 
     let mut state = with_response("{}");
+
     press(&mut state, KeyCode::Char('s'));
+
     let prompt = state.save_prompt.as_ref().unwrap();
 
     assert_eq!(editor::text_of(prompt), "response.json");
@@ -456,4 +479,90 @@ fn save_prompt_flow() {
     press(&mut state, KeyCode::Esc);
 
     assert!(state.save_prompt.is_none());
+}
+
+#[test]
+fn text_body_has_an_editable_content_type() {
+    let mut state = State {
+        focus: Focus::Request,
+        request_tab: RequestTab::Body,
+        ..State::default()
+    };
+
+    press(&mut state, KeyCode::Char('c'));
+
+    assert!(!state.request_typing());
+
+    press(&mut state, KeyCode::Char('t'));
+    press(&mut state, KeyCode::Char('t'));
+    press(&mut state, KeyCode::Char('c'));
+
+    assert_eq!(state.body.typing, Some(BodyField::ContentType));
+
+    for _ in 0.."text/plain".len() {
+        press(&mut state, KeyCode::Backspace);
+    }
+
+    type_text(&mut state, "application/xml");
+    press(&mut state, KeyCode::Enter);
+
+    assert!(!state.request_typing());
+
+    press(&mut state, KeyCode::Char('c'));
+    press(&mut state, KeyCode::Tab);
+
+    assert_eq!(state.body.typing, Some(BodyField::Text));
+
+    type_text(&mut state, "<a/>");
+    press(&mut state, KeyCode::Enter);
+    press(&mut state, KeyCode::Esc);
+
+    assert_eq!(
+        state.request().body,
+        Body::Text {
+            content_type: "application/xml".into(),
+            text: "<a/>\n".into(),
+        }
+    );
+}
+
+#[test]
+fn response_scrolls_sideways_within_the_longest_line() {
+    let mut state = with_response(&format!("[\"{}\"]", "x".repeat(100)));
+
+    // the longest line is the string with its indent and quotes
+    assert_eq!(state.last_column(), 104);
+
+    state.response_width.set(40);
+
+    press(&mut state, KeyCode::Char('l'));
+
+    assert_eq!(state.column, 8);
+
+    press_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT),
+    );
+
+    assert_eq!(state.column, 16);
+    assert_eq!(state.response_tab, ResponseTab::Body);
+
+    for _ in 0..20 {
+        press(&mut state, KeyCode::Char('l'));
+    }
+
+    assert_eq!(state.column, 64);
+
+    press(&mut state, KeyCode::Char('h'));
+    press_key(
+        &mut state,
+        KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT),
+    );
+
+    assert_eq!(state.column, 48);
+
+    press(&mut state, KeyCode::Right);
+
+    assert_eq!(state.response_tab, ResponseTab::Headers);
+    assert_eq!(state.column, 0);
 }

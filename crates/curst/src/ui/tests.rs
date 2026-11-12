@@ -6,6 +6,7 @@ use crate::app::{Action, Command, ResponseTab, update};
 
 fn render(state: &State, width: u16, height: u16) -> String {
     let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+
     terminal.draw(|frame| view(state, frame)).unwrap();
 
     terminal.backend().to_string()
@@ -13,7 +14,9 @@ fn render(state: &State, width: u16, height: u16) -> String {
 
 fn sent_state(url: &str) -> (State, u64) {
     let mut state = State::default();
+
     state.url.insert_str(url);
+
     let commands = update(&mut state, Action::Send);
     let Some(Command::Send { id, .. }) = commands.last() else {
         panic!("no send");
@@ -29,6 +32,7 @@ fn empty_screen() {
 #[test]
 fn json_response_side_by_side() {
     let (mut state, id) = sent_state("http://localhost/pets");
+
     update(
         &mut state,
         Action::responded(
@@ -45,6 +49,7 @@ fn json_response_side_by_side() {
 #[test]
 fn timing_tab() {
     let (mut state, id) = sent_state("http://localhost/");
+
     update(
         &mut state,
         Action::responded(id, Ok(crate::app::tests::response("{}"))),
@@ -79,6 +84,7 @@ fn error_and_sending() {
 #[test]
 fn editing_a_header_row() {
     let mut state = State::default();
+
     update(&mut state, Action::FocusNext);
     update(&mut state, Action::NextTab);
     update(&mut state, Action::AddRow);
@@ -102,6 +108,7 @@ fn editing_a_header_row() {
 #[test]
 fn auth_and_save_prompt() {
     let (mut state, id) = sent_state("http://localhost/");
+
     update(
         &mut state,
         Action::responded(id, Ok(crate::app::tests::response("{}"))),
@@ -120,4 +127,67 @@ fn auth_and_save_prompt() {
     update(&mut state, Action::OpenSave);
 
     insta::assert_snapshot!("save_prompt", render(&state, 80, 12));
+}
+
+#[test]
+fn text_body_with_its_content_type() {
+    let mut state = State::default();
+
+    state.focus = crate::app::Focus::Request;
+    state.request_tab = RequestTab::Body;
+
+    update(&mut state, Action::CycleKind);
+    update(&mut state, Action::CycleKind);
+    update(&mut state, Action::EditContentType);
+
+    insta::assert_snapshot!(render(&state, 80, 12));
+    assert_eq!(
+        hints(&state),
+        [("Enter", "done"), ("Tab", "next field"), ("Ctrl+C", "quit")]
+    );
+
+    update(&mut state, Action::StopEdit);
+
+    assert!(hints(&state).contains(&("c", "content type")));
+}
+
+#[test]
+fn a_wide_response_scrolled_sideways() {
+    let (mut state, id) = sent_state("http://localhost/");
+    let body = format!(r#"{{"long":"{}","end":true}}"#, "abcdefghij".repeat(8));
+
+    update(
+        &mut state,
+        Action::responded(id, Ok(crate::app::tests::response(&body))),
+    );
+    state.focus = crate::app::Focus::Response;
+    render(&state, 80, 14);
+
+    for _ in 0..3 {
+        update(&mut state, Action::Right);
+    }
+
+    insta::assert_snapshot!(render(&state, 80, 14));
+    assert!(hints(&state).contains(&("h l", "sideways")));
+}
+
+#[test]
+fn wide_characters_can_be_scrolled_to_the_end() {
+    let (mut state, id) = sent_state("http://localhost/");
+    let body = format!(r#"["{}END"]"#, "字".repeat(60));
+
+    update(
+        &mut state,
+        Action::responded(id, Ok(crate::app::tests::response(&body))),
+    );
+    state.focus = crate::app::Focus::Response;
+    render(&state, 80, 14);
+
+    assert!(state.last_column() > 0);
+
+    for _ in 0..20 {
+        update(&mut state, Action::Right);
+    }
+
+    assert!(render(&state, 80, 14).contains("END\""));
 }

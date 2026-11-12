@@ -187,6 +187,7 @@ impl ResponseBody {
     /// created or written
     pub fn with_cap(bytes: &[u8], cap: usize) -> io::Result<Self> {
         let mut body = Self::new(cap);
+
         body.push(bytes)?;
 
         Ok(body)
@@ -201,13 +202,15 @@ impl ResponseBody {
 
         if self.preview.len() + data.len() <= self.cap {
             self.preview.extend_from_slice(data);
+
             return Ok(());
         }
 
+        let room = self.cap - self.preview.len();
         let mut file = tempfile::Builder::new().prefix("curst-").tempfile()?;
+
         file.write_all(&self.preview)?;
         file.write_all(data)?;
-        let room = self.cap - self.preview.len();
         self.preview.extend_from_slice(&data[..room]);
         self.spill = Some(file);
 
@@ -257,6 +260,7 @@ impl ResponseBody {
         match &self.spill {
             Some(spill) => {
                 let mut source = File::open(spill.path())?;
+
                 io::copy(&mut source, &mut out)?;
             }
             None => out.write_all(&self.preview)?,
@@ -344,6 +348,7 @@ mod tests {
     #[test]
     fn small_body_stays_in_memory() {
         let mut body = ResponseBody::new(8);
+
         body.push(b"abcd").unwrap();
         body.push(b"efgh").unwrap();
 
@@ -356,6 +361,7 @@ mod tests {
     #[test]
     fn large_body_spills_to_an_owner_only_file() {
         let mut body = ResponseBody::new(4);
+
         body.push(b"abc").unwrap();
         body.push(b"defg").unwrap();
         body.push(b"hi").unwrap();
@@ -371,6 +377,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+
             let mode = std::fs::metadata(&spill).unwrap().permissions().mode();
 
             assert_eq!(mode & 0o777, 0o600);
@@ -391,9 +398,10 @@ mod tests {
     #[test]
     fn save_writes_the_whole_body_and_never_overwrites() {
         let dir = tempfile::tempdir().unwrap();
-        let mut big = ResponseBody::new(2);
-        big.push(b"0123456789").unwrap();
         let target = dir.path().join("big.bin");
+        let mut big = ResponseBody::new(2);
+
+        big.push(b"0123456789").unwrap();
         big.save_to(&target).unwrap();
 
         assert_eq!(std::fs::read(&target).unwrap(), b"0123456789");
@@ -404,6 +412,7 @@ mod tests {
 
         let small = ResponseBody::from_bytes(b"hi".to_vec());
         let target = dir.path().join("small.txt");
+
         small.save_to(&target).unwrap();
 
         assert_eq!(std::fs::read(&target).unwrap(), b"hi");

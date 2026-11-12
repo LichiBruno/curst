@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use curst_core::http::{BodyKind, Response};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::ResponseTab;
 
@@ -14,6 +15,10 @@ pub(crate) struct ResponseView {
     headers: Vec<String>,
     timing: Vec<String>,
     raw: Vec<String>,
+
+    /// terminal columns taken by the longest line of each tab, in
+    /// [`ResponseTab::ALL`] order
+    widths: [usize; 4],
 }
 
 impl ResponseView {
@@ -45,6 +50,8 @@ impl ResponseView {
             raw.extend(text_lines(response.body.preview()));
         }
 
+        let widths = [&body, &headers, &timing, &raw].map(|lines| widest(lines));
+
         Self {
             response,
             summary,
@@ -52,6 +59,7 @@ impl ResponseView {
             headers,
             timing,
             raw,
+            widths,
         }
     }
 
@@ -64,6 +72,15 @@ impl ResponseView {
         }
     }
 
+    pub(crate) fn width(&self, tab: ResponseTab) -> usize {
+        let index = ResponseTab::ALL.iter().position(|t| *t == tab);
+
+        index
+            .and_then(|i| self.widths.get(i))
+            .copied()
+            .unwrap_or_default()
+    }
+
     pub(crate) fn extension(&self) -> &'static str {
         match self.response.kind() {
             BodyKind::Json => "json",
@@ -71,6 +88,30 @@ impl ResponseView {
             BodyKind::Binary => "bin",
         }
     }
+}
+
+fn widest(lines: &[String]) -> usize {
+    lines
+        .iter()
+        .map(|line| line.width())
+        .max()
+        .unwrap_or_default()
+}
+
+/// the rest of `line` once `columns` terminal columns are scrolled past; a
+/// wide character cut in half is skipped whole
+pub(crate) fn skip_columns(line: &str, columns: usize) -> &str {
+    let mut skipped = 0;
+
+    for (index, c) in line.char_indices() {
+        if skipped >= columns {
+            return &line[index..];
+        }
+
+        skipped += c.width().unwrap_or_default();
+    }
+
+    ""
 }
 
 fn status_text(response: &Response) -> String {
@@ -97,6 +138,7 @@ fn body_lines(response: &Response, kind: BodyKind) -> Vec<String> {
 
     if kind == BodyKind::Binary {
         let content_type = response.header("content-type").unwrap_or("unknown type");
+
         return vec![
             format!("binary body: {content_type}, {}", format_size(body.len())),
             "press s to save it to a file".into(),
@@ -219,6 +261,7 @@ pub(crate) fn format_size(bytes: u64) -> String {
         whole /= 1024;
         unit += 1;
     }
+
     format!("{whole}.{tenths} {}", UNITS[unit - 1])
 }
 
@@ -253,6 +296,16 @@ mod tests {
     }
 
     #[test]
+    fn columns_are_skipped_by_display_width() {
+        assert_eq!(skip_columns("abc", 0), "abc");
+        assert_eq!(skip_columns("abc", 2), "c");
+        assert_eq!(skip_columns("abc", 5), "");
+        assert_eq!(skip_columns("字字x", 2), "字x");
+        assert_eq!(skip_columns("字字x", 3), "x");
+        assert_eq!(widest(&["字字".into(), "abc".into()]), 4);
+    }
+
+    #[test]
     fn json_is_pretty_printed() {
         let view = ResponseView::new(response(
             "HTTP/2 200",
@@ -261,6 +314,8 @@ mod tests {
         ));
 
         assert_eq!(view.lines(ResponseTab::Body), ["{", "  \"a\": 1", "}"]);
+        assert_eq!(view.width(ResponseTab::Body), 8);
+        assert_eq!(view.width(ResponseTab::Headers), 30);
         assert_eq!(view.summary, "200 · 1.25 s · 7 B");
         assert_eq!(view.extension(), "json");
         assert_eq!(
@@ -351,6 +406,7 @@ mod tests {
     fn truncated_body_says_so() {
         let mut capped = response("HTTP/1.1 200 OK", &[("content-type", "text/plain")], b"");
         capped.body = ResponseBody::with_cap(b"line one\nline two\nline three", 9).unwrap();
+
         let view = ResponseView::new(capped);
 
         assert_eq!(

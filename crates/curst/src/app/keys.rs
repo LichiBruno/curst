@@ -41,13 +41,14 @@ pub(crate) fn action_for(state: &State, key: KeyEvent) -> Option<Action> {
         }),
         Focus::Request => common(state, key).or(match key.code {
             KeyCode::Enter => Some(Action::Edit),
+            KeyCode::Char('c') => Some(Action::EditContentType),
             KeyCode::Char('a') => Some(Action::AddRow),
             KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteRow),
             KeyCode::Char(' ') => Some(Action::ToggleRow),
             KeyCode::Char('t') => Some(Action::CycleKind),
             _ => None,
         }),
-        Focus::Response => common(state, key).or(match key.code {
+        Focus::Response => pan(key).or_else(|| common(state, key)).or(match key.code {
             KeyCode::PageUp => Some(Action::PageUp),
             KeyCode::PageDown => Some(Action::PageDown),
             KeyCode::Home | KeyCode::Char('g') => Some(Action::Top),
@@ -55,6 +56,19 @@ pub(crate) fn action_for(state: &State, key: KeyEvent) -> Option<Action> {
             KeyCode::Char('s') => Some(Action::OpenSave),
             _ => None,
         }),
+    }
+}
+
+/// shift with an arrow, or `h` and `l`, scroll the response sideways
+fn pan(key: KeyEvent) -> Option<Action> {
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    match key.code {
+        KeyCode::Left if shift => Some(Action::Left),
+        KeyCode::Right if shift => Some(Action::Right),
+        KeyCode::Char('h') => Some(Action::Left),
+        KeyCode::Char('l') => Some(Action::Right),
+        _ => None,
     }
 }
 
@@ -77,7 +91,7 @@ fn common(state: &State, key: KeyEvent) -> Option<Action> {
 
 fn typing_in_request(state: &State, key: KeyEvent) -> Action {
     let multi_line =
-        state.request_tab == RequestTab::Body && state.body.kind != super::BodyKind::Form;
+        state.request_tab == RequestTab::Body && state.body.typing == Some(super::BodyField::Text);
 
     match key.code {
         KeyCode::Esc => Action::StopEdit,

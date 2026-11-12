@@ -128,6 +128,7 @@ pub fn resolve(base: &str, location: &str) -> Option<String> {
         format!("/{loc_path}")
     } else {
         let dir = base_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+
         format!("{dir}/{loc_path}")
     };
 

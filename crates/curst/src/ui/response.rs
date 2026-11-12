@@ -5,7 +5,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::{pane, tab_titles};
-use crate::app::{Focus, Outcome, ResponseTab, State};
+use crate::app::{Focus, Outcome, ResponseTab, State, skip_columns};
 
 pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
     let mut title = vec![Span::raw(" Response")];
@@ -14,6 +14,7 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
         state.response_tab,
         ResponseTab::label,
     ));
+
     let mut block = pane(Line::from(title), state.focus == Focus::Response);
 
     if let Some(Outcome::Response(view)) = &state.outcome {
@@ -23,6 +24,7 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
             400..=499 => Color::Yellow,
             _ => Color::Red,
         };
+
         block = block.title(
             Line::from(Span::styled(
                 format!(" {} ", view.summary),
@@ -33,8 +35,10 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
     }
 
     let inner = block.inner(area);
+
     frame.render_widget(block, area);
     state.response_height.set(usize::from(inner.height));
+    state.response_width.set(usize::from(inner.width));
 
     let dim = Style::default().fg(Color::DarkGray);
     let paragraph = match &state.outcome {
@@ -54,15 +58,18 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
             let lines = view.lines(state.response_tab);
             let height = usize::from(inner.height);
             let first = state.scroll.min(lines.len().saturating_sub(height));
+            let column = state.column.min(state.last_column());
+
             Paragraph::new(
                 lines
                     .iter()
                     .skip(first)
                     .take(height)
-                    .map(|line| Line::from(line.as_str()))
+                    .map(|line| Line::from(skip_columns(line, column)))
                     .collect::<Vec<_>>(),
             )
         }
     };
+
     frame.render_widget(paragraph, inner);
 }
