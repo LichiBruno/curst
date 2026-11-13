@@ -1,0 +1,252 @@
+//! what the sidebar keys do: moving through the tree, opening requests and
+//! changing the collections
+
+use curst_core::model::Item;
+
+use super::popup::{Pending, Popup, Purpose};
+use super::workspace::{NodeKey, Row, RowKind, rows};
+use super::{Action, Change, Command, State};
+
+fn visible(state: &State) -> Vec<Row> {
+    rows(&state.collections, &state.sidebar.expanded)
+}
+
+fn selected_row(state: &State) -> Option<Row> {
+    let rows = visible(state);
+    let selected = state.sidebar.selected.as_ref()?;
+
+    rows.into_iter().find(|r| r.key == *selected)
+}
+
+/// the folder or collection new items go into: the selected one, or the
+/// folder holding the selected request
+pub(crate) fn target_folder(state: &State) -> Option<NodeKey> {
+    match selected_row(state) {
+        Some(row) if matches!(row.kind, RowKind::Request(_)) => row.key.parent(),
+        Some(row) => Some(row.key),
+        None => state
+            .collections
+            .first()
+            .map(|w| NodeKey::root(w.id.clone())),
+    }
+}
+
+fn no_collection(state: &mut State) {
+    state.notice = Some("create a collection first: press c in the sidebar".into());
+}
+
+pub(crate) fn apply(state: &mut State, action: &Action) -> Vec<Command> {
+    match action {
+        Action::Up | Action::Down | Action::Top | Action::Bottom => select(state, action),
+        Action::Right | Action::Edit => open(state, matches!(action, Action::Edit)),
+        Action::Left => close(state),
+        Action::NewRequest | Action::NewFolder => {
+            let Some(parent) = target_folder(state) else {
+                no_collection(state);
+
+                return Vec::new();
+            };
+
+            let purpose = if matches!(action, Action::NewRequest) {
+                Purpose::NewRequest(parent)
+            } else {
+                Purpose::NewFolder(parent)
+            };
+
+            state.popup = Some(Popup::prompt(purpose, ""));
+        }
+        Action::NewCollection => state.popup = Some(Popup::prompt(Purpose::NewCollection, "")),
+        Action::Rename => {
+            if let Some(row) = selected_row(state) {
+                state.popup = Some(Popup::prompt(Purpose::Rename(row.key), &row.name));
+            }
+        }
+        Action::DeleteItem => {
+            if let Some(row) = selected_row(state) {
+                let message = match row.kind {
+                    RowKind::Collection => {
+                        format!(
+                            "Delete the collection {} and every request in it?",
+                            row.name
+                        )
+                    }
+                    RowKind::Folder => {
+                        format!("Delete the folder {} and everything in it?", row.name)
+                    }
+                    RowKind::Request(_) => format!("Delete the request {}?", row.name),
+                };
+
+                state.popup = Some(Popup::confirm(message, Pending::Delete(row.key)));
+            }
+        }
+        Action::Cut => match selected_row(state) {
+            Some(row) if row.kind != RowKind::Collection => {
+                state.notice = Some(format!("{} cut: select a folder and press p", row.name));
+                state.sidebar.cut = Some(row.key);
+            }
+            _ => state.notice = Some("select a folder or request to move".into()),
+        },
+        Action::Paste => return paste(state),
+        Action::MoveUp | Action::MoveDown => {
+            return reorder(state, matches!(action, Action::MoveUp));
+        }
+        _ => {}
+    }
+
+    Vec::new()
+}
+
+fn select(state: &mut State, action: &Action) {
+    let rows = visible(state);
+
+    if rows.is_empty() {
+        return;
+    }
+
+    let current = state
+        .sidebar
+        .selected
+        .as_ref()
+        .and_then(|k| rows.iter().position(|r| r.key == *k));
+    let index = match (action, current) {
+        (Action::Top, _) | (_, None) => 0,
+        (Action::Up, Some(i)) => i.saturating_sub(1),
+        (Action::Down, Some(i)) => (i + 1).min(rows.len() - 1),
+        _ => rows.len() - 1,
+    };
+
+    state.sidebar.selected = rows.get(index).map(|r| r.key.clone());
+}
+
+/// opens a request into the editor, or expands a folder; Enter also
+/// collapses an expanded one
+fn open(state: &mut State, toggle: bool) {
+    let Some(row) = selected_row(state) else {
+        return;
+    };
+
+    match row.kind {
+        RowKind::Request(_) => {
+            let same = state.open.as_ref().is_some_and(|o| o.key == row.key);
+
+            if same {
+                return;
+            }
+
+            if state.is_dirty() {
+                let name = state
+                    .open
+                    .as_ref()
+                    .map_or("", |o| o.name.as_str())
+                    .to_owned();
+
+                state.popup = Some(Popup::confirm(
+                    format!("Discard the unsaved changes to {name}?"),
+                    Pending::Open(row.key),
+                ));
+            } else {
+                state.load_request(&row.key);
+            }
+        }
+        RowKind::Folder | RowKind::Collection => {
+            if row.expanded && toggle {
+                state.sidebar.expanded.remove(&row.key);
+            } else {
+                state.sidebar.expanded.insert(row.key);
+            }
+        }
+    }
+}
+
+fn close(state: &mut State) {
+    let Some(row) = selected_row(state) else {
+        return;
+    };
+
+    if row.expanded {
+        state.sidebar.expanded.remove(&row.key);
+    } else if let Some(parent) = row.key.parent() {
+        state.sidebar.selected = Some(parent);
+    }
+}
+
+fn paste(state: &mut State) -> Vec<Command> {
+    let Some(cut) = state.sidebar.cut.clone() else {
+        state.notice = Some("nothing cut: press x on a folder or request first".into());
+
+        return Vec::new();
+    };
+
+    let Some(target) = target_folder(state) else {
+        return Vec::new();
+    };
+
+    if target.collection != cut.collection {
+        state.notice = Some("requests move only within their collection".into());
+
+        return Vec::new();
+    }
+
+    if target.is_within(&cut) {
+        state.notice = Some("a folder cannot move into itself".into());
+
+        return Vec::new();
+    }
+
+    state.sidebar.cut = None;
+
+    vec![Command::Store {
+        collection: cut.collection.clone(),
+        change: Change::Move {
+            path: cut.path,
+            parent: target.path,
+        },
+    }]
+}
+
+fn reorder(state: &mut State, up: bool) -> Vec<Command> {
+    let Some(row) = selected_row(state) else {
+        return Vec::new();
+    };
+
+    let Some(parent) = row.key.parent() else {
+        return Vec::new();
+    };
+
+    let Some(workspace) = state.workspace(&row.key.collection) else {
+        return Vec::new();
+    };
+
+    let siblings = if parent.path.is_empty() {
+        Some(&workspace.collection.items)
+    } else {
+        match workspace.collection.item(&parent.path) {
+            Some(Item::Folder(folder)) => Some(&folder.items),
+            _ => None,
+        }
+    };
+    let Some(siblings) = siblings else {
+        return Vec::new();
+    };
+
+    let slug = row.key.path.last().map_or("", String::as_str);
+    let Some(index) = siblings.iter().position(|i| i.slug() == slug) else {
+        return Vec::new();
+    };
+
+    let target = if up {
+        index.checked_sub(1)
+    } else {
+        Some(index + 1).filter(|i| *i < siblings.len())
+    };
+
+    target.map_or_else(Vec::new, |index| {
+        vec![Command::Store {
+            collection: row.key.collection.clone(),
+            change: Change::Reorder {
+                path: row.key.path.clone(),
+                index,
+            },
+        }]
+    })
+}

@@ -142,6 +142,12 @@ impl Registry {
     /// # Errors
     /// when the registry cannot be read or written
     pub fn register(&self, path: &Path, trusted: bool) -> Result<Entry, StoreError> {
+        // a known collection needs no lock and no write, so starting curst
+        // leaves the file alone and works with a read-only data folder
+        if let Some(entry) = self.find(path)? {
+            return Ok(entry);
+        }
+
         let path = canonical(path);
         let id = ids::local_id()?;
 
@@ -229,11 +235,16 @@ mod tests {
         assert_eq!(registry.entries().unwrap(), Vec::new());
 
         let first = registry.register(&collection, true).unwrap();
+        let written = fs::metadata(&registry.file).unwrap().modified().unwrap();
         let spelled = collection.join("..").join("c");
         let again = registry.register(&spelled, false).unwrap();
 
         assert_eq!(first, again);
         assert!(again.trusted);
+        assert_eq!(
+            fs::metadata(&registry.file).unwrap().modified().unwrap(),
+            written
+        );
         assert_eq!(first.path, fs::canonicalize(&collection).unwrap());
         assert_eq!(registry.entries().unwrap().len(), 1);
         assert_eq!(registry.find(&spelled).unwrap(), Some(first));

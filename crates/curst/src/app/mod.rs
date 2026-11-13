@@ -1,23 +1,37 @@
 mod editor;
 mod keys;
+mod popup;
+mod request;
+mod sidebar;
 mod view_model;
+mod workspace;
 
 use std::cell::Cell;
+use std::fmt::Write;
 use std::path::PathBuf;
 
 use curst_core::http::{HttpError, Response};
-use curst_core::model::{Method, Request};
+use curst_core::model::{EnvId, Environment, LocalId, Method, Request, Variable};
+use curst_core::vars::{Resolution, Scopes, resolve_request};
 use ratatui::crossterm::event::KeyEvent;
 use ratatui_textarea::TextArea;
 
 pub(crate) use editor::{AuthEditor, AuthKind, BodyEditor, BodyField, BodyKind, Column, Table};
 pub(crate) use keys::action_for;
-pub(crate) use view_model::{ResponseView, skip_columns};
+pub(crate) use popup::{Pending, Popup, Purpose, VarTab};
+pub(crate) use view_model::{ResponseView, display, skip_columns};
+pub(crate) use workspace::{NodeKey, RowKind, Sidebar, Workspace, rows};
 
-use editor::{show_cursor, single_line, text_of};
+#[cfg(test)]
+pub(crate) use workspace::tests::sample;
+
+use editor::single_line;
+
+const URL_PLACEHOLDER: &str = "https://example.com/api, then Enter to send";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum Focus {
+    Sidebar,
     Method,
     #[default]
     Url,
@@ -26,23 +40,13 @@ pub(crate) enum Focus {
 }
 
 impl Focus {
-    fn next(self) -> Self {
-        match self {
-            Self::Method => Self::Url,
-            Self::Url => Self::Request,
-            Self::Request => Self::Response,
-            Self::Response => Self::Method,
-        }
-    }
-
-    fn previous(self) -> Self {
-        match self {
-            Self::Method => Self::Response,
-            Self::Url => Self::Method,
-            Self::Request => Self::Url,
-            Self::Response => Self::Request,
-        }
-    }
+    const ORDER: [Self; 5] = [
+        Self::Sidebar,
+        Self::Method,
+        Self::Url,
+        Self::Request,
+        Self::Response,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -106,6 +110,16 @@ pub(crate) enum Outcome {
     Error(String),
 }
 
+/// the saved request the editor holds
+#[derive(Debug)]
+pub(crate) struct OpenRequest {
+    pub(crate) key: NodeKey,
+    pub(crate) name: String,
+
+    /// the editor's request right after loading or saving
+    baseline: Request,
+}
+
 #[derive(Debug)]
 pub(crate) struct State {
     pub(crate) should_quit: bool,
@@ -132,8 +146,12 @@ pub(crate) struct State {
     /// view so sideways scrolling stops at the longest line
     pub(crate) response_width: Cell<usize>,
     pub(crate) in_flight: Option<u64>,
-    pub(crate) save_prompt: Option<TextArea<'static>>,
     pub(crate) notice: Option<String>,
+    pub(crate) collections: Vec<Workspace>,
+    pub(crate) globals: Vec<Variable>,
+    pub(crate) sidebar: Sidebar,
+    pub(crate) open: Option<OpenRequest>,
+    pub(crate) popup: Option<Popup>,
     next_id: u64,
 }
 
@@ -143,7 +161,7 @@ impl Default for State {
             should_quit: false,
             focus: Focus::default(),
             method: Method::default(),
-            url: single_line("", "https://example.com/api, then Enter to send"),
+            url: single_line("", URL_PLACEHOLDER),
             request_tab: RequestTab::default(),
             params: Table::default(),
             headers: Table::default(),
@@ -156,46 +174,36 @@ impl Default for State {
             response_height: Cell::new(PAGE),
             response_width: Cell::new(0),
             in_flight: None,
-            save_prompt: None,
             notice: None,
+            collections: Vec::new(),
+            globals: Vec::new(),
+            sidebar: Sidebar::default(),
+            open: None,
+            popup: None,
             next_id: 0,
         }
     }
 }
 
 impl State {
-    /// the table shown by the request pane, if the current tab has one
-    pub(crate) fn active_table(&mut self) -> Option<&mut Table> {
-        match self.request_tab {
-            RequestTab::Params => Some(&mut self.params),
-            RequestTab::Headers => Some(&mut self.headers),
-            RequestTab::Body if self.body.kind == BodyKind::Form => Some(&mut self.body.form),
-            RequestTab::Body | RequestTab::Auth => None,
-        }
+    pub(crate) fn workspace(&self, id: &LocalId) -> Option<&Workspace> {
+        self.collections.iter().find(|w| w.id == *id)
     }
 
-    /// whether keys go to a text field in the request pane
-    pub(crate) fn request_typing(&self) -> bool {
-        match self.request_tab {
-            RequestTab::Params => self.params.editing.is_some(),
-            RequestTab::Headers => self.headers.editing.is_some(),
-            RequestTab::Body if self.body.kind == BodyKind::Form => {
-                self.body.form.editing.is_some()
-            }
-            RequestTab::Body => self.body.typing.is_some(),
-            RequestTab::Auth => self.auth.typing,
-        }
+    fn workspace_mut(&mut self, id: &LocalId) -> Option<&mut Workspace> {
+        self.collections.iter_mut().find(|w| w.id == *id)
     }
 
-    pub(crate) fn request(&self) -> Request {
-        Request {
-            method: self.method,
-            url: text_of(&self.url).trim().to_owned(),
-            params: self.params.pairs(),
-            headers: self.headers.pairs(),
-            body: self.body.body(),
-            auth: self.auth.auth(),
-        }
+    /// the collection whose variables and environment apply: the open
+    /// request's, otherwise the one selected in the sidebar
+    pub(crate) fn current_workspace(&self) -> Option<&Workspace> {
+        let key = self
+            .open
+            .as_ref()
+            .map(|o| &o.key)
+            .or(self.sidebar.selected.as_ref())?;
+
+        self.workspace(&key.collection)
     }
 
     fn response_line_count(&self) -> usize {
@@ -220,43 +228,6 @@ impl State {
         self.scroll = 0;
         self.column = 0;
     }
-
-    fn stop_editing(&mut self) {
-        self.params.commit();
-        self.headers.commit();
-        self.body.form.commit();
-        self.body.typing = None;
-        self.auth.typing = false;
-    }
-
-    fn sync_cursors(&mut self) {
-        let request = self.focus == Focus::Request;
-
-        show_cursor(&mut self.url, self.focus == Focus::Url);
-
-        let body = request && self.request_tab == RequestTab::Body;
-
-        show_cursor(
-            &mut self.body.text,
-            body && self.body.typing == Some(BodyField::Text),
-        );
-        show_cursor(
-            &mut self.body.content_type,
-            body && self.body.typing == Some(BodyField::ContentType),
-        );
-
-        let typing = request && self.request_tab == RequestTab::Auth && self.auth.typing;
-        let selected = self.auth.selected;
-        let (username, password, token) = match self.auth.kind {
-            AuthKind::None => (false, false, false),
-            AuthKind::Basic => (selected == 0, selected == 1, false),
-            AuthKind::Bearer => (false, false, selected == 0),
-        };
-
-        show_cursor(&mut self.auth.username, typing && username);
-        show_cursor(&mut self.auth.password, typing && password);
-        show_cursor(&mut self.auth.token, typing && token);
-    }
 }
 
 #[derive(Debug)]
@@ -264,6 +235,7 @@ pub(crate) enum Action {
     Quit,
     Send,
     Cancel,
+    Save,
     FocusNext,
     FocusPrevious,
     NextTab,
@@ -288,12 +260,39 @@ pub(crate) enum Action {
     CycleKind,
     Type(KeyEvent),
     OpenSave,
-    ConfirmSave,
+    NewRequest,
+    NewFolder,
+    NewCollection,
+    Rename,
+    DeleteItem,
+    Cut,
+    Paste,
+    MoveUp,
+    MoveDown,
+    Environments,
+    EditVariables,
+    NewEnvironment,
+    RenameEnvironment,
+    DeleteEnvironment,
+    ClosePopup,
+    ConfirmPopup,
     Responded {
         id: u64,
         result: Box<Result<ResponseView, HttpError>>,
     },
     Saved(Result<PathBuf, String>),
+    Loaded {
+        collections: Vec<Workspace>,
+        globals: Vec<Variable>,
+        problems: Vec<String>,
+    },
+    Stored {
+        collection: LocalId,
+        result: Result<Box<Stored>, String>,
+    },
+    CollectionAdded(Result<Box<Workspace>, String>),
+    GlobalsSaved(Result<Vec<Variable>, String>),
+    Notice(String),
 }
 
 impl Action {
@@ -307,11 +306,90 @@ impl Action {
     }
 }
 
+/// a collection after a change was written, reloaded from disk
+#[derive(Debug, Default)]
+pub(crate) struct Stored {
+    /// the collection, `None` once it is deleted
+    pub(crate) workspace: Option<Workspace>,
+
+    /// an item that was renamed or moved, from where to where
+    pub(crate) moved: Option<(NodeKey, NodeKey)>,
+
+    /// a new item, to select in the sidebar
+    pub(crate) created: Option<NodeKey>,
+
+    /// where the editor's request was just saved, and what was written;
+    /// keys typed since then still count as unsaved
+    pub(crate) saved: Option<(NodeKey, Request)>,
+
+    /// files that could not be read
+    pub(crate) problems: Vec<String>,
+}
+
+/// a change to one collection, run by the runtime
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Change {
+    CreateRequest {
+        parent: Vec<String>,
+        name: String,
+        request: Request,
+
+        /// whether the editor now holds this request
+        open: bool,
+    },
+    SaveRequest {
+        path: Vec<String>,
+        request: Request,
+    },
+    CreateFolder {
+        parent: Vec<String>,
+        name: String,
+    },
+    Rename {
+        path: Vec<String>,
+        name: String,
+    },
+    Move {
+        path: Vec<String>,
+        parent: Vec<String>,
+    },
+    Reorder {
+        path: Vec<String>,
+        index: usize,
+    },
+    Delete {
+        path: Vec<String>,
+    },
+    RenameCollection(String),
+    DeleteCollection,
+    SaveVariables(Vec<Variable>),
+    CreateEnvironment(String),
+    SaveEnvironment(Environment),
+    RenameEnvironment {
+        id: EnvId,
+        name: String,
+    },
+    DeleteEnvironment(EnvId),
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Command {
-    Send { id: u64, request: Request },
+    Send {
+        id: u64,
+        request: Request,
+    },
     Cancel,
     SaveBody(PathBuf),
+    Store {
+        collection: LocalId,
+        change: Change,
+    },
+    CreateCollection(String),
+    SaveGlobals(Vec<Variable>),
+    SetActiveEnvironment {
+        collection: LocalId,
+        environment: Option<EnvId>,
+    },
 }
 
 const PAGE: usize = 10;
@@ -319,12 +397,26 @@ const PAGE: usize = 10;
 /// columns moved by one sideways scroll
 const PAN: usize = 8;
 
+const NO_COLLECTION: &str = "create a collection first: press c in the sidebar";
+
 pub(crate) fn update(state: &mut State, action: Action) -> Vec<Command> {
-    if !matches!(action, Action::Responded { .. }) {
+    let background = matches!(
+        action,
+        Action::Responded { .. }
+            | Action::Loaded { .. }
+            | Action::Stored { .. }
+            | Action::CollectionAdded(_)
+            | Action::GlobalsSaved(_)
+    );
+
+    if !background {
         state.notice = None;
     }
 
-    let commands = apply(state, action);
+    let commands = match popup::apply(state, action) {
+        Ok(commands) => commands,
+        Err(action) => apply(state, action),
+    };
 
     state.sync_cursors();
 
@@ -333,8 +425,9 @@ pub(crate) fn update(state: &mut State, action: Action) -> Vec<Command> {
 
 fn apply(state: &mut State, action: Action) -> Vec<Command> {
     match action {
-        Action::Quit => state.should_quit = true,
+        Action::Quit => quit(state),
         Action::Send => return send(state),
+        Action::Save => return save(state),
         Action::Cancel => {
             if state.in_flight.take().is_some() {
                 state.notice = Some("request cancelled".into());
@@ -344,12 +437,11 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         }
         Action::FocusNext | Action::FocusPrevious => {
             state.stop_editing();
-
-            state.focus = if matches!(action, Action::FocusNext) {
-                state.focus.next()
-            } else {
-                state.focus.previous()
-            };
+            state.focus = step(
+                &Focus::ORDER,
+                state.focus,
+                matches!(action, Action::FocusNext),
+            );
         }
         Action::NextTab | Action::PreviousTab => {
             let forward = matches!(action, Action::NextTab);
@@ -362,11 +454,22 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
                     state.response_tab = step(&ResponseTab::ALL, state.response_tab, forward);
                     state.reset_scroll();
                 }
-                Focus::Method | Focus::Url => {}
+                Focus::Sidebar | Focus::Method | Focus::Url => {}
             }
         }
         Action::NextMethod => state.method = state.method.next(),
         Action::PreviousMethod => state.method = state.method.previous(),
+        Action::Up
+        | Action::Down
+        | Action::Top
+        | Action::Bottom
+        | Action::Left
+        | Action::Right
+        | Action::Edit
+            if state.focus == Focus::Sidebar =>
+        {
+            return sidebar::apply(state, &action);
+        }
         Action::Up
         | Action::Down
         | Action::PageUp
@@ -374,44 +477,49 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         | Action::Top
         | Action::Bottom
         | Action::Left
-        | Action::Right => navigate(state, &action),
-        Action::Edit => edit(state),
-        Action::EditContentType => {
-            if state.request_tab == RequestTab::Body && state.body.kind == BodyKind::Text {
-                state.body.typing = Some(BodyField::ContentType);
-            }
-        }
-        Action::StopEdit => {
-            if state.save_prompt.take().is_none() {
-                state.stop_editing();
-            }
-        }
-        Action::NextCell => {
-            if state.body.typing == Some(BodyField::ContentType) {
-                state.body.typing = Some(BodyField::Text);
-            } else if state.request_tab == RequestTab::Auth {
-                state.auth.select_next();
-            } else if let Some(table) = state.active_table() {
-                table.next_cell();
-            }
-        }
-        Action::AddRow | Action::DeleteRow | Action::ToggleRow => change_row(state, &action),
-        Action::CycleKind => match state.request_tab {
-            RequestTab::Body => state.body.kind = state.body.kind.next(),
-            RequestTab::Auth => state.auth.cycle_kind(),
-            RequestTab::Params | RequestTab::Headers => {}
-        },
-        Action::Type(key) => type_key(state, key),
+        | Action::Right => request::navigate(state, &action),
+        Action::Edit => request::edit(state),
+        Action::EditContentType
+        | Action::StopEdit
+        | Action::NextCell
+        | Action::AddRow
+        | Action::DeleteRow
+        | Action::ToggleRow
+        | Action::CycleKind => request::change(state, &action),
+        Action::Type(key) => request::type_key(state, key),
         Action::OpenSave => open_save(state),
-        Action::ConfirmSave => {
-            if let Some(prompt) = &state.save_prompt {
-                let path = text_of(prompt).trim().to_owned();
+        Action::NewRequest
+        | Action::NewFolder
+        | Action::NewCollection
+        | Action::Rename
+        | Action::DeleteItem
+        | Action::Cut
+        | Action::Paste
+        | Action::MoveUp
+        | Action::MoveDown => return sidebar::apply(state, &action),
+        Action::Environments => open_environments(state),
+        Action::Responded { .. }
+        | Action::Saved(_)
+        | Action::Loaded { .. }
+        | Action::Stored { .. }
+        | Action::CollectionAdded(_)
+        | Action::GlobalsSaved(_)
+        | Action::Notice(_) => report(state, action),
+        Action::EditVariables
+        | Action::NewEnvironment
+        | Action::RenameEnvironment
+        | Action::DeleteEnvironment
+        | Action::ClosePopup
+        | Action::ConfirmPopup => {}
+    }
 
-                if !path.is_empty() {
-                    return vec![Command::SaveBody(PathBuf::from(path))];
-                }
-            }
-        }
+    Vec::new()
+}
+
+/// applies what the runtime reports back: responses, saved files and
+/// store changes
+fn report(state: &mut State, action: Action) {
+    match action {
         Action::Responded { id, result } => {
             if state.in_flight == Some(id) {
                 state.in_flight = None;
@@ -422,27 +530,55 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
                 });
             }
         }
-        Action::Saved(result) => match result {
-            Ok(path) => {
-                state.save_prompt = None;
-                state.notice = Some(format!("saved to {}", path.display()));
+        Action::Saved(result) => saved_body(state, result),
+        Action::Loaded {
+            collections,
+            globals,
+            problems,
+        } => loaded(state, collections, globals, &problems),
+        Action::Stored { collection, result } => match result {
+            Ok(stored) => stored_change(state, &collection, *stored),
+            Err(message) => state.notice = Some(message),
+        },
+        Action::CollectionAdded(result) => match result {
+            Ok(workspace) => {
+                let key = NodeKey::root(workspace.id.clone());
+
+                state.collections.push(*workspace);
+                state.sidebar.expanded.insert(key.clone());
+                state.sidebar.selected = Some(key);
             }
             Err(message) => state.notice = Some(message),
         },
+        Action::GlobalsSaved(result) => match result {
+            Ok(globals) => state.globals = globals,
+            Err(message) => state.notice = Some(message),
+        },
+        Action::Notice(message) => state.notice = Some(message),
+        _ => {}
     }
-
-    Vec::new()
 }
 
-fn change_row(state: &mut State, action: &Action) {
-    let Some(table) = state.active_table() else {
-        return;
-    };
+fn quit(state: &mut State) {
+    let asked = matches!(
+        state.popup,
+        Some(Popup::Confirm {
+            pending: Pending::Quit(_),
+            ..
+        })
+    );
+    let variables = matches!(&state.popup, Some(Popup::Variables(editor)) if editor.is_changed());
 
-    match action {
-        Action::AddRow => table.add_row(),
-        Action::DeleteRow => table.delete_selected(),
-        _ => table.toggle_selected(),
+    if (state.is_dirty() || variables) && !asked {
+        // on no, the pop-up that was open comes back
+        let previous = state.popup.take().map(Box::new);
+
+        state.popup = Some(Popup::confirm(
+            "Quit without saving your changes?",
+            Pending::Quit(previous),
+        ));
+    } else {
+        state.should_quit = true;
     }
 }
 
@@ -458,6 +594,20 @@ fn send(state: &mut State) -> Vec<Command> {
         return Vec::new();
     }
 
+    let workspace = state.current_workspace();
+    let scopes = Scopes {
+        environment: workspace.map_or(&[], Workspace::environment_variables),
+        collection: workspace.map_or(&[], |w| w.collection.variables.as_slice()),
+        global: &state.globals,
+    };
+    let (resolved, resolution) = resolve_request(&request, &scopes);
+
+    if !resolution.is_complete() {
+        state.notice = Some(not_sent(workspace, &resolution));
+
+        return Vec::new();
+    }
+
     let mut commands = Vec::new();
 
     if state.in_flight.is_some() {
@@ -469,101 +619,255 @@ fn send(state: &mut State) -> Vec<Command> {
 
     commands.push(Command::Send {
         id: state.next_id,
-        request,
+        request: resolved,
     });
 
     commands
 }
 
-fn navigate(state: &mut State, action: &Action) {
-    match state.focus {
-        Focus::Response => {
-            let page = state.response_height.get().max(1);
-            let last = state.response_line_count().saturating_sub(page);
-            let last_column = state.last_column();
+/// why a request was not sent, naming every variable that blocks it
+fn not_sent(workspace: Option<&Workspace>, resolution: &Resolution) -> String {
+    let mut message = String::from("not sent:");
 
-            match action {
-                Action::Up => state.scroll = state.scroll.saturating_sub(1).min(last),
-                Action::Down => state.scroll = (state.scroll + 1).min(last),
-                Action::PageUp => state.scroll = state.scroll.saturating_sub(page).min(last),
-                Action::PageDown => state.scroll = (state.scroll + page).min(last),
-                Action::Top => state.scroll = 0,
-                Action::Bottom => state.scroll = last,
-                Action::Left => {
-                    state.column = state.column.saturating_sub(PAN).min(last_column);
-                }
-                Action::Right => state.column = (state.column + PAN).min(last_column),
-                _ => {}
-            }
-        }
-        Focus::Request if state.request_tab == RequestTab::Auth => match action {
-            Action::Up => state.auth.select_previous(),
-            Action::Down => state.auth.select_next(),
-            _ => {}
-        },
-        Focus::Request => {
-            if let Some(table) = state.active_table() {
-                match action {
-                    Action::Up => table.select_previous(),
-                    Action::Down => table.select_next(),
-                    _ => {}
-                }
-            }
-        }
-        Focus::Method | Focus::Url => {}
+    if !resolution.missing.is_empty() {
+        let names: Vec<String> = resolution
+            .missing
+            .iter()
+            .map(|n| format!("{{{{{n}}}}}"))
+            .collect();
+        let place = workspace
+            .and_then(Workspace::environment_name)
+            .map_or_else(String::new, |env| format!(" in {env}"));
+
+        let _ = write!(message, " {} not defined{place}", names.join(", "));
     }
+
+    if !resolution.cyclic.is_empty() {
+        let names: Vec<String> = resolution.cyclic.iter().map(ToString::to_string).collect();
+
+        let _ = write!(message, " {} refer to themselves", names.join(", "));
+    }
+
+    message
 }
 
-fn edit(state: &mut State) {
-    match state.request_tab {
-        RequestTab::Body if state.body.kind == BodyKind::None => {
-            state.notice = Some("choose a body type first, press t".into());
-        }
-        RequestTab::Body if state.body.kind != BodyKind::Form => {
-            state.body.typing = Some(BodyField::Text);
-        }
-        RequestTab::Auth => state.auth.typing = state.auth.kind != AuthKind::None,
-        _ => {
-            if let Some(table) = state.active_table() {
-                if table.rows.is_empty() {
-                    table.add_row();
-                } else {
-                    table.edit(Column::Name);
-                }
-            }
-        }
+fn save(state: &mut State) -> Vec<Command> {
+    state.stop_editing();
+
+    if let Some(open) = &state.open {
+        return vec![Command::Store {
+            collection: open.key.collection.clone(),
+            change: Change::SaveRequest {
+                path: open.key.path.clone(),
+                request: state.request(),
+            },
+        }];
     }
+
+    match sidebar::target_folder(state) {
+        Some(parent) => {
+            let name = suggested_name(state);
+
+            state.popup = Some(Popup::prompt(Purpose::SaveAs(parent), &name));
+        }
+        None => state.notice = Some(NO_COLLECTION.into()),
+    }
+
+    Vec::new()
 }
 
-fn type_key(state: &mut State, key: KeyEvent) {
-    if let Some(prompt) = &mut state.save_prompt {
-        prompt.input(key);
+/// a starting name for a new request: the last plain part of its URL path
+fn suggested_name(state: &State) -> String {
+    let url = state.request().url;
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+
+    path.rsplit('/')
+        .find(|part| !part.is_empty() && !part.contains("{{") && !part.contains(':'))
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn open_environments(state: &mut State) {
+    let Some(workspace) = state.current_workspace() else {
+        state.notice = Some(NO_COLLECTION.into());
 
         return;
+    };
+
+    let selected = workspace.active_environment.as_ref().map_or(0, |id| {
+        workspace
+            .collection
+            .environments
+            .iter()
+            .position(|e| e.id == *id)
+            .map_or(0, |i| i + 1)
+    });
+
+    state.popup = Some(Popup::Environments {
+        collection: workspace.id.clone(),
+        selected,
+    });
+}
+
+fn saved_body(state: &mut State, result: Result<PathBuf, String>) {
+    match result {
+        Ok(path) => {
+            state.popup = None;
+            state.notice = Some(format!("saved to {}", path.display()));
+        }
+        Err(message) => state.notice = Some(message),
+    }
+}
+
+fn loaded(
+    state: &mut State,
+    collections: Vec<Workspace>,
+    globals: Vec<Variable>,
+    problems: &[String],
+) {
+    for workspace in &collections {
+        state
+            .sidebar
+            .expanded
+            .insert(NodeKey::root(workspace.id.clone()));
     }
 
-    match state.focus {
-        Focus::Url => {
-            state.url.input(key);
+    if state.sidebar.selected.is_none() {
+        state.sidebar.selected = collections.first().map(|w| NodeKey::root(w.id.clone()));
+    }
+
+    state.collections = collections;
+    state.globals = globals;
+
+    if let Some(first) = problems.first() {
+        state.notice = Some(match problems.len() {
+            1 => format!("skipped {first}"),
+            n => format!("skipped {first} and {} more", n - 1),
+        });
+    }
+}
+
+fn stored_change(state: &mut State, collection: &LocalId, stored: Stored) {
+    let Stored {
+        workspace,
+        moved,
+        created,
+        saved,
+        problems,
+    } = stored;
+
+    if let Some(workspace) = workspace {
+        match state.workspace_mut(collection) {
+            Some(slot) => *slot = workspace,
+            None => state.collections.push(workspace),
         }
-        Focus::Request => match state.request_tab {
-            RequestTab::Body if state.body.kind != BodyKind::Form => {
-                if let Some(field) = state.body.field() {
-                    field.input(key);
-                }
-            }
-            RequestTab::Auth => {
-                if let Some(field) = state.auth.selected_field() {
-                    field.input(key);
-                }
-            }
-            _ => {
-                if let Some(table) = state.active_table() {
-                    table.input(key);
-                }
-            }
-        },
-        Focus::Method | Focus::Response => {}
+    } else {
+        state.collections.retain(|w| w.id != *collection);
+        forget(state, &NodeKey::root(collection.clone()));
+    }
+
+    if let Some((from, to)) = moved {
+        state.sidebar.rebase(&from, &to);
+
+        if let Some(open) = &mut state.open {
+            open.key = open.key.rebased(&from, &to);
+        }
+    }
+
+    forget_missing(state);
+
+    if let Some(key) = created {
+        if let Some(parent) = key.parent() {
+            state.sidebar.expanded.insert(parent);
+        }
+
+        state.sidebar.selected = Some(key);
+    }
+
+    if let Some((key, written)) = saved {
+        state.notice = Some("saved".into());
+        state.open = Some(OpenRequest {
+            key,
+            name: String::new(),
+            baseline: written,
+        });
+    }
+
+    // a reload never touches the editor, only the name shown for it
+    let name = state.open.as_ref().and_then(|open| {
+        state
+            .workspace(&open.key.collection)
+            .and_then(|w| w.collection.item(&open.key.path))
+            .map(|item| item.name().to_owned())
+    });
+
+    if let (Some(open), Some(name)) = (&mut state.open, name) {
+        open.name = name;
+    }
+
+    if let Some(first) = problems.first() {
+        state.notice = Some(format!("skipped {first}"));
+    }
+}
+
+/// drops keys inside `gone`; an open request stays in the editor, unsaved
+fn forget(state: &mut State, gone: &NodeKey) {
+    if state.open.as_ref().is_some_and(|o| o.key.is_within(gone)) {
+        state.open = None;
+    }
+
+    if state
+        .sidebar
+        .cut
+        .as_ref()
+        .is_some_and(|k| k.is_within(gone))
+    {
+        state.sidebar.cut = None;
+    }
+
+    if state
+        .sidebar
+        .selected
+        .as_ref()
+        .is_some_and(|k| k.is_within(gone))
+    {
+        state.sidebar.selected = gone
+            .parent()
+            .filter(|p| state.workspace(&p.collection).is_some())
+            .or_else(|| {
+                state
+                    .collections
+                    .first()
+                    .map(|w| NodeKey::root(w.id.clone()))
+            });
+    }
+}
+
+/// after a reload, forgets keys whose item no longer exists
+fn forget_missing(state: &mut State) {
+    let exists = |state: &State, key: &NodeKey| {
+        state
+            .workspace(&key.collection)
+            .is_some_and(|w| key.path.is_empty() || w.collection.item(&key.path).is_some())
+    };
+    let kept = [
+        state.open.as_ref().map(|o| o.key.clone()),
+        state.sidebar.selected.clone(),
+        state.sidebar.cut.clone(),
+    ];
+
+    for key in kept.into_iter().flatten() {
+        if !exists(state, &key) {
+            forget(state, &key);
+        }
+    }
+
+    let expanded: Vec<NodeKey> = state.sidebar.expanded.iter().cloned().collect();
+
+    for key in expanded {
+        if !exists(state, &key) {
+            state.sidebar.expanded.remove(&key);
+        }
     }
 }
 
@@ -576,7 +880,7 @@ fn open_save(state: &mut State) {
 
     let name = format!("response.{}", view.extension());
 
-    state.save_prompt = Some(single_line(&name, "file name"));
+    state.popup = Some(Popup::prompt(Purpose::SaveBody, &name));
 }
 
 #[cfg(test)]

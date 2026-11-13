@@ -21,6 +21,7 @@ fn sent_state(url: &str) -> (State, u64) {
     let Some(Command::Send { id, .. }) = commands.last() else {
         panic!("no send");
     };
+
     (state, *id)
 }
 
@@ -190,4 +191,91 @@ fn wide_characters_can_be_scrolled_to_the_end() {
     }
 
     assert!(render(&state, 80, 14).contains("END\""));
+}
+
+mod collections {
+    use curst_core::model::EnvId;
+
+    use super::*;
+    use crate::app::sample;
+    use crate::app::{Focus, NodeKey, Popup};
+
+    fn with_collection() -> State {
+        let mut state = State::default();
+        let mut workspace = sample();
+
+        workspace.active_environment = EnvId::new("e1");
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![workspace],
+                globals: vec![],
+                problems: vec![],
+            },
+        );
+        state.focus = Focus::Sidebar;
+
+        state
+    }
+
+    fn key(path: &[&str]) -> NodeKey {
+        NodeKey {
+            collection: curst_core::model::LocalId::new("c1").unwrap(),
+            path: path.iter().map(|p| (*p).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn sidebar_with_an_open_changed_request() {
+        let mut state = with_collection();
+
+        state.sidebar.expanded.insert(key(&["users"]));
+        state.sidebar.selected = Some(key(&["create"]));
+        update(&mut state, Action::Edit);
+        state.url.insert_str("http://localhost/pets");
+        state.sidebar.cut = Some(key(&["users", "list"]));
+
+        insta::assert_snapshot!(render(&state, 100, 12));
+        assert!(hints(&state).contains(&("Ctrl+S", "save")));
+    }
+
+    #[test]
+    fn environment_picker() {
+        let mut state = with_collection();
+
+        update(&mut state, Action::Environments);
+
+        insta::assert_snapshot!(render(&state, 80, 12));
+        assert!(hints(&state).contains(&("v", "variables")));
+    }
+
+    #[test]
+    fn variable_editor_and_confirm() {
+        let mut state = with_collection();
+
+        update(&mut state, Action::Environments);
+        update(&mut state, Action::Down);
+        update(&mut state, Action::EditVariables);
+
+        insta::assert_snapshot!("variable_editor", render(&state, 80, 12));
+
+        update(&mut state, Action::DeleteRow);
+        update(&mut state, Action::ClosePopup);
+
+        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+        insta::assert_snapshot!("confirm", render(&state, 80, 12));
+    }
+
+    #[test]
+    fn names_from_files_cannot_reach_the_terminal() {
+        let mut state = with_collection();
+
+        state.collections[0].collection.name = "evil\u{1b}]0;owned\u{7}".into();
+
+        let screen = render(&state, 80, 6);
+
+        assert!(!screen.contains('\u{1b}'));
+        assert!(!screen.contains('\u{7}'));
+        assert!(screen.contains("evil␛]0;owned␇"));
+    }
 }

@@ -176,7 +176,7 @@ const MAX_LINE: usize = 2_000;
 /// makes a line safe to draw: control characters are shown as symbols, so
 /// a response cannot send escape sequences to the terminal, and very long
 /// lines are cut
-fn display(line: &str) -> String {
+pub(crate) fn display(line: &str) -> String {
     let mut out = String::with_capacity(line.len().min(MAX_LINE));
 
     for (count, c) in line.chars().enumerate() {

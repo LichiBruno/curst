@@ -16,6 +16,7 @@ unicode-width = "0.2.3"
 
 [dev-dependencies]
 insta = "1.49.0"
+tempfile = "3.27.0"
 
 [lints]
 workspace = true

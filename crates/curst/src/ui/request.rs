@@ -138,7 +138,7 @@ fn row_area(area: Rect, index: usize) -> Option<Rect> {
     })
 }
 
-fn table(table: &Table, focused: bool, empty: &str, frame: &mut Frame, area: Rect) {
+pub(super) fn table(table: &Table, focused: bool, empty: &str, frame: &mut Frame, area: Rect) {
     if table.rows.is_empty() && table.editing.is_none() {
         frame.render_widget(
             Paragraph::new(Span::styled(
