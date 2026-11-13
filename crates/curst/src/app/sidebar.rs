@@ -5,7 +5,7 @@ use curst_core::model::Item;
 
 use super::popup::{Pending, Popup, Purpose};
 use super::workspace::{NodeKey, Row, RowKind, rows};
-use super::{Action, Change, Command, State};
+use super::{Action, Change, Command, Layer, State};
 
 fn visible(state: &State) -> Vec<Row> {
     rows(&state.collections, &state.sidebar.expanded)
@@ -32,7 +32,7 @@ pub(crate) fn target_folder(state: &State) -> Option<NodeKey> {
 }
 
 fn no_collection(state: &mut State) {
-    state.notice = Some("create a collection first: press c in the sidebar".into());
+    state.notice = Some(super::no_collection(state));
 }
 
 pub(crate) fn apply(state: &mut State, action: &Action) -> Vec<Command> {
@@ -99,7 +99,11 @@ pub(crate) fn apply(state: &mut State, action: &Action) -> Vec<Command> {
         }
         Action::Cut => match selected_row(state) {
             Some(row) if row.kind != RowKind::Collection => {
-                state.notice = Some(format!("{} cut: select a folder and press p", row.name));
+                state.notice = Some(format!(
+                    "{} cut: select a folder and press {}",
+                    row.name,
+                    state.key(Layer::Sidebar, "paste")
+                ));
                 state.sidebar.cut = Some(row.key);
             }
             _ => state.notice = Some("select a folder or request to move".into()),
@@ -179,7 +183,10 @@ fn close(state: &mut State) {
 
 fn paste(state: &mut State) -> Vec<Command> {
     let Some(cut) = state.sidebar.cut.clone() else {
-        state.notice = Some("nothing cut: press x on a folder or request first".into());
+        state.notice = Some(format!(
+            "nothing cut: press {} on a folder or request first",
+            state.key(Layer::Sidebar, "cut")
+        ));
 
         return Vec::new();
     };

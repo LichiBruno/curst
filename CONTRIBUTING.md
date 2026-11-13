@@ -1,6 +1,6 @@
 # Contributing to curst
 
-Thanks for helping. This guide covers how the code is organised, the rules CI enforces, and the platform decisions behind the dependencies.
+Thanks for helping. This guide covers how the code is organized, the rules CI enforces, and the platform decisions behind the dependencies.
 
 ## Before you open a pull request
 
@@ -29,7 +29,7 @@ Rules:
 
 - **Dependencies point inward.** `curst` depends on `curst-core`, never the other way round.
 - **The domain is pure.** `model` and `vars` do no I/O: no file paths, no network. Storage, secrets and HTTP sit behind traits (`CollectionStore`, `SecretStore`, `HttpExecutor`). The real implementations are plugged in at `main.rs`, and tests use in-memory fakes. The clipboard trait and `arboard` live in the binary.
-- **One direction of data flow in the TUI.** Key event → `Action` → `update(state, action)` → `view(state)`. `update` is a plain function with no drawing and no I/O, so UI behaviour is unit-testable. Side effects (send a request, save a file) are returned as commands and run outside it.
+- **One direction of data flow in the TUI.** Key event → `Action` → `update(state, action)` → `view(state)`. `update` is a plain function with no drawing and no I/O, so UI behavior is unit-testable. Side effects (send a request, save a file) are returned as commands and run outside it.
 - **Small public surface.** One responsibility per module. Items are private or `pub(crate)` unless another crate needs them.
 
 ## Rust rules

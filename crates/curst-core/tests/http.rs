@@ -300,7 +300,7 @@ fn cancel_stops_a_request_in_flight() {
 
     let cancel = Cancel::new();
     let trigger = cancel.clone();
-    let canceller = thread::spawn(move || {
+    let canceler = thread::spawn(move || {
         thread::sleep(Duration::from_millis(200));
         trigger.cancel();
     });
@@ -309,9 +309,9 @@ fn cancel_stops_a_request_in_flight() {
     let err = CurlExecutor::default()
         .execute(&get(http(&server, "/slow")), &cancel, &RedirectRule::Any)
         .unwrap_err();
-    canceller.join().unwrap();
+    canceler.join().unwrap();
 
-    assert!(matches!(err, HttpError::Cancelled), "{err:?}");
+    assert!(matches!(err, HttpError::Canceled), "{err:?}");
     assert!(started.elapsed() < Duration::from_secs(3));
 }
 

@@ -1,12 +1,33 @@
 //! `config.toml`, the user's settings
 //!
-//! only the secrets backend is kept here so far; other sections are left
-//! as they are when the file is saved
+//! reading never stops over one bad value: it is reported, and the default
+//! takes its place. writes change one value and keep the rest of the file,
+//! comments and layout included
+//!
+//! ```toml
+//! theme = "dark"
+//!
+//! [keys]
+//! preset = "standard"
+//!
+//! [keys.bindings]
+//! "global.send" = "ctrl+r"
+//! "sidebar.delete" = ["d", "delete"]
+//!
+//! [http]
+//! timeout = 30
+//! max_body_mb = 10
+//!
+//! [secrets]
+//! backend = "keychain"
+//! ```
 
 use std::path::Path;
 
+use toml_edit::{DocumentMut, Item, Table, Value};
+
 use super::StoreError;
-use super::fs::{read_optional, write_atomic};
+use super::fs::{read_regular, write_atomic};
 
 /// where secret values are kept
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,74 +48,214 @@ impl Backend {
     }
 }
 
-/// the settings curst reads from `config.toml`
+/// the settings curst reads from `config.toml`; `None` means the default
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Settings {
     /// the chosen secrets backend, `None` until the user picks one
     pub secrets_backend: Option<Backend>,
+
+    /// the theme: a built-in name, or a file in the themes folder
+    pub theme: Option<String>,
+
+    /// the keymap preset, such as `standard` or `vim`
+    pub keys_preset: Option<String>,
+
+    /// keys for actions, as `"layer.action"` and its keys; an empty list
+    /// unbinds the action
+    pub key_bindings: Vec<(String, Vec<String>)>,
+
+    /// seconds a request may take, 0 for no limit
+    pub http_timeout: Option<u64>,
+
+    /// how many megabytes of a response body are kept in memory
+    pub http_max_body_mb: Option<u64>,
 }
 
-fn read_table(path: &Path) -> Result<toml::Table, StoreError> {
-    match read_optional(path)? {
+/// the known top-level keys and sections
+const KNOWN: [&str; 4] = ["theme", "keys", "http", "secrets"];
+
+fn read_document(path: &Path) -> Result<DocumentMut, StoreError> {
+    match read_regular(path)? {
         Some(text) => text
-            .parse::<toml::Table>()
+            .parse::<DocumentMut>()
             .map_err(|e| StoreError::parse(path, e.message())),
-        None => Ok(toml::Table::new()),
+        None => Ok(DocumentMut::new()),
     }
+}
+
+fn string(item: Option<&Item>, what: &str, warnings: &mut Vec<String>) -> Option<String> {
+    let item = item?;
+
+    if let Some(text) = item.as_str() {
+        return Some(text.to_owned());
+    }
+
+    warnings.push(format!("{what} must be text"));
+
+    None
+}
+
+fn number(item: Option<&Item>, what: &str, least: u64, warnings: &mut Vec<String>) -> Option<u64> {
+    let item = item?;
+
+    match item.as_integer().and_then(|n| u64::try_from(n).ok()) {
+        Some(n) if n >= least => Some(n),
+        _ => {
+            warnings.push(format!("{what} must be a whole number of at least {least}"));
+
+            None
+        }
+    }
+}
+
+fn keys(item: &Item) -> Option<Vec<String>> {
+    if let Some(text) = item.as_str() {
+        return Some(vec![text.to_owned()]);
+    }
+
+    item.as_array()?
+        .iter()
+        .map(|v| v.as_str().map(ToOwned::to_owned))
+        .collect()
 }
 
 impl Settings {
-    /// the settings in `path`; a missing file means defaults
+    /// the settings in `path`, and a warning for each value that was not
+    /// used; a missing file means defaults
     ///
     /// # Errors
-    /// when the file cannot be read, is not TOML, or names an unknown
-    /// backend
-    pub fn load(path: &Path) -> Result<Self, StoreError> {
-        let table = read_table(path)?;
-        let backend = table
-            .get("secrets")
-            .and_then(|s| s.get("backend"))
-            .map(|value| match value.as_str() {
-                Some("keychain") => Ok(Backend::Keychain),
-                Some("encrypted-file") => Ok(Backend::EncryptedFile),
-                _ => Err(StoreError::parse(
-                    path,
-                    format!(
-                        "secrets.backend must be \"keychain\" or \"encrypted-file\", not {value}"
-                    ),
-                )),
-            })
-            .transpose()?;
+    /// when the file cannot be read or is not TOML at all
+    pub fn load(path: &Path) -> Result<(Self, Vec<String>), StoreError> {
+        let document = read_document(path)?;
+        let root = document.as_table();
+        let mut warnings = Vec::new();
+        let mut settings = Self::default();
 
-        Ok(Self {
-            secrets_backend: backend,
-        })
-    }
+        for (key, _) in root {
+            if !KNOWN.contains(&key) {
+                warnings.push(format!("unknown setting {key:?}"));
+            }
+        }
 
-    /// writes the settings to `path`, keeping every other section
-    ///
-    /// # Errors
-    /// when the file cannot be read or written
-    pub fn save(&self, path: &Path) -> Result<(), StoreError> {
-        let mut table = read_table(path)?;
-        let secrets = table
-            .entry("secrets")
-            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        settings.theme = string(root.get("theme"), "theme", &mut warnings);
 
-        if let toml::Value::Table(secrets) = secrets {
-            match self.secrets_backend {
-                Some(backend) => {
-                    secrets.insert("backend".into(), backend.as_str().into());
-                }
-                None => {
-                    secrets.remove("backend");
+        let section = |name: &str| root.get(name).and_then(Item::as_table_like);
+
+        if let Some(keys_section) = section("keys") {
+            settings.keys_preset = string(keys_section.get("preset"), "keys.preset", &mut warnings);
+
+            if let Some(bindings) = keys_section.get("bindings").and_then(Item::as_table_like) {
+                for (name, item) in bindings.iter() {
+                    match keys(item) {
+                        Some(list) => settings.key_bindings.push((name.to_owned(), list)),
+                        None => warnings.push(format!(
+                            "keys.bindings.{name} must be a key or a list of keys"
+                        )),
+                    }
                 }
             }
         }
 
-        let text = toml::to_string_pretty(&table).unwrap_or_default();
+        if let Some(http) = section("http") {
+            settings.http_timeout = number(http.get("timeout"), "http.timeout", 0, &mut warnings);
+            settings.http_max_body_mb = number(
+                http.get("max_body_mb"),
+                "http.max_body_mb",
+                1,
+                &mut warnings,
+            );
+        }
 
-        write_atomic(path, text.as_bytes())
+        if let Some(secrets) = section("secrets") {
+            settings.secrets_backend =
+                match string(secrets.get("backend"), "secrets.backend", &mut warnings).as_deref() {
+                    None => None,
+                    Some("keychain") => Some(Backend::Keychain),
+                    Some("encrypted-file") => Some(Backend::EncryptedFile),
+                    Some(other) => {
+                        warnings.push(format!(
+                        "secrets.backend must be \"keychain\" or \"encrypted-file\", not {other:?}"
+                    ));
+
+                        None
+                    }
+                };
+        }
+
+        Ok((settings, warnings))
+    }
+
+    /// sets one value, `None` removes it; everything else in the file stays
+    fn set(path: &Path, keys: &[&str], value: Option<Value>) -> Result<(), StoreError> {
+        let mut document = read_document(path)?;
+        let Some((last, sections)) = keys.split_last() else {
+            return Ok(());
+        };
+
+        let mut table: &mut Table = document.as_table_mut();
+
+        for section in sections {
+            let item = table
+                .entry(section)
+                .or_insert_with(|| Item::Table(Table::new()));
+
+            if !item.is_table() {
+                *item = Item::Table(Table::new());
+            }
+
+            let Some(next) = item.as_table_mut() else {
+                return Ok(());
+            };
+
+            table = next;
+        }
+
+        match (value, table.get_mut(last)) {
+            // replaced in place, so the comments around the old value stay
+            (Some(mut value), Some(item)) if item.is_value() => {
+                if let Some(old) = item.as_value() {
+                    *value.decor_mut() = old.decor().clone();
+                }
+
+                *item = Item::Value(value);
+            }
+            (Some(value), _) => {
+                table.insert(last, Item::Value(value));
+            }
+            (None, _) => {
+                table.remove(last);
+            }
+        }
+
+        write_atomic(path, document.to_string().as_bytes())
+    }
+
+    /// records the secrets backend
+    ///
+    /// # Errors
+    /// when the file cannot be read, parsed or written
+    pub fn set_backend(path: &Path, backend: Option<Backend>) -> Result<(), StoreError> {
+        Self::set(
+            path,
+            &["secrets", "backend"],
+            backend.map(|b| b.as_str().into()),
+        )
+    }
+
+    /// records the theme
+    ///
+    /// # Errors
+    /// when the file cannot be read, parsed or written
+    pub fn set_theme(path: &Path, theme: &str) -> Result<(), StoreError> {
+        Self::set(path, &["theme"], Some(theme.into()))
+    }
+
+    /// records the keymap preset
+    ///
+    /// # Errors
+    /// when the file cannot be read, parsed or written
+    pub fn set_keys_preset(path: &Path, preset: &str) -> Result<(), StoreError> {
+        Self::set(path, &["keys", "preset"], Some(preset.into()))
     }
 }
 
@@ -102,49 +263,140 @@ impl Settings {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_backend_round_trips_and_other_settings_stay() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-
-        assert_eq!(Settings::load(&path).unwrap(), Settings::default());
-
-        std::fs::write(&path, "[theme]\nname = \"dark\"\n").unwrap();
-
-        for backend in [Backend::Keychain, Backend::EncryptedFile] {
-            let settings = Settings {
-                secrets_backend: Some(backend),
-            };
-
-            settings.save(&path).unwrap();
-
-            assert_eq!(Settings::load(&path).unwrap(), settings);
-        }
-
-        Settings::default().save(&path).unwrap();
-
-        let text = std::fs::read_to_string(&path).unwrap();
-
-        assert!(text.contains("[theme]"));
-        assert!(!text.contains("backend"));
-        assert_eq!(Settings::load(&path).unwrap(), Settings::default());
+    fn write(path: &Path, text: &str) {
+        std::fs::write(path, text).unwrap();
     }
 
     #[test]
-    fn bad_settings_are_errors() {
+    fn every_setting_is_read() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
 
-        std::fs::write(&path, "[secrets]\nbackend = \"vault\"\n").unwrap();
+        assert_eq!(
+            Settings::load(&path).unwrap(),
+            (Settings::default(), Vec::new())
+        );
 
-        assert!(matches!(
-            Settings::load(&path),
-            Err(StoreError::Parse { .. })
-        ));
+        write(
+            &path,
+            r#"theme = "light"
 
-        std::fs::write(&path, "[secrets\n").unwrap();
+[keys]
+preset = "vim"
+
+[keys.bindings]
+"global.send" = "ctrl+enter"
+"sidebar.delete" = ["d", "delete"]
+"request.make-secret" = []
+
+[http]
+timeout = 0
+max_body_mb = 50
+
+[secrets]
+backend = "encrypted-file"
+"#,
+        );
+
+        let (settings, warnings) = Settings::load(&path).unwrap();
+
+        assert_eq!(warnings, Vec::<String>::new());
+        assert_eq!(
+            settings,
+            Settings {
+                secrets_backend: Some(Backend::EncryptedFile),
+                theme: Some("light".into()),
+                keys_preset: Some("vim".into()),
+                key_bindings: vec![
+                    ("global.send".into(), vec!["ctrl+enter".into()]),
+                    ("sidebar.delete".into(), vec!["d".into(), "delete".into()]),
+                    ("request.make-secret".into(), vec![]),
+                ],
+                http_timeout: Some(0),
+                http_max_body_mb: Some(50),
+            }
+        );
+    }
+
+    #[test]
+    fn bad_values_are_reported_and_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        write(
+            &path,
+            r#"theme = 3
+color = "red"
+
+[keys]
+preset = true
+
+[keys.bindings]
+"global.send" = 5
+"global.save" = "ctrl+s"
+
+[http]
+timeout = -1
+max_body_mb = 0
+
+[secrets]
+backend = "vault"
+"#,
+        );
+
+        let (settings, warnings) = Settings::load(&path).unwrap();
+
+        assert_eq!(
+            settings,
+            Settings {
+                key_bindings: vec![("global.save".into(), vec!["ctrl+s".into()])],
+                ..Settings::default()
+            }
+        );
+        assert_eq!(warnings.len(), 7, "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.contains("\"color\"")));
+        assert!(warnings.iter().any(|w| w.contains("vault")));
+
+        write(&path, "[secrets\n");
 
         assert!(Settings::load(&path).is_err());
-        assert!(Settings::default().save(&path).is_err());
+        assert!(Settings::set_theme(&path, "dark").is_err());
+    }
+
+    #[test]
+    fn a_change_keeps_the_rest_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "# my settings\ntheme = \"light\" # bright\n\n[keys]\npreset = \"vim\"\n";
+
+        write(&path, original);
+        Settings::set_backend(&path, Some(Backend::Keychain)).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+
+        assert!(text.starts_with(original), "{text}");
+        assert!(text.contains("[secrets]\nbackend = \"keychain\""), "{text}");
+
+        Settings::set_backend(&path, None).unwrap();
+        Settings::set_theme(&path, "dark").unwrap();
+        Settings::set_keys_preset(&path, "standard").unwrap();
+
+        let (settings, _) = Settings::load(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(settings.theme.as_deref(), Some("dark"));
+        assert_eq!(settings.keys_preset.as_deref(), Some("standard"));
+        assert_eq!(settings.secrets_backend, None);
+        assert!(text.contains("# my settings"), "{text}");
+        assert!(text.contains("# bright"), "{text}");
+
+        // a value where a section should be is replaced by the section
+        write(&path, "secrets = 1\n");
+        Settings::set_backend(&path, Some(Backend::EncryptedFile)).unwrap();
+
+        assert_eq!(
+            Settings::load(&path).unwrap().0.secrets_backend,
+            Some(Backend::EncryptedFile)
+        );
     }
 }

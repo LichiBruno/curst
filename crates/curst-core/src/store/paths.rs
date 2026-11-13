@@ -75,6 +75,12 @@ impl Paths {
         self.config_dir.join("config.toml")
     }
 
+    /// the folder of user themes, one `<name>.toml` each
+    #[must_use]
+    pub fn themes_dir(&self) -> PathBuf {
+        self.config_dir.join("themes")
+    }
+
     /// the folder holding one folder per collection
     #[must_use]
     pub fn collections_dir(&self) -> PathBuf {

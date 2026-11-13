@@ -24,10 +24,10 @@ fn press(state: &mut State, code: KeyCode) -> Vec<Command> {
 }
 
 fn press_key(state: &mut State, event: KeyEvent) -> Vec<Command> {
-    match action_for(state, event) {
-        Some(action) => update(state, action),
-        None => Vec::new(),
-    }
+    action_for(state, event)
+        .into_iter()
+        .flat_map(|action| update(state, action))
+        .collect()
 }
 
 fn type_text(state: &mut State, text: &str) {
@@ -98,7 +98,7 @@ fn key_releases_are_ignored() {
         ..ctrl('c')
     };
 
-    assert!(action_for(&state, release).is_none());
+    assert_eq!(action_for(&state, release).len(), 0);
 }
 
 #[test]
@@ -356,7 +356,7 @@ fn errors_are_shown() {
 }
 
 #[test]
-fn stale_and_cancelled_results_are_dropped() {
+fn stale_and_canceled_results_are_dropped() {
     let mut state = State::default();
 
     type_text(&mut state, "http://h/");
@@ -376,11 +376,11 @@ fn stale_and_cancelled_results_are_dropped() {
     assert_eq!(state.in_flight, Some(second));
 
     assert_eq!(press(&mut state, KeyCode::Esc), vec![Command::Cancel]);
-    assert_eq!(state.notice.as_deref(), Some("request cancelled"));
+    assert_eq!(state.notice.as_deref(), Some("request canceled"));
 
     update(
         &mut state,
-        Action::responded(second, Err(HttpError::Cancelled)),
+        Action::responded(second, Err(HttpError::Canceled)),
     );
 
     assert!(state.outcome.is_none());
@@ -1809,7 +1809,7 @@ mod secrets {
     }
 
     #[test]
-    fn stale_replies_and_cancelled_waits_are_ignored() {
+    fn stale_replies_and_canceled_waits_are_ignored() {
         let mut state = with_secret();
         let id = load_id(&press(&mut state, KeyCode::Enter));
 
@@ -2547,7 +2547,7 @@ mod plain_again {
     }
 
     #[test]
-    fn cancelling_the_passphrase_gives_the_editor_back_unchanged() {
+    fn canceling_the_passphrase_gives_the_editor_back_unchanged() {
         let mut state = editing_a_secret();
         let commands = press(&mut state, KeyCode::Char('s'));
         let [Command::LoadSecrets { id, .. }] = commands.as_slice() else {
@@ -2608,8 +2608,8 @@ mod plain_again {
     }
 
     fn global_hints_listed(state: &State) -> bool {
-        crate::ui::hints(state).contains(&("s", "secret"))
-            && crate::ui::global_hints(state).contains(&("Esc", "close"))
+        crate::ui::hints(state).contains(&("s".to_owned(), "secret"))
+            && crate::ui::global_hints(state).contains(&("Esc".to_owned(), "close"))
     }
 }
 

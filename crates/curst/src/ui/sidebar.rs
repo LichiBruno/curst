@@ -1,22 +1,12 @@
 use curst_core::model::Method;
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::pane;
-use crate::app::{Focus, RowKind, State, display, rows};
-
-fn method_color(method: Method) -> Color {
-    match method {
-        Method::Get => Color::Green,
-        Method::Post => Color::Yellow,
-        Method::Put | Method::Patch => Color::Blue,
-        Method::Delete => Color::Red,
-        Method::Head | Method::Options => Color::Magenta,
-    }
-}
+use crate::app::{Focus, Layer, RowKind, State, display, rows};
 
 fn method_tag(method: Method) -> &'static str {
     match method {
@@ -31,16 +21,13 @@ fn method_tag(method: Method) -> &'static str {
 }
 
 pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
+    let theme = &state.theme;
     let focused = state.focus == Focus::Sidebar;
-    let mut block = pane(Line::from(" Collections "), focused);
+    let mut block = pane(theme, Line::from(" Collections "), focused);
 
     if let Some(name) = state.current_workspace().and_then(|w| w.environment_name()) {
         block = block.title(
-            Line::from(Span::styled(
-                format!(" {} ", display(name)),
-                Style::default().fg(Color::Cyan),
-            ))
-            .right_aligned(),
+            Line::from(Span::styled(format!(" {} ", display(name)), theme.accent)).right_aligned(),
         );
     }
 
@@ -49,12 +36,18 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
     frame.render_widget(block, area);
 
     let rows = rows(&state.collections, &state.sidebar.expanded);
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = theme.muted;
 
     if rows.is_empty() {
         let text = vec![
             Line::from(Span::styled("no collections yet", dim)),
-            Line::from(Span::styled("press c to add one", dim)),
+            Line::from(Span::styled(
+                format!(
+                    "press {} to add one",
+                    state.key(Layer::Sidebar, "new-collection")
+                ),
+                dim,
+            )),
         ];
 
         frame.render_widget(Paragraph::new(text), inner);
@@ -84,7 +77,7 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
                 }
                 RowKind::Request(method) => spans.push(Span::styled(
                     format!("{} ", method_tag(method)),
-                    Style::default().fg(method_color(method)),
+                    theme.method(method),
                 )),
             }
 
@@ -95,7 +88,7 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
             }
 
             if Some(&row.key) == open {
-                style = style.fg(Color::Cyan);
+                style = style.patch(theme.accent);
             }
 
             if state.sidebar.cut.as_ref() == Some(&row.key) {
@@ -104,7 +97,7 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
 
             if Some(index) == selected {
                 style = if focused {
-                    style.add_modifier(Modifier::REVERSED)
+                    style.patch(theme.selected)
                 } else {
                     style.add_modifier(Modifier::UNDERLINED)
                 };
@@ -113,10 +106,7 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
             spans.push(Span::styled(display(&row.name), style));
 
             if row.kind == RowKind::Collection && !row.trusted {
-                spans.push(Span::styled(
-                    " untrusted",
-                    Style::default().fg(Color::Yellow),
-                ));
+                spans.push(Span::styled(" untrusted", theme.warning));
             }
 
             Line::from(spans)

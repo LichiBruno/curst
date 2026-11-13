@@ -207,6 +207,22 @@ pub(crate) fn run(
                 result,
             })
         }
+        Command::SavePreferences { keys, theme } => {
+            let path = library.paths().config_file();
+            let result = keys
+                .map_or(Ok(()), |keys| {
+                    curst_core::store::Settings::set_keys_preset(&path, &keys)
+                })
+                .and_then(|()| {
+                    theme.map_or(Ok(()), |theme| {
+                        curst_core::store::Settings::set_theme(&path, &theme)
+                    })
+                });
+
+            result
+                .err()
+                .map(|err| Action::Notice(format!("settings not saved: {err}")))
+        }
         Command::Send { .. }
         | Command::Cancel
         | Command::SaveBody(_)
@@ -359,6 +375,41 @@ mod tests {
         let library = Library::new(Paths::under(dir.path()));
 
         (dir, library)
+    }
+
+    #[test]
+    fn preferences_are_written_to_the_config_file() {
+        let (_dir, library) = library();
+        let saved = run(
+            &library,
+            &[],
+            Command::SavePreferences {
+                keys: Some("vim".into()),
+                theme: Some("light".into()),
+            },
+        );
+        let (settings, _) =
+            curst_core::store::Settings::load(&library.paths().config_file()).unwrap();
+
+        assert!(saved.is_none());
+        assert_eq!(settings.keys_preset.as_deref(), Some("vim"));
+        assert_eq!(settings.theme.as_deref(), Some("light"));
+
+        // only what is given changes
+        run(
+            &library,
+            &[],
+            Command::SavePreferences {
+                keys: None,
+                theme: Some("mono".into()),
+            },
+        );
+
+        let (settings, _) =
+            curst_core::store::Settings::load(&library.paths().config_file()).unwrap();
+
+        assert_eq!(settings.keys_preset.as_deref(), Some("vim"));
+        assert_eq!(settings.theme.as_deref(), Some("mono"));
     }
 
     fn loaded(library: &Library) -> (Vec<Workspace>, Vec<String>) {

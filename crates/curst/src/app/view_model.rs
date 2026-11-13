@@ -19,6 +19,9 @@ pub(crate) struct ResponseView {
     /// terminal columns taken by the longest line of each tab, in
     /// [`ResponseTab::ALL`] order
     widths: [usize; 4],
+
+    /// whether the body's last line says which key saves it
+    save_note: bool,
 }
 
 impl ResponseView {
@@ -51,6 +54,7 @@ impl ResponseView {
         }
 
         let widths = [&body, &headers, &timing, &raw].map(|lines| widest(lines));
+        let save_note = kind == BodyKind::Binary || response.body.is_truncated();
 
         Self {
             response,
@@ -60,7 +64,22 @@ impl ResponseView {
             timing,
             raw,
             widths,
+            save_note,
         }
+    }
+
+    /// names the key that saves the body in the note about it, since the
+    /// view is prepared away from the keymap
+    pub(crate) fn name_save_key(&mut self, key: &str) {
+        if !self.save_note {
+            return;
+        }
+
+        if let Some(line) = self.body.last_mut() {
+            *line = line.replacen("press s ", &format!("press {key} "), 1);
+        }
+
+        self.widths[0] = widest(&self.body);
     }
 
     pub(crate) fn lines(&self, tab: ResponseTab) -> &[String] {

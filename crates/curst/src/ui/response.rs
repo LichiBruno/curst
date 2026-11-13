@@ -1,37 +1,35 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::{pane, tab_titles};
-use crate::app::{Focus, Outcome, ResponseTab, State, skip_columns};
+use crate::app::{Focus, Layer, Outcome, ResponseTab, State, skip_columns};
 
 pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
+    let theme = &state.theme;
     let mut title = vec![Span::raw(" Response")];
+
     title.extend(tab_titles(
+        theme,
         &ResponseTab::ALL,
         state.response_tab,
         ResponseTab::label,
     ));
 
-    let mut block = pane(Line::from(title), state.focus == Focus::Response);
+    let mut block = pane(theme, Line::from(title), state.focus == Focus::Response);
 
     if let Some(Outcome::Response(view)) = &state.outcome {
-        let color = match view.response.status {
-            200..=299 => Color::Green,
-            300..=399 => Color::Cyan,
-            400..=499 => Color::Yellow,
-            _ => Color::Red,
+        let style = match view.response.status {
+            200..=299 => theme.success,
+            300..=399 => theme.info,
+            400..=499 => theme.warning,
+            _ => theme.error,
         };
 
         // on the bottom border, so a narrow pane keeps its tab names
         block = block.title_bottom(
-            Line::from(Span::styled(
-                format!(" {} ", view.summary),
-                Style::default().fg(color),
-            ))
-            .right_aligned(),
+            Line::from(Span::styled(format!(" {} ", view.summary), style)).right_aligned(),
         );
     }
 
@@ -41,18 +39,18 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
     state.response_height.set(usize::from(inner.height));
     state.response_width.set(usize::from(inner.width));
 
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = theme.muted;
     let paragraph = match &state.outcome {
         None if state.in_flight.is_some() => Paragraph::new(Span::styled("sending…", dim)),
         None => Paragraph::new(Span::styled(
-            "no response yet, type a URL and press Enter",
+            format!(
+                "no response yet, type a URL and press {}",
+                state.key(Layer::Url, "send")
+            ),
             dim,
         )),
         Some(Outcome::Error(message)) => Paragraph::new(vec![
-            Line::from(Span::styled(
-                "the request failed",
-                Style::default().fg(Color::Red),
-            )),
+            Line::from(Span::styled("the request failed", theme.error)),
             Line::from(message.clone()),
         ]),
         Some(Outcome::Response(view)) => {

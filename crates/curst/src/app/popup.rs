@@ -13,7 +13,7 @@ use ratatui_textarea::TextArea;
 
 use super::editor::{Column, Row, Table, masked, single_line, text_of};
 use super::workspace::NodeKey;
-use super::{Action, Change, Command, SecretChange, State, step};
+use super::{Action, Change, Command, Layer, SecretChange, State, step};
 
 /// what a text prompt is for
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -300,6 +300,22 @@ pub(crate) enum Popup {
     Tabs {
         selected: usize,
     },
+
+    /// the first run: the keys, then the theme; `then` is a pop-up that
+    /// was waiting and opens after
+    Welcome {
+        step: super::Step,
+        then: Option<Box<Popup>>,
+    },
+
+    /// actions and saved requests, found by typing
+    Palette(Box<super::Palette>),
+
+    /// every key; `here` is the chain of layers where the focus was
+    Help {
+        scroll: usize,
+        here: Vec<Layer>,
+    },
 }
 
 impl Popup {
@@ -386,8 +402,18 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
             return secret_popup(state, popup, action);
         }
         Popup::Tabs { selected } => return tab_switcher(state, selected, action),
+        Popup::Help { scroll, here } => return help(state, scroll, here, action),
+        Popup::Palette(palette) => return super::palette::apply(state, palette, action),
+        Popup::Welcome { step, then } => {
+            return super::preferences::welcome_key(state, step, then, action);
+        }
         Popup::Settings => match action {
             Action::Migrate => return Ok(super::send::migrate(state)),
+            Action::NextKeys | Action::NextTheme => {
+                state.popup = Some(Popup::Settings);
+
+                return Ok(super::preferences::settings(state, &action).unwrap_or_default());
+            }
             Action::ClosePopup => {}
             other => {
                 state.popup = Some(Popup::Settings);
@@ -640,6 +666,38 @@ fn tab_switcher(
     Ok(Vec::new())
 }
 
+fn help(
+    state: &mut State,
+    scroll: usize,
+    here: Vec<Layer>,
+    action: Action,
+) -> Result<Vec<Command>, Action> {
+    const PAGE: usize = 10;
+
+    let last = super::help_lines(&state.keymap.help(&here)).saturating_sub(1);
+    let scroll = match action {
+        Action::Up => scroll.saturating_sub(1),
+        Action::Down => scroll + 1,
+        Action::PageUp => scroll.saturating_sub(PAGE),
+        Action::PageDown => scroll + PAGE,
+        Action::Top => 0,
+        Action::Bottom => last,
+        Action::ClosePopup | Action::Help => return Ok(Vec::new()),
+        other => {
+            state.popup = Some(Popup::Help { scroll, here });
+
+            return Err(other);
+        }
+    };
+
+    state.popup = Some(Popup::Help {
+        scroll: scroll.min(last),
+        here,
+    });
+
+    Ok(Vec::new())
+}
+
 /// the user left a secret prompt: the request waiting for it is dropped
 fn locked_out(state: &mut State) {
     state.notice = Some("secrets stay locked, so nothing was done".into());
@@ -709,7 +767,8 @@ fn trust(state: &mut State, collection: LocalId, action: Action) -> Result<Vec<C
                 .map_or_else(String::new, |w| w.collection.name.clone());
 
             state.notice = Some(format!(
-                "{name} is not trusted: you can look around, but nothing is sent; press T on it to decide again"
+                "{name} is not trusted: you can look around, but nothing is sent; press {} on it to decide again",
+                state.key(Layer::Sidebar, "trust")
             ));
 
             return Ok(Vec::new());

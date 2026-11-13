@@ -1,0 +1,20 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 80, 16)"
+---
+"┌ Collections ─────────┐  GET new request                                       "
+"│no collections yet    │┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│press c to add one    ││   GET   │┃ https://example.com/api, then Enter to sen┃"
+"│                      │└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"│                      │┌ Request  Params  Headers  Body  Auth  ───────────────┐"
+"│                      ││no query parameters, press a to add one               │"
+"│   ┏ Commands and requests ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓   │"
+"│   ┃new tab                                                               ┃   │"
+"│   ┃ new request tab                                               Ctrl+T ┃───┘"
+"│   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛───┐"
+"│                      ││no response yet, type a URL and press Enter           │"
+"│                      ││                                                      │"
+"│                      ││                                                      │"
+"└──────────────────────┘└──────────────────────────────────────────────────────┘"
+" ↑↓ choose  Enter run  Esc close                                                "
+" Ctrl+C quit                                                                    "
