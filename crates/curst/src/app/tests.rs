@@ -3057,21 +3057,27 @@ mod curl {
             Action::responded(id, Ok(response(r#"{"a":1}"#))),
         );
 
-        let commands = update(&mut state, Action::CopyResponse);
+        // y copies the body from any pane, whichever response tab shows
+        state.focus = Focus::Sidebar;
+        state.response_tab = ResponseTab::Headers;
+
+        let commands = press(&mut state, KeyCode::Char('y'));
 
         assert!(matches!(
             commands.as_slice(),
             [Command::Copy(text)] if text == "{\n  \"a\": 1\n}"
         ));
+        assert!(
+            crate::ui::hints(&state)
+                .iter()
+                .any(|h| h.key == "y" && h.label == "copy body")
+        );
 
-        state.response_tab = ResponseTab::Headers;
+        // in the URL, y is a letter
+        state.focus = Focus::Url;
 
-        let commands = update(&mut state, Action::CopyResponse);
-
-        assert!(matches!(
-            commands.as_slice(),
-            [Command::Copy(text)] if text == "content-type: application/json"
-        ));
+        assert_eq!(press(&mut state, KeyCode::Char('y')).len(), 0);
+        assert!(state.request().url.ends_with('y'));
 
         state.outcome = None;
 

@@ -423,7 +423,24 @@ impl Runtime {
                 self.secret_job(Job::Migrate { id, to, passphrase });
             }
             Command::EditBody { text, extension } => self.edit = Some((text, extension)),
-            Command::Copy(text) => copy(&text),
+            Command::Copy(text) => {
+                copy_through_terminal(&text);
+
+                // locally, the system clipboard is set too: some terminals,
+                // such as Warp and Terminal.app, ignore OSC 52
+                if !over_ssh(|key| std::env::var_os(key).is_some()) {
+                    let results = self.results.clone();
+
+                    self.workers.push(thread::spawn(move || {
+                        if !copy_through_system(&text) {
+                            let _ = results.send(Action::Notice(
+                                "the clipboard was not set: no clipboard tool worked, and this terminal may ignore OSC 52"
+                                    .into(),
+                            ));
+                        }
+                    }));
+                }
+            }
             Command::ChangeSecrets { id, changes } => {
                 // a secret of an untrusted collection is never stored
                 let untrusted = changes.iter().any(|change| {
@@ -572,14 +589,75 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
-/// puts `text` on the clipboard with OSC 52: the terminal does it, so it
-/// works over SSH too; a terminal that does not allow it says nothing
-fn copy(text: &str) {
+/// asks the terminal to put `text` on the clipboard, with OSC 52: it
+/// works over SSH too, but a terminal that does not allow it says nothing
+fn copy_through_terminal(text: &str) {
     use std::io::Write;
 
     let mut out = std::io::stdout();
     let _ = write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()));
     let _ = out.flush();
+}
+
+/// whether curst runs on another machine than the one the user sits at,
+/// where its system clipboard would be the wrong one
+fn over_ssh(set: impl Fn(&str) -> bool) -> bool {
+    set("SSH_CONNECTION") || set("SSH_TTY")
+}
+
+/// the programs that set the system clipboard from their input, to try in
+/// order
+fn clipboard_tools(wayland: bool) -> Vec<(&'static str, &'static [&'static str])> {
+    if cfg!(target_os = "macos") {
+        return vec![("pbcopy", &[])];
+    }
+
+    if cfg!(windows) {
+        return vec![("clip", &[])];
+    }
+
+    let mut tools: Vec<(&str, &[&str])> = Vec::new();
+
+    if wayland {
+        tools.push(("wl-copy", &[]));
+    }
+
+    tools.push(("xclip", &["-selection", "clipboard"]));
+    tools.push(("xsel", &["--clipboard", "--input"]));
+
+    tools
+}
+
+/// puts `text` on the system clipboard through its input, never its
+/// arguments, with the first tool that works; false when none did
+fn copy_through_system(text: &str) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+
+    for (program, args) in clipboard_tools(wayland) {
+        let child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        let Ok(mut child) = child else {
+            continue;
+        };
+
+        let wrote = child
+            .stdin
+            .take()
+            .is_some_and(|mut input| input.write_all(text.as_bytes()).is_ok());
+
+        if child.wait().is_ok_and(|status| status.success()) && wrote {
+            return true;
+        }
+    }
+
+    false
 }
 
 mod keyboard {
@@ -832,6 +910,23 @@ mod tests {
         assert!(!startup.first_run);
         assert_eq!(state.keys_preset, "standard");
         assert_eq!(state.key(app::Layer::Global, "send"), "Ctrl+R");
+    }
+
+    #[test]
+    fn the_system_clipboard_is_for_local_sessions_only() {
+        assert!(over_ssh(|key| key == "SSH_CONNECTION"));
+        assert!(over_ssh(|key| key == "SSH_TTY"));
+        assert!(!over_ssh(|_| false));
+
+        let tools: Vec<&str> = clipboard_tools(true).iter().map(|(p, _)| *p).collect();
+
+        if cfg!(target_os = "macos") {
+            assert_eq!(tools, ["pbcopy"]);
+        } else if cfg!(windows) {
+            assert_eq!(tools, ["clip"]);
+        } else {
+            assert_eq!(tools, ["wl-copy", "xclip", "xsel"]);
+        }
     }
 
     #[test]

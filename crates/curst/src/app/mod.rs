@@ -827,7 +827,7 @@ fn copy_curl(state: &mut State) -> Vec<Command> {
     vec![Command::Copy(curst_core::curl::emit(&state.request()))]
 }
 
-/// copies what the response tab shows, without borders or notes
+/// copies the response body, whichever tab shows, without borders or notes
 fn copy_response(state: &mut State) -> Vec<Command> {
     let Some(Outcome::Response(view)) = &state.outcome else {
         state.notice = Some("there is no response to copy".into());
@@ -835,17 +835,14 @@ fn copy_response(state: &mut State) -> Vec<Command> {
         return Vec::new();
     };
 
-    match view.copy_text(state.response_tab) {
+    match view.copy_body() {
         Err(why) => {
             state.notice = Some(why.into());
 
             Vec::new()
         }
         Ok((text, cut)) => {
-            let mut notice = format!(
-                "the {} went to the clipboard",
-                state.response_tab.label().to_lowercase()
-            );
+            let mut notice = "the response body went to the clipboard".to_owned();
 
             if cut {
                 notice.push_str(", only the part kept in memory; save it for all of it");

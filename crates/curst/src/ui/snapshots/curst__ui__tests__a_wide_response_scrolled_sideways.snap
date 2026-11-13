@@ -1,5 +1,6 @@
 ---
 source: crates/curst/src/ui/tests.rs
+assertion_line: 215
 expression: "render(&state, 80, 14)"
 ---
 "┌ Collections ─────────┐  GET localhost/                                        "
@@ -14,5 +15,5 @@ expression: "render(&state, 80, 14)"
 "│                      │┃                                                      ┃"
 "│                      │┃defghijabcdefghijabcdefghijabcdefghijabcdefghijabcdefg┃"
 "└──────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 200 OK · 42.0 ms · 102 B ┛"
-" ←→ tab  ↑↓ scroll  h l sideways  s save                                        "
+" ←→ tab  ↑↓ scroll  h l sideways  s save  y copy body                           "
 " Ctrl+R send  Ctrl+S save  Ctrl+P commands  F1 help  Ctrl+C quit                "
