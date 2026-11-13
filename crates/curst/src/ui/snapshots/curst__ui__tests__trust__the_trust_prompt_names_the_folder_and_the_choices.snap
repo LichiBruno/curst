@@ -1,12 +1,13 @@
 ---
 source: crates/curst/src/ui/tests.rs
+assertion_line: 329
 expression: "render(&state, 100, 18)"
 ---
-"┌ Collections ───────────────┐┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-"│▾ Shared untrusted          ││   GET   │┃ https://example.com/api, then Enter to send             ┃"
-"│  ▸ Users                   │└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
-"│  POST CREA┏ Trust this folder? ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓───────────┐"
-"│           ┃/repo/.curst                                                              ┃           │"
+"┌ Collections ───────────────┐  GET new request               Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"│▾ Shared untrusted          │┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│  ▸ Users                   ││   GET   │┃ https://example.com/api, then Enter to send             ┃"
+"│  POST CREA┏ Trust this folder? ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓━━━━━━━━━━━┛"
+"│           ┃/repo/.curst                                                              ┃───────────┐"
 "│           ┃calls itself Shared                                                       ┃           │"
 "│           ┃                                                                          ┃           │"
 "│           ┃Requests from this folder are not sent and no secret is used              ┃           │"

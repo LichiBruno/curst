@@ -50,11 +50,11 @@ impl Purpose {
 /// what a yes/no question does on yes
 #[derive(Debug)]
 pub(crate) enum Pending {
-    Open(NodeKey),
     Delete(NodeKey),
     DeleteEnvironment(LocalId, EnvId),
     /// quitting, with the pop-up to show again on no
     Quit(Option<Box<Popup>>),
+    CloseTab,
 
     /// closing the variable editor; on no it comes back as it was
     CloseVariables(Box<VariablesEditor>),
@@ -294,6 +294,12 @@ pub(crate) enum Popup {
 
     /// where secrets are kept, and moving them
     Settings,
+
+    /// the open tabs, to switch to, open or close one; it works in every
+    /// terminal, where Ctrl with an arrow or a number may not arrive
+    Tabs {
+        selected: usize,
+    },
 }
 
 impl Popup {
@@ -379,6 +385,7 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
         popup @ (Popup::ChooseBackend | Popup::Passphrase { .. } | Popup::Approve(_)) => {
             return secret_popup(state, popup, action);
         }
+        Popup::Tabs { selected } => return tab_switcher(state, selected, action),
         Popup::Settings => match action {
             Action::Migrate => return Ok(super::send::migrate(state)),
             Action::ClosePopup => {}
@@ -496,11 +503,7 @@ fn run_pending(state: &mut State, pending: Pending) -> Vec<Command> {
             collection,
             change: Change::DeleteEnvironment(id),
         }],
-        Pending::Open(key) => {
-            state.load_request(&key);
-
-            Vec::new()
-        }
+        Pending::CloseTab => super::tabs::close_now(state),
         Pending::Quit(_) => {
             state.should_quit = true;
 
@@ -592,6 +595,49 @@ pub(crate) fn secrets_too(count: usize) -> String {
         1 => ", and 1 secret".into(),
         n => format!(", and {n} secrets"),
     }
+}
+
+fn tab_switcher(
+    state: &mut State,
+    mut selected: usize,
+    action: Action,
+) -> Result<Vec<Command>, Action> {
+    let count = state.tab_count();
+
+    match action {
+        Action::Up => selected = selected.checked_sub(1).unwrap_or(count - 1),
+        Action::Down => selected = (selected + 1) % count,
+        Action::ConfirmPopup => super::tabs::switch_to(state, selected),
+        Action::RequestAt(index) => super::tabs::switch_to(state, index),
+        Action::NewTab => super::tabs::new_tab(state),
+        Action::CloseTab => {
+            super::tabs::switch_to(state, selected);
+
+            let commands = super::tabs::close(state);
+
+            // the list stays open to close another, unless closing asked
+            // first or only one tab is left
+            if state.popup.is_none() && state.tab_count() > 1 {
+                state.popup = Some(Popup::Tabs {
+                    selected: state.active_tab,
+                });
+            }
+
+            return Ok(commands);
+        }
+        Action::ClosePopup | Action::Tabs => {}
+        other => {
+            state.popup = Some(Popup::Tabs { selected });
+
+            return Err(other);
+        }
+    }
+
+    if matches!(action, Action::Up | Action::Down) {
+        state.popup = Some(Popup::Tabs { selected });
+    }
+
+    Ok(Vec::new())
 }
 
 /// the user left a secret prompt: the request waiting for it is dropped

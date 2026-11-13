@@ -352,3 +352,47 @@ mod trust {
         assert!(!render(&state, 80, 14).contains('⚠'));
     }
 }
+
+#[test]
+fn many_tabs_keep_the_active_one_in_view() {
+    let mut state = State::default();
+
+    for i in 0..8 {
+        if i > 0 {
+            update(&mut state, Action::NewTab);
+        }
+
+        state
+            .url
+            .insert_str(format!("http://host-number-{i}.example.com/"));
+    }
+
+    update(&mut state, Action::RequestAt(3));
+
+    let screen = render(&state, 80, 12);
+    let bar = screen.lines().next().unwrap();
+
+    assert!(bar.contains("host-number-3"), "{bar}");
+    assert!(bar.contains('‹') && bar.contains('›'), "{bar}");
+}
+
+#[test]
+fn the_tab_switcher_numbers_tabs_by_their_keys() {
+    let mut state = State::default();
+
+    for i in 0..10 {
+        if i > 0 {
+            update(&mut state, Action::NewTab);
+        }
+
+        state.url.insert_str(format!("http://host-{i}/"));
+    }
+
+    update(&mut state, Action::RequestAt(2));
+    update(&mut state, Action::Tabs);
+
+    let screen = render(&state, 80, 20);
+
+    insta::assert_snapshot!(screen);
+    assert!(hints(&state).contains(&("1-9", "go to")));
+}

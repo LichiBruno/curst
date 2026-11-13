@@ -30,7 +30,14 @@ pub(crate) fn view(state: &State, frame: &mut Frame) {
         Constraint::Fill(1),
     ])
     .areas(body);
-    let [top, panes] = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(main);
+    let [bar, top, panes] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(3),
+        Constraint::Fill(1),
+    ])
+    .areas(main);
+
+    tab_bar(state, frame, bar);
 
     if side.width > 0 {
         sidebar::draw(state, frame, side);
@@ -86,6 +93,86 @@ pub(super) fn tab_titles<T: Copy + PartialEq>(
     spans.push(Span::raw(" "));
 
     spans
+}
+
+/// one label per open request, the active one highlighted; when they do
+/// not all fit, those far from the active one are left out
+fn tab_bar(state: &State, frame: &mut Frame, area: Rect) {
+    let labels = state.tab_labels();
+    let texts: Vec<String> = labels
+        .iter()
+        .map(|label| {
+            let mut name = display(&label.name);
+
+            if name.chars().count() > 24 {
+                name = name.chars().take(23).collect::<String>() + "…";
+            }
+
+            let dirty = if label.dirty { " ●" } else { "" };
+
+            format!(" {} {name}{dirty} ", label.method.as_str())
+        })
+        .collect();
+    let width = |text: &String| text.chars().count() + 1;
+    let room = usize::from(area.width).saturating_sub(4);
+    let active = labels.iter().position(|l| l.active).unwrap_or(0);
+    let (mut first, mut last) = (active, active);
+    let mut used = texts.get(active).map_or(0, width);
+
+    // widen around the active tab, one side then the other, while it fits
+    loop {
+        let right = texts.get(last + 1).map(width).filter(|w| used + w <= room);
+
+        if let Some(w) = right {
+            last += 1;
+            used += w;
+        }
+
+        let left = first
+            .checked_sub(1)
+            .and_then(|i| texts.get(i))
+            .map(width)
+            .filter(|w| used + w <= room);
+
+        if let Some(w) = left {
+            first -= 1;
+            used += w;
+        }
+
+        if right.is_none() && left.is_none() {
+            break;
+        }
+    }
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let mut spans = vec![Span::styled(if first > 0 { "‹" } else { " " }, dim)];
+
+    for (index, text) in texts.iter().enumerate().take(last + 1).skip(first) {
+        let style = if labels[index].active {
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+        } else {
+            dim
+        };
+
+        spans.push(Span::styled(text.clone(), style));
+        spans.push(Span::raw(" "));
+    }
+
+    if last + 1 < texts.len() {
+        spans.push(Span::styled("›", dim));
+    }
+
+    let hint = " Ctrl+G tabs  Ctrl+T new  Ctrl+W close ";
+    let shown: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+    if shown + hint.chars().count() <= usize::from(area.width) {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(hint, dim)).right_aligned()),
+            area,
+        );
+    }
 }
 
 fn url_bar(state: &State, frame: &mut Frame, area: Rect) {

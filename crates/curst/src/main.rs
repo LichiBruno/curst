@@ -59,8 +59,10 @@ fn main() -> Result<()> {
     // without a data folder the app still opens, for one-off requests
     let library = Paths::from_env().map(Library::new);
     let mut terminal = ratatui::try_init().context("could not start the terminal UI")?;
-    let result = Runtime::new(executor, library).run(&mut terminal);
+    let enhanced = keyboard::enable();
+    let result = Runtime::new(executor, library, enhanced).run(&mut terminal);
 
+    keyboard::disable(enhanced);
     ratatui::try_restore().context("could not restore the terminal")?;
 
     result
@@ -81,12 +83,16 @@ struct Runtime {
     /// a body to open in the user's editor once this round of commands is
     /// done, since that needs the terminal
     edit: Option<(String, &'static str)>,
+
+    /// whether the terminal's keyboard protocol is switched on
+    enhanced: bool,
 }
 
 impl Runtime {
     fn new(
         executor: Arc<dyn HttpExecutor>,
         library: Result<Library, curst_core::store::StoreError>,
+        enhanced: bool,
     ) -> Self {
         let (results, inbox) = mpsc::channel();
         let mut secret_jobs = None;
@@ -115,6 +121,7 @@ impl Runtime {
             secret_jobs,
             secrets_thread,
             edit: None,
+            enhanced,
         }
     }
 
@@ -168,7 +175,7 @@ impl Runtime {
             }
 
             if let Some((text, extension)) = self.edit.take() {
-                let result = edit_in_terminal(terminal, &text, extension)?;
+                let result = edit_in_terminal(terminal, &text, extension, self.enhanced)?;
 
                 app::update(&mut state, Action::BodyEdited(result));
                 dirty = true;
@@ -306,10 +313,37 @@ impl Runtime {
 }
 
 /// hands the terminal to the user's editor and takes it back after
+/// the keyboard protocol that tells keys like Ctrl+1 apart from plain 1,
+/// switched on only where the terminal supports it
+mod keyboard {
+    use ratatui::crossterm::event::{
+        KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    };
+    use ratatui::crossterm::execute;
+    use ratatui::crossterm::terminal::supports_keyboard_enhancement;
+
+    /// switches the protocol on; returns whether it is on
+    pub(super) fn enable() -> bool {
+        matches!(supports_keyboard_enhancement(), Ok(true))
+            && execute!(
+                std::io::stdout(),
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            )
+            .is_ok()
+    }
+
+    pub(super) fn disable(enabled: bool) {
+        if enabled {
+            let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
+        }
+    }
+}
+
 fn edit_in_terminal(
     terminal: &mut DefaultTerminal,
     text: &str,
     extension: &str,
+    enhanced: bool,
 ) -> Result<Result<String, String>> {
     use ratatui::crossterm::execute;
     use ratatui::crossterm::terminal::{
@@ -317,6 +351,7 @@ fn edit_in_terminal(
     };
 
     // the same terminal is kept, only handed over for a while
+    keyboard::disable(enhanced);
     disable_raw_mode()?;
     execute!(std::io::stdout(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -326,6 +361,11 @@ fn edit_in_terminal(
 
     enable_raw_mode()?;
     execute!(std::io::stdout(), EnterAlternateScreen)?;
+
+    if enhanced {
+        keyboard::enable();
+    }
+
     terminal.clear()?;
 
     Ok(result)

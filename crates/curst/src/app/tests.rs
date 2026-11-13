@@ -10,6 +10,10 @@ fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
 
+fn ctrl_arrow(code: KeyCode) -> KeyEvent {
+    KeyEvent::new(code, KeyModifiers::CONTROL)
+}
+
 fn ctrl(c: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
 }
@@ -638,7 +642,9 @@ mod collections {
 
         assert_eq!(state.sidebar.selected, Some(node(&[])));
         assert!(state.sidebar.expanded.contains(&node(&[])));
-        assert_eq!(state.current_workspace().map(|w| w.id.as_str()), Some("c1"));
+        // selecting a collection lends no variables: a tab belongs to one
+        // only once it holds a request from it
+        assert!(state.current_workspace().is_none());
 
         let mut state = State::default();
 
@@ -703,30 +709,40 @@ mod collections {
 
         assert!(state.is_dirty());
 
+        // another request opens in a tab of its own, so nothing is lost
         state.focus = Focus::Sidebar;
         state.sidebar.selected = Some(node(&["users"]));
         press(&mut state, KeyCode::Right);
         press(&mut state, KeyCode::Down);
         press(&mut state, KeyCode::Enter);
 
-        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
-
-        press(&mut state, KeyCode::Char('n'));
-
         assert!(state.popup.is_none());
-        assert_eq!(state.open.as_ref().map(|o| o.name.as_str()), Some("CREATE"));
+        assert_eq!(state.open.as_ref().map(|o| o.name.as_str()), Some("LIST"));
+        assert_eq!(state.tab_count(), 2);
+        assert!(state.any_dirty());
 
+        // quitting asks while any tab has changes
         press(&mut state, KeyCode::Char('q'));
 
         assert!(!state.should_quit);
         assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
 
         press(&mut state, KeyCode::Esc);
-        press(&mut state, KeyCode::Enter);
+
+        // closing the changed tab asks too
+        press_key(&mut state, ctrl_arrow(KeyCode::Left));
+
+        assert_eq!(state.open.as_ref().map(|o| o.name.as_str()), Some("CREATE"));
+
+        press_key(&mut state, ctrl('w'));
+
+        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+
         press(&mut state, KeyCode::Char('y'));
 
+        assert_eq!(state.tab_count(), 1);
         assert_eq!(state.open.as_ref().map(|o| o.name.as_str()), Some("LIST"));
-        assert!(!state.is_dirty());
+        assert!(!state.any_dirty());
     }
 
     #[test]
@@ -845,6 +861,7 @@ mod collections {
 
         state.collections[0].active_environment = EnvId::new("e1");
         state.collections[0].collection.variables = vec![var("host", "h{{a}}")];
+        state.collection = LocalId::new("c1");
         state.globals = vec![var("path", "p")];
         state.focus = Focus::Url;
         type_text(&mut state, "http://{{host}}/{{path}}");
@@ -1608,6 +1625,7 @@ mod secrets {
         workspace.active_environment = EnvId::new("e1");
         workspace.collection.environments[0].variables =
             vec![Variable::secret(VarName::new("token").unwrap())];
+        state.collection = LocalId::new("c1");
         update(
             &mut state,
             Action::Loaded {
@@ -1983,6 +2001,7 @@ mod secret_variables {
         let mut workspace = sample();
 
         workspace.collection.variables = variables;
+        state.collection = LocalId::new("c1");
         update(
             &mut state,
             Action::Loaded {
@@ -2591,5 +2610,316 @@ mod plain_again {
     fn global_hints_listed(state: &State) -> bool {
         crate::ui::hints(state).contains(&("s", "secret"))
             && crate::ui::global_hints(state).contains(&("Esc", "close"))
+    }
+}
+
+mod tabs {
+    use curst_core::model::{EnvId, Variable};
+    use curst_core::vars::VarName;
+
+    use super::*;
+    use crate::app::workspace::tests::sample;
+
+    fn node(path: &[&str]) -> NodeKey {
+        NodeKey {
+            collection: LocalId::new("c1").unwrap(),
+            path: path.iter().map(|p| (*p).to_owned()).collect(),
+        }
+    }
+
+    fn loaded() -> State {
+        let mut state = State::default();
+
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![sample()],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![],
+            },
+        );
+
+        state
+    }
+
+    fn open(state: &mut State, path: &[&str]) {
+        state.focus = Focus::Sidebar;
+        state.sidebar.expanded.insert(node(&["users"]));
+        state.sidebar.selected = Some(node(path));
+        press(state, KeyCode::Enter);
+    }
+
+    fn names(state: &State) -> Vec<String> {
+        state
+            .tab_labels()
+            .into_iter()
+            .map(|l| {
+                let mark = if l.active { "*" } else { "" };
+
+                format!("{mark}{}", l.name)
+            })
+            .collect()
+    }
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn requests_open_in_tabs_and_an_open_one_is_reused() {
+        let mut state = loaded();
+
+        // the blank first tab is used for the first request
+        open(&mut state, &["create"]);
+
+        assert_eq!(names(&state), ["*CREATE"]);
+
+        open(&mut state, &["users", "list"]);
+
+        assert_eq!(names(&state), ["CREATE", "*LIST"]);
+
+        open(&mut state, &["create"]);
+
+        assert_eq!(names(&state), ["*CREATE", "LIST"]);
+        assert_eq!(state.method, Method::Post);
+    }
+
+    #[test]
+    fn switching_with_ctrl_arrows_and_numbers() {
+        let mut state = loaded();
+
+        press_key(&mut state, ctrl('t'));
+        press_key(&mut state, ctrl('t'));
+        type_text(&mut state, "http://third/");
+
+        assert_eq!(names(&state), ["new request", "new request", "*third/"]);
+
+        press_key(&mut state, ctrl_key(KeyCode::Right));
+
+        assert_eq!(state.active_tab, 0);
+
+        press_key(&mut state, ctrl_key(KeyCode::Left));
+
+        assert_eq!(state.active_tab, 2);
+        assert_eq!(state.request().url, "http://third/");
+
+        press_key(&mut state, ctrl('1'));
+
+        assert_eq!((state.active_tab, state.request().url), (0, String::new()));
+
+        press_key(&mut state, ctrl('9'));
+
+        assert_eq!(state.active_tab, 2);
+
+        press_key(&mut state, ctrl('2'));
+
+        assert_eq!(state.active_tab, 1);
+
+        // a number past the last tab goes to the last
+        press_key(&mut state, ctrl('8'));
+
+        assert_eq!(state.active_tab, 2);
+    }
+
+    #[test]
+    fn ctrl_g_lists_the_tabs_and_switches_in_every_terminal() {
+        let mut state = loaded();
+
+        for url in ["http://one/", "http://two/", "http://three/"] {
+            if url != "http://one/" {
+                press_key(&mut state, ctrl('t'));
+            }
+
+            type_text(&mut state, url);
+        }
+
+        press_key(&mut state, ctrl('g'));
+
+        assert!(matches!(state.popup, Some(Popup::Tabs { selected: 2 })));
+
+        // a number jumps, and the list closes
+        press(&mut state, KeyCode::Char('1'));
+
+        assert!(state.popup.is_none());
+        assert_eq!(state.request().url, "http://one/");
+
+        // 9 is always the last
+        press_key(&mut state, ctrl('g'));
+        press(&mut state, KeyCode::Char('9'));
+
+        assert_eq!(state.request().url, "http://three/");
+
+        // arrows wrap, Enter opens
+        press_key(&mut state, ctrl('g'));
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+
+        assert_eq!(state.request().url, "http://one/");
+
+        // w closes the highlighted tab and keeps the list open
+        press_key(&mut state, ctrl('g'));
+        press(&mut state, KeyCode::Up);
+        press(&mut state, KeyCode::Char('w'));
+
+        assert_eq!(names(&state), ["one/", "*two/"]);
+        assert!(matches!(state.popup, Some(Popup::Tabs { .. })));
+
+        // n opens a new tab; Esc or Ctrl+G only close the list
+        press(&mut state, KeyCode::Char('n'));
+
+        assert_eq!(state.tab_count(), 3);
+        assert!(state.popup.is_none());
+
+        press_key(&mut state, ctrl('g'));
+        press_key(&mut state, ctrl('g'));
+
+        assert!(state.popup.is_none());
+
+        press_key(&mut state, ctrl('g'));
+        press(&mut state, KeyCode::Esc);
+
+        assert!(state.popup.is_none());
+        assert_eq!(state.tab_count(), 3);
+    }
+
+    #[test]
+    fn closing_a_changed_tab_from_the_list_asks_first() {
+        let mut state = loaded();
+
+        open(&mut state, &["create"]);
+        state.focus = Focus::Url;
+        type_text(&mut state, "x");
+        press_key(&mut state, ctrl('t'));
+        press_key(&mut state, ctrl('g'));
+        press(&mut state, KeyCode::Up);
+        press(&mut state, KeyCode::Char('w'));
+
+        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+        assert_eq!(state.tab_count(), 2);
+    }
+
+    #[test]
+    fn closing_tabs_keeps_one() {
+        let mut state = loaded();
+
+        type_text(&mut state, "http://one/");
+        press_key(&mut state, ctrl('t'));
+        press_key(&mut state, ctrl('w'));
+
+        assert_eq!(names(&state), ["*one/"]);
+
+        press_key(&mut state, ctrl('w'));
+
+        assert_eq!(names(&state), ["*new request"]);
+        assert_eq!(state.request().url, "");
+
+        // closing a tab whose request is running stops it
+        type_text(&mut state, "http://slow/");
+        press(&mut state, KeyCode::Enter);
+
+        assert_eq!(press_key(&mut state, ctrl('w')), [Command::Cancel]);
+    }
+
+    #[test]
+    fn a_response_lands_in_the_tab_that_sent_it() {
+        let mut state = loaded();
+
+        type_text(&mut state, "http://first/");
+
+        let commands = press(&mut state, KeyCode::Enter);
+        let (id, _) = sent(&commands);
+
+        press_key(&mut state, ctrl('t'));
+        update(&mut state, Action::responded(id, Ok(response("{}"))));
+
+        assert!(state.outcome.is_none());
+
+        press_key(&mut state, ctrl('1'));
+
+        assert!(matches!(state.outcome, Some(Outcome::Response(_))));
+        assert!(state.in_flight.is_none());
+    }
+
+    #[test]
+    fn leaving_a_collection_keeps_the_request_but_not_its_variables() {
+        let mut state = loaded();
+
+        state.collections[0].collection.variables =
+            vec![Variable::new(VarName::new("host").unwrap(), "h")];
+        state.collections[0].active_environment = EnvId::new("e1");
+        open(&mut state, &["create"]);
+        state.focus = Focus::Url;
+        type_text(&mut state, "http://{{host}}/");
+
+        assert!(
+            sent(&press(&mut state, KeyCode::Enter))
+                .1
+                .url
+                .contains("h/")
+        );
+
+        press_key(&mut state, ctrl('l'));
+
+        assert!(state.open.is_none());
+        assert!(state.collection.is_none());
+        assert_eq!(state.method, Method::Post);
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("left the collection: only global variables apply now")
+        );
+        assert_eq!(press(&mut state, KeyCode::Enter), Vec::new());
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("not sent: {{host}} not defined")
+        );
+
+        press_key(&mut state, ctrl('l'));
+
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("this request is not in a collection")
+        );
+    }
+
+    #[test]
+    fn renames_and_deletes_reach_tabs_in_the_background() {
+        let mut state = loaded();
+
+        open(&mut state, &["create"]);
+        press_key(&mut state, ctrl('t'));
+
+        let mut moved = sample();
+
+        moved.collection.items.retain(|i| i.slug() != "create");
+        update(
+            &mut state,
+            Action::Stored {
+                collection: LocalId::new("c1").unwrap(),
+                result: Ok(Box::new(Stored {
+                    workspace: Some(moved),
+                    ..Stored::default()
+                })),
+            },
+        );
+        press_key(&mut state, ctrl('1'));
+
+        // the request was deleted: the tab keeps it, unsaved
+        assert!(state.open.is_none());
+        assert_eq!(state.method, Method::Post);
+
+        // a deleted collection takes its tabs out of it
+        open(&mut state, &["users", "list"]);
+        press_key(&mut state, ctrl('t'));
+        update(
+            &mut state,
+            Action::Stored {
+                collection: LocalId::new("c1").unwrap(),
+                result: Ok(Box::default()),
+            },
+        );
+        press_key(&mut state, ctrl('1'));
+
+        assert!(state.collection.is_none());
     }
 }
