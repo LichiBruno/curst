@@ -1,10 +1,12 @@
 ---
 source: crates/curst/src/ui/tests.rs
+assertion_line: 68
 expression: "render(&state, 120, 14)"
 ---
-"┌ Collections ───────────────┐┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-"│no collections yet          ││   GET   │┃http://localhost/pets                                                        ┃"
-"│press c to add one          │└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"┌ Collections ───────────────┐  GET localhost/pets                                Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"│no collections yet          │┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│press c to add one          ││   GET   │┃http://localhost/pets                                                        ┃"
+"│                            │└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
 "│                            │┌ Request  Params  Headers  Body  Auth  ─────────────────────────────────────────────────┐"
 "│                            ││no query parameters, press a to add one                                                 │"
 "│                            ││                                                                                        │"
@@ -12,7 +14,6 @@ expression: "render(&state, 120, 14)"
 "│                            │┌ Response  Body  Headers  Timing  Raw  ─────────────────────────────────────────────────┐"
 "│                            ││{                                                                                       │"
 "│                            ││  "id": 1,                                                                              │"
-"│                            ││  "name": "Rex",                                                                        │"
 "└────────────────────────────┘└─────────────────────────────────────────────────────────────── 200 OK · 42.0 ms · 37 B ┘"
 " Enter send  Tab next                                                                                                   "
 " Ctrl+R send  Ctrl+S save  Ctrl+E environments  Ctrl+O settings  Ctrl+C quit                                            "

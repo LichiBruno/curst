@@ -21,6 +21,18 @@ pub(crate) fn action_for(state: &State, key: KeyEvent) -> Option<Action> {
     }
 
     match key.code {
+        KeyCode::Char('g') if ctrl => return Some(Action::Tabs),
+        KeyCode::Char('t') if ctrl => return Some(Action::NewTab),
+        KeyCode::Char('w') if ctrl => return Some(Action::CloseTab),
+        KeyCode::Char('l') if ctrl => return Some(Action::LeaveCollection),
+        KeyCode::Right if ctrl => return Some(Action::NextRequest),
+        KeyCode::Left if ctrl => return Some(Action::PreviousRequest),
+
+        // Ctrl+9 is the last tab, however many there are
+        KeyCode::Char('9') if ctrl => return Some(Action::RequestAt(usize::MAX)),
+        KeyCode::Char(c @ '1'..='8') if ctrl => {
+            return Some(Action::RequestAt(usize::from(c as u8 - b'1')));
+        }
         KeyCode::Char('r') if ctrl => return Some(Action::Send),
         KeyCode::Char('s') if ctrl => return Some(Action::Save),
         KeyCode::Char('e') if ctrl => return Some(Action::Environments),
@@ -114,6 +126,18 @@ fn popup_key(popup: &Popup, key: KeyEvent) -> Option<Action> {
             KeyCode::Char('k') => Some(Action::Choose(Backend::Keychain)),
             KeyCode::Char('f') => Some(Action::Choose(Backend::EncryptedFile)),
             KeyCode::Esc => Some(Action::ClosePopup),
+            _ => None,
+        },
+        Popup::Tabs { .. } => match key.code {
+            KeyCode::Char('9') => Some(Action::RequestAt(usize::MAX)),
+            KeyCode::Char(c @ '1'..='8') => Some(Action::RequestAt(usize::from(c as u8 - b'1'))),
+            KeyCode::Up | KeyCode::Left | KeyCode::Char('k') => Some(Action::Up),
+            KeyCode::Down | KeyCode::Right | KeyCode::Char('j') => Some(Action::Down),
+            KeyCode::Enter => Some(Action::ConfirmPopup),
+            KeyCode::Char('n') => Some(Action::NewTab),
+            KeyCode::Char('w') => Some(Action::CloseTab),
+            KeyCode::Char('g') if ctrl => Some(Action::ClosePopup),
+            KeyCode::Esc | KeyCode::Char('q') => Some(Action::ClosePopup),
             _ => None,
         },
         Popup::Settings => match key.code {

@@ -4,6 +4,7 @@ mod popup;
 mod request;
 mod send;
 mod sidebar;
+mod tabs;
 mod view_model;
 mod workspace;
 
@@ -225,6 +226,16 @@ pub(crate) struct State {
 
     /// where secrets are kept, `None` until the user picks
     pub(crate) backend: Option<Backend>,
+
+    /// the collection the active tab belongs to: the one its saved request
+    /// is in; `None` for a request outside any collection, which only global
+    /// variables reach
+    pub(crate) collection: Option<LocalId>,
+
+    /// the tabs that are not active, in order, and where the active one sits
+    /// among them
+    pub(crate) others: Vec<tabs::Parked>,
+    pub(crate) active_tab: usize,
     next_id: u64,
 }
 
@@ -258,6 +269,9 @@ impl Default for State {
             waiting: None,
             last_sent: None,
             backend: None,
+            collection: None,
+            others: Vec::new(),
+            active_tab: 0,
             next_id: 0,
         }
     }
@@ -272,16 +286,20 @@ impl State {
         self.collections.iter_mut().find(|w| w.id == *id)
     }
 
-    /// the collection whose variables and environment apply: the open
-    /// request's, otherwise the one selected in the sidebar
+    /// the collection whose variables and environment apply: the active
+    /// tab's, never just the one selected in the sidebar
     pub(crate) fn current_workspace(&self) -> Option<&Workspace> {
-        let key = self
-            .open
-            .as_ref()
-            .map(|o| &o.key)
-            .or(self.sidebar.selected.as_ref())?;
+        self.workspace(self.collection.as_ref()?)
+    }
 
-        self.workspace(&key.collection)
+    /// the collection the environment picker works on: the active tab's,
+    /// otherwise the one selected in the sidebar
+    fn picked_workspace(&self) -> Option<&Workspace> {
+        self.current_workspace().or_else(|| {
+            let selected = self.sidebar.selected.as_ref()?;
+
+            self.workspace(&selected.collection)
+        })
     }
 
     fn response_line_count(&self) -> usize {
@@ -398,6 +416,17 @@ pub(crate) enum Action {
         result: Result<(), String>,
     },
     MakeSecret,
+    NewTab,
+    CloseTab,
+    LeaveCollection,
+    NextRequest,
+    PreviousRequest,
+
+    /// the tab at this position; past the end, the last one
+    RequestAt(usize),
+
+    /// opens the tab switcher
+    Tabs,
     Settings,
     Migrate,
     Migrated {
@@ -582,6 +611,18 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         Action::Send => return send::send(state),
         Action::Follow => return send::follow(state),
         Action::MakeSecret => request::make_secret(state),
+        Action::NewTab => tabs::new_tab(state),
+        Action::CloseTab => return tabs::close(state),
+        Action::LeaveCollection => tabs::leave_collection(state),
+        Action::NextRequest | Action::PreviousRequest => {
+            tabs::step(state, matches!(action, Action::NextRequest));
+        }
+        Action::RequestAt(index) => tabs::switch_to(state, index),
+        Action::Tabs => {
+            state.popup = Some(Popup::Tabs {
+                selected: state.active_tab,
+            });
+        }
         Action::Settings => state.popup = Some(Popup::Settings),
         Action::EditBody => return request::edit_body(state),
         Action::Save => return save(state),
@@ -674,6 +715,14 @@ fn report(state: &mut State, action: Action) -> Vec<Command> {
         },
         Action::SecretsLocked { id, locked } => send::locked(state, id, locked),
         Action::NeedsApproval { id, approval } => send::needs_approval(state, id, *approval),
+        Action::Responded { id, result } if state.in_flight != Some(id) => {
+            let outcome = match *result {
+                Ok(view) => Outcome::Response(Box::new(view)),
+                Err(err) => Outcome::Error(err.to_string()),
+            };
+
+            tabs::deliver(state, id, outcome);
+        }
         Action::Responded { id, result } => {
             if state.in_flight == Some(id) {
                 if let Ok(view) = result.as_ref()
@@ -782,7 +831,7 @@ fn quit(state: &mut State) {
     );
     let variables = matches!(&state.popup, Some(Popup::Variables(editor)) if editor.is_changed());
 
-    if (state.is_dirty() || variables) && !asked {
+    if (state.any_dirty() || variables) && !asked {
         // on no, the pop-up that was open comes back
         let previous = state.popup.take().map(Box::new);
 
@@ -832,7 +881,7 @@ fn suggested_name(state: &State) -> String {
 }
 
 fn open_environments(state: &mut State) {
-    let Some(workspace) = state.current_workspace() else {
+    let Some(workspace) = state.picked_workspace() else {
         state.notice = Some(NO_COLLECTION.into());
 
         return;
@@ -922,6 +971,12 @@ fn trusted(state: &mut State, previous: &LocalId, workspace: Workspace) {
     if let Some(open) = &mut state.open {
         open.key = open.key.rebased(&from, &to);
     }
+
+    if state.collection.as_ref() == Some(previous) {
+        state.collection = Some(to.collection.clone());
+    }
+
+    tabs::rebase(state, &from, &to);
 }
 
 /// the secrets that go with what a change removed: a whole collection, or
@@ -1010,6 +1065,8 @@ fn stored_change(state: &mut State, collection: &LocalId, stored: Stored) -> Vec
         if let Some(open) = &mut state.open {
             open.key = open.key.rebased(&from, &to);
         }
+
+        tabs::rebase(state, &from, &to);
     }
 
     forget_missing(state);
@@ -1024,6 +1081,7 @@ fn stored_change(state: &mut State, collection: &LocalId, stored: Stored) -> Vec
 
     if let Some((key, written)) = saved {
         state.notice = Some("saved".into());
+        state.collection = Some(key.collection.clone());
         state.open = Some(OpenRequest {
             key,
             name: String::new(),
@@ -1055,6 +1113,12 @@ fn forget(state: &mut State, gone: &NodeKey) {
     if state.open.as_ref().is_some_and(|o| o.key.is_within(gone)) {
         state.open = None;
     }
+
+    if gone.path.is_empty() && state.collection.as_ref() == Some(&gone.collection) {
+        state.collection = None;
+    }
+
+    tabs::forget(state, gone);
 
     if state
         .sidebar
@@ -1090,13 +1154,18 @@ fn forget_missing(state: &mut State) {
             .workspace(&key.collection)
             .is_some_and(|w| key.path.is_empty() || w.collection.item(&key.path).is_some())
     };
-    let kept = [
+    let mut kept: Vec<NodeKey> = [
         state.open.as_ref().map(|o| o.key.clone()),
         state.sidebar.selected.clone(),
         state.sidebar.cut.clone(),
-    ];
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
-    for key in kept.into_iter().flatten() {
+    kept.extend(tabs::open_keys(state));
+
+    for key in kept {
         if !exists(state, &key) {
             forget(state, &key);
         }

@@ -153,28 +153,8 @@ fn open(state: &mut State, toggle: bool) {
     };
 
     match row.kind {
-        RowKind::Request(_) => {
-            let same = state.open.as_ref().is_some_and(|o| o.key == row.key);
-
-            if same {
-                return;
-            }
-
-            if state.is_dirty() {
-                let name = state
-                    .open
-                    .as_ref()
-                    .map_or("", |o| o.name.as_str())
-                    .to_owned();
-
-                state.popup = Some(Popup::confirm(
-                    format!("Discard the unsaved changes to {name}?"),
-                    Pending::Open(row.key),
-                ));
-            } else {
-                state.load_request(&row.key);
-            }
-        }
+        // a request opens in a tab of its own, so nothing open is lost
+        RowKind::Request(_) => super::tabs::open_request(state, &row.key),
         RowKind::Folder | RowKind::Collection => {
             if row.expanded && toggle {
                 state.sidebar.expanded.remove(&row.key);

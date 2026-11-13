@@ -313,6 +313,9 @@ pub(super) fn backend_chosen(state: &mut State, result: Result<Backend, String>)
 
 /// the runtime refused to send until the user approves `approval`
 pub(super) fn needs_approval(state: &mut State, id: u64, approval: Approval) {
+    // the question is about that tab's request, so it is shown there
+    super::tabs::focus_sender(state, id);
+
     if state.in_flight != Some(id) {
         return;
     }

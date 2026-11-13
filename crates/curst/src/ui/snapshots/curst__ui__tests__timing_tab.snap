@@ -2,12 +2,12 @@
 source: crates/curst/src/ui/tests.rs
 expression: "render(&state, 80, 22)"
 ---
-"┌ Collections ─────────┐┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
-"│no collections yet    ││   GET   │┃http://localhost/                          ┃"
-"│press c to add one    │└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"┌ Collections ─────────┐  GET localhost/                                        "
+"│no collections yet    │┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│press c to add one    ││   GET   │┃http://localhost/                          ┃"
+"│                      │└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
 "│                      │┌ Request  Params  Headers  Body  Auth  ───────────────┐"
 "│                      ││no query parameters, press a to add one               │"
-"│                      ││                                                      │"
 "│                      ││                                                      │"
 "│                      ││                                                      │"
 "│                      ││                                                      │"

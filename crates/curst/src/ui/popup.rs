@@ -107,6 +107,7 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
             ..
         } => passphrase(*new, first.is_some(), input, error.as_deref(), frame),
         Popup::Settings => settings(state, frame),
+        Popup::Tabs { selected } => tab_list(state, *selected, frame),
         Popup::Approve(approval) => approve(approval, frame),
         Popup::Variables(editor) => {
             let area = centered(frame, 100, frame.area().height.saturating_sub(4).max(8));
@@ -135,6 +136,51 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
             table(editor.table(), true, empty, frame, inner);
         }
     }
+}
+
+/// the open tabs, numbered as the keys that reach them: 1 to 8 for the
+/// first eight, and 9 for the last
+fn tab_list(state: &State, selected: usize, frame: &mut Frame) {
+    let labels = state.tab_labels();
+    let last = labels.len() - 1;
+    let dim = Style::default().fg(Color::DarkGray);
+    let lines: Vec<Line> = labels
+        .iter()
+        .enumerate()
+        .map(|(index, label)| {
+            let number = match index {
+                _ if index == last && index >= 8 => "9".to_owned(),
+                0..8 => (index + 1).to_string(),
+                _ => " ".to_owned(),
+            };
+            let current = if label.active { "•" } else { " " };
+            let dirty = if label.dirty { " ●" } else { "" };
+            let text = format!(
+                " {number} {current} {:<7} {}{dirty} ",
+                label.method.as_str(),
+                display(&label.name)
+            );
+            let style = if index == selected {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default()
+            };
+
+            Line::from(vec![Span::styled(text, style)])
+        })
+        .chain(std::iter::once(Line::from(Span::styled(
+            " • is the tab you are on",
+            dim,
+        ))))
+        .collect();
+    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+    let area = centered(frame, 60, height);
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(pane(Line::from(" Tabs "), true)),
+        area,
+    );
 }
 
 fn settings(state: &State, frame: &mut Frame) {
@@ -342,6 +388,14 @@ pub(super) fn hints(popup: &Popup) -> Vec<(&'static str, &'static str)> {
         Popup::ChooseBackend => vec![("k", "keychain"), ("f", "encrypted file"), ("Esc", "later")],
         Popup::Approve(_) => vec![("y", "send"), ("n", "don't send")],
         Popup::Settings => vec![("m", "move secrets"), ("Esc", "close")],
+        Popup::Tabs { .. } => vec![
+            ("1-9", "go to"),
+            ("↑↓", "choose"),
+            ("Enter", "open"),
+            ("n", "new"),
+            ("w", "close"),
+            ("Esc", "back"),
+        ],
         Popup::Environments { .. } => vec![
             ("↑↓", "choose"),
             ("Enter", "use"),

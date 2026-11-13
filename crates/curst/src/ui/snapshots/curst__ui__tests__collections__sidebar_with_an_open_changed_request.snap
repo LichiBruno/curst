@@ -1,16 +1,17 @@
 ---
 source: crates/curst/src/ui/tests.rs
+assertion_line: 254
 expression: "render(&state, 100, 12)"
 ---
-"┏ Collections ━━━━━━━━━━ Dev ┓┌ Method ─┐┌ CREATE ● ───────────────────────────────────────────────┐"
-"┃▾ Pets                      ┃│  POST   ││http://localhost/pets                                    │"
-"┃  ▾ Users                   ┃└─────────┘└─────────────────────────────────────────────────────────┘"
-"┃    GET  LIST               ┃┌ Request  Params  Headers  Body  Auth  ─────────────────────────────┐"
-"┃  POST CREATE               ┃│no query parameters, press a to add one                             │"
+"┏ Collections ━━━━━━━━━━ Dev ┓  POST CREATE ●                 Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"┃▾ Pets                      ┃┌ Method ─┐┌ CREATE ● ───────────────────────────────────────────────┐"
+"┃  ▾ Users                   ┃│  POST   ││http://localhost/pets                                    │"
+"┃    GET  LIST               ┃└─────────┘└─────────────────────────────────────────────────────────┘"
+"┃  POST CREATE               ┃┌ Request  Params  Headers  Body  Auth  ─────────────────────────────┐"
+"┃                            ┃│no query parameters, press a to add one                             │"
 "┃                            ┃└────────────────────────────────────────────────────────────────────┘"
 "┃                            ┃┌ Response  Body  Headers  Timing  Raw  ─────────────────────────────┐"
 "┃                            ┃│no response yet, type a URL and press Enter                         │"
-"┃                            ┃│                                                                    │"
 "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└────────────────────────────────────────────────────────────────────┘"
 " Enter open  n request  f folder  c collection  r rename  d delete  x p move                        "
 " Ctrl+R send  Ctrl+S save  Ctrl+E environments  Ctrl+O settings  Ctrl+C quit                        "

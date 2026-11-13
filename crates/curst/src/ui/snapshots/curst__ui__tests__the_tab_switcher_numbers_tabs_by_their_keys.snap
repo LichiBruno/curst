@@ -1,0 +1,25 @@
+---
+source: crates/curst/src/ui/tests.rs
+assertion_line: 396
+expression: screen
+---
+"┌ Collections ─────────┐‹ GET host-1/   GET host-2/   GET host-3/  ›            "
+"│no collections yet    │┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│press c to add one    ││   GET   │┃http://host-2/                             ┃"
+"│                      │└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"│         ┏ Tabs ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓─────────┐"
+"│         ┃ 1   GET     host-0/                                      ┃         │"
+"│         ┃ 2   GET     host-1/                                      ┃         │"
+"│         ┃ 3 • GET     host-2/                                      ┃         │"
+"│         ┃ 4   GET     host-3/                                      ┃         │"
+"│         ┃ 5   GET     host-4/                                      ┃─────────┘"
+"│         ┃ 6   GET     host-5/                                      ┃─────────┐"
+"│         ┃ 7   GET     host-6/                                      ┃         │"
+"│         ┃ 8   GET     host-7/                                      ┃         │"
+"│         ┃     GET     host-8/                                      ┃         │"
+"│         ┃ 9   GET     host-9/                                      ┃         │"
+"│         ┃ • is the tab you are on                                  ┃         │"
+"│         ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛         │"
+"└──────────────────────┘└──────────────────────────────────────────────────────┘"
+" 1-9 go to  ↑↓ choose  Enter open  n new  w close  Esc back                     "
+" Ctrl+C quit                                                                    "

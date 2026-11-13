@@ -79,6 +79,8 @@ impl State {
         self.body = BodyEditor::from_body(&request.body);
         self.auth = AuthEditor::from_auth(&request.auth);
 
+        self.collection = Some(key.collection.clone());
+
         // the baseline is what the editor makes of the file, so a request
         // that was only opened never counts as changed
         self.open = Some(OpenRequest {
