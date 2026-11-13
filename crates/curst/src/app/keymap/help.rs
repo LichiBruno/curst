@@ -83,6 +83,8 @@ pub(crate) fn describe(name: &str) -> &'static str {
         "help" => "this help",
         "palette" => "the command palette",
         "keys" => "the next keymap preset",
+        "copy" => "copy what the response tab shows",
+        "copy-curl" => "copy the request as a curl command",
         "theme" => "the next theme",
         _ if name.starts_with("request.go-") => "go to request 1-8, 9 the last",
         _ if name.starts_with("trust.moved-") => "it moved from the folder with this number",

@@ -232,7 +232,8 @@ pub(crate) fn run(
         | Command::Approve { .. }
         | Command::ChangeSecrets { .. }
         | Command::Migrate { .. }
-        | Command::EditBody { .. } => None,
+        | Command::EditBody { .. }
+        | Command::Copy(_) => None,
     }
 }
 

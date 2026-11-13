@@ -353,9 +353,17 @@ impl Popup {
 /// handles `action` while a pop-up is open, or returns it when the pop-up
 /// has no use for it
 pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, Action> {
-    let Some(popup) = state.popup.take() else {
+    let Some(mut popup) = state.popup.take() else {
         return Err(action);
     };
+
+    // a paste goes into the pop-up's field, never to what is under it
+    if let Action::PasteText(text) = &action {
+        paste(&mut popup, text);
+        state.popup = Some(popup);
+
+        return Ok(Vec::new());
+    }
 
     match popup {
         Popup::Prompt { purpose, mut input } => match action {
@@ -700,6 +708,27 @@ fn help(
     });
 
     Ok(Vec::new())
+}
+
+/// pasted text into the field of a pop-up, if it has one
+fn paste(popup: &mut Popup, text: &str) {
+    let text = super::request::one_line(text);
+
+    match popup {
+        Popup::Prompt { input, .. } | Popup::Passphrase { input, .. } => {
+            input.insert_str(text);
+        }
+        Popup::Palette(palette) => {
+            palette.input.insert_str(text);
+            palette.selected = 0;
+        }
+        Popup::Variables(editor) => {
+            if let Some((_, area)) = &mut editor.table_mut().editing {
+                area.insert_str(text);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// the user left a secret prompt: the request waiting for it is dropped

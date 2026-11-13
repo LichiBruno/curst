@@ -399,13 +399,34 @@ fn redirects_keep_or_drop_method_and_body_like_curl() {
         then.status(307).header("location", "/target");
     });
 
+    server.mock(|when, then| {
+        when.path("/moved");
+        then.status(301).header("location", "/target");
+    });
+
+    server.mock(|when, then| {
+        when.path("/found");
+        then.status(302).header("location", "/target");
+    });
+
+    server.mock(|when, then| {
+        when.path("/permanent");
+        then.status(308).header("location", "/target");
+    });
+
+    // 301, 302 and 303 after a POST become a GET without the body; 307
+    // and 308 keep both
     let cases = [
+        (Method::Post, "/moved", "GET", ""),
+        (Method::Post, "/found", "GET", ""),
         (Method::Post, "/see-other", "GET", ""),
         (Method::Put, "/see-other", "GET", ""),
         (Method::Delete, "/see-other", "GET", ""),
         (Method::Post, "/temporary", "POST", "payload"),
         (Method::Put, "/temporary", "PUT", "payload"),
         (Method::Delete, "/temporary", "DELETE", "payload"),
+        (Method::Post, "/permanent", "POST", "payload"),
+        (Method::Put, "/permanent", "PUT", "payload"),
     ];
 
     for (method, path, expected_method, expected_body) in cases {

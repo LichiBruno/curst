@@ -1,6 +1,7 @@
 //! editing the request: the URL, the request tabs and the response pane's
 //! scrolling
 
+use curst_core::curl;
 use curst_core::model::{Auth, Item, Request, Variable};
 use curst_core::secrets::detect::{self, Place};
 use curst_core::secrets::{Secret, SecretKey};
@@ -59,6 +60,16 @@ impl State {
             .is_some_and(|open| self.request() != open.baseline)
     }
 
+    /// fills the editors with `request`
+    pub(crate) fn show(&mut self, request: &Request) {
+        self.method = request.method;
+        self.url = super::editor::single_line(&request.url, super::URL_PLACEHOLDER);
+        self.params = Table::from_pairs(&request.params);
+        self.headers = Table::from_pairs(&request.headers);
+        self.body = BodyEditor::from_body(&request.body);
+        self.auth = AuthEditor::from_auth(&request.auth);
+    }
+
     /// fills the editor from the saved request at `key`
     pub(crate) fn load_request(&mut self, key: &NodeKey) {
         let Some(workspace) = self.workspace(&key.collection) else {
@@ -72,13 +83,7 @@ impl State {
         let request = saved.request.clone();
         let name = saved.name.clone();
 
-        self.method = request.method;
-        self.url = super::editor::single_line(&request.url, super::URL_PLACEHOLDER);
-        self.params = Table::from_pairs(&request.params);
-        self.headers = Table::from_pairs(&request.headers);
-        self.body = BodyEditor::from_body(&request.body);
-        self.auth = AuthEditor::from_auth(&request.auth);
-
+        self.show(&request);
         self.collection = Some(key.collection.clone());
 
         // the baseline is what the editor makes of the file, so a request
@@ -316,23 +321,6 @@ fn flagged(state: &State) -> Option<(Place, String)> {
     }
 }
 
-/// a variable name made from a header or parameter name
-fn suggest(name: &str) -> String {
-    let name: String = name
-        .trim()
-        .to_ascii_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let name = name.trim_matches('_');
-
-    if name.is_empty() {
-        "secret".to_owned()
-    } else {
-        name.to_owned()
-    }
-}
-
 /// asks for a name for the flagged value at the selected place
 pub(super) fn make_secret(state: &mut State) {
     let Some((place, hint)) = flagged(state) else {
@@ -341,7 +329,10 @@ pub(super) fn make_secret(state: &mut State) {
         return;
     };
 
-    state.popup = Some(Popup::prompt(Purpose::MakeSecret(place), &suggest(&hint)));
+    state.popup = Some(Popup::prompt(
+        Purpose::MakeSecret(place),
+        &curl::name_for(&hint),
+    ));
 }
 
 fn value_at(state: &State, place: Place) -> Option<String> {
@@ -414,11 +405,11 @@ pub(super) fn turn_into_secret(state: &mut State, place: Place, name: &VarName) 
 
     // an auth scheme stays in the field: `Bearer abc` becomes
     // `Bearer {{token}}`, and only `abc` is the secret
-    let (scheme, secret) = ["Bearer ", "Basic ", "bearer ", "basic "]
-        .iter()
-        .find_map(|scheme| value.strip_prefix(scheme).map(|rest| (*scheme, rest)))
-        .filter(|_| matches!(place, Place::Header(_)))
-        .unwrap_or(("", value.as_str()));
+    let (scheme, secret) = if matches!(place, Place::Header(_)) {
+        curl::split_scheme(&value)
+    } else {
+        ("", value.as_str())
+    };
     let secret = Secret::new(secret);
     let (key, file) = secret_home(state, Variable::secret(name.clone()));
 
@@ -547,4 +538,151 @@ impl State {
             .as_ref()
             .map(|(column, _)| *column)
     }
+}
+
+/// text pasted into a one-line field: line breaks and other control
+/// characters become spaces
+pub(super) fn one_line(text: &str) -> String {
+    text.trim_matches(['\r', '\n'])
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
+/// text pasted where the focus is: a curl command becomes a request, and
+/// anything else goes into the field being typed in
+pub(super) fn paste(state: &mut State, text: &str) -> Vec<Command> {
+    let typing_body = state.focus == Focus::Request
+        && state.request_tab == RequestTab::Body
+        && state.body.typing == Some(BodyField::Text);
+    let typing = state.focus == Focus::Url || state.request_typing();
+
+    if !typing_body && is_curl(text) {
+        return import_curl(state, text);
+    }
+
+    if typing_body {
+        let text: String = text
+            .chars()
+            .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+            .collect();
+
+        state.body.text.insert_str(text);
+
+        return Vec::new();
+    }
+
+    if !typing {
+        return Vec::new();
+    }
+
+    let text = one_line(text);
+
+    match state.focus {
+        Focus::Url => {
+            state.url.insert_str(text);
+        }
+        Focus::Request => {
+            if let Some(field) = state.body.field() {
+                field.insert_str(text);
+            } else if state.request_tab == RequestTab::Auth {
+                if let Some(field) = state.auth.selected_field() {
+                    field.insert_str(text);
+                }
+            } else if let Some(table) = state.active_table()
+                && let Some((_, area)) = &mut table.editing
+            {
+                area.insert_str(text);
+            }
+        }
+        Focus::Sidebar | Focus::Method | Focus::Response => {}
+    }
+
+    Vec::new()
+}
+
+/// whether pasted text is a curl command
+pub(crate) fn is_curl(text: &str) -> bool {
+    let text = text.trim_start();
+
+    text.strip_prefix("curl")
+        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+}
+
+/// a pasted curl command as a request, in a tab of its own outside any
+/// collection; what looks like a credential is kept as a global secret
+/// and the request holds `{{name}}` in its place
+fn import_curl(state: &mut State, text: &str) -> Vec<Command> {
+    if state.waiting.is_some() {
+        state.notice = Some("not imported: secrets are still being stored, try again".into());
+
+        return Vec::new();
+    }
+
+    let globals = state.globals.clone();
+    let taken = |name: &str| globals.iter().any(|v| v.name.as_str() == name);
+    let imported = match curl::import(text, taken) {
+        Ok(imported) => imported,
+        Err(err) => {
+            state.notice = Some(format!("not imported: {err}"));
+
+            return Vec::new();
+        }
+    };
+
+    if !state.is_blank() || state.collection.is_some() {
+        super::tabs::new_tab(state);
+    }
+
+    state.show(&imported.request);
+    state.focus = Focus::Url;
+
+    let names: Vec<String> = imported
+        .credentials
+        .iter()
+        .map(|c| format!("{{{{{}}}}}", c.name))
+        .collect();
+    let mut notice = match names.len() {
+        0 => "imported from curl".to_owned(),
+        1 => format!(
+            "imported from curl; {} holds a credential as a secret",
+            names[0]
+        ),
+        _ => format!(
+            "imported from curl; {} hold credentials as secrets",
+            names.join(", ")
+        ),
+    };
+
+    if let Some(first) = imported.warnings.first() {
+        let more = imported.warnings.len() - 1;
+        let more = if more > 0 {
+            format!(" (and {more} more)")
+        } else {
+            String::new()
+        };
+
+        notice = format!("{notice}; left out {first}{more}");
+    }
+
+    state.notice = Some(notice);
+
+    if imported.credentials.is_empty() {
+        return Vec::new();
+    }
+
+    let mut globals = state.globals.clone();
+    let mut changes = Vec::new();
+
+    for credential in imported.credentials {
+        upsert(&mut globals, Variable::secret(credential.name.clone()));
+        changes.push(SecretChange::Set(
+            SecretKey::Global {
+                name: credential.name,
+            },
+            credential.value,
+        ));
+    }
+
+    super::send::change_secrets(state, changes, vec![Command::SaveGlobals(globals)])
 }

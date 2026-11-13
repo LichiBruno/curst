@@ -22,7 +22,10 @@ use curst_core::model::Request;
 use curst_core::secrets::{SecretIndex, SecretKey};
 use curst_core::store::{Library, Paths, Settings};
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
+use ratatui::crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event,
+};
 use ratatui::crossterm::execute;
 
 use app::{Action, Command, Outcome, SecretChange, State};
@@ -299,6 +302,7 @@ impl Runtime {
 
                 let actions = match event::read()? {
                     Event::Key(key) => app::action_for(&state, key),
+                    Event::Paste(text) => vec![Action::PasteText(text)],
                     Event::Mouse(mouse) if self.modes.mouse => {
                         // a click lands on what is on the screen now
                         if dirty && app::mouse_acts(mouse) {
@@ -419,6 +423,7 @@ impl Runtime {
                 self.secret_job(Job::Migrate { id, to, passphrase });
             }
             Command::EditBody { text, extension } => self.edit = Some((text, extension)),
+            Command::Copy(text) => copy(&text),
             Command::ChangeSecrets { id, changes } => {
                 // a secret of an untrusted collection is never stored
                 let untrusted = changes.iter().any(|change| {
@@ -476,27 +481,40 @@ impl Runtime {
 /// hands the terminal to the user's editor and takes it back after
 /// the keyboard protocol that tells keys like Ctrl+1 apart from plain 1,
 /// switched on only where the terminal supports it
-/// the terminal modes curst switches on: the keyboard protocol and the
-/// mouse. they are switched off whenever the terminal is handed back, at
+/// the terminal modes curst switches on: the keyboard protocol, the mouse
+/// and bracketed paste. they are switched off whenever the terminal is handed back, at
 /// exit, around the editor and on a crash, or the shell would be left
 /// printing escape codes for every key and mouse move
 #[derive(Debug, Clone, Copy)]
 struct Modes {
     enhanced: bool,
     mouse: bool,
+
+    /// pasted text arrives as one event; without it, a pasted newline
+    /// would press Enter
+    paste: bool,
 }
 
 impl Modes {
     fn on(mouse: bool) -> Self {
         let enhanced = keyboard::enable();
         let mouse = mouse && execute!(std::io::stdout(), EnableMouseCapture).is_ok();
+        let paste = execute!(std::io::stdout(), EnableBracketedPaste).is_ok();
 
-        Self { enhanced, mouse }
+        Self {
+            enhanced,
+            mouse,
+            paste,
+        }
     }
 
     fn off(self) {
         if self.mouse {
             let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        }
+
+        if self.paste {
+            let _ = execute!(std::io::stdout(), DisableBracketedPaste);
         }
 
         keyboard::disable(self.enhanced);
@@ -510,6 +528,10 @@ impl Modes {
         if self.mouse {
             let _ = execute!(std::io::stdout(), EnableMouseCapture);
         }
+
+        if self.paste {
+            let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+        }
     }
 
     /// switches the modes off before a crash is reported; ratatui's own
@@ -522,6 +544,42 @@ impl Modes {
             previous(info);
         }));
     }
+}
+
+/// `bytes` in base64, as OSC 52 carries them
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[((n >> shift) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+
+    out
+}
+
+/// puts `text` on the clipboard with OSC 52: the terminal does it, so it
+/// works over SSH too; a terminal that does not allow it says nothing
+fn copy(text: &str) {
+    use std::io::Write;
+
+    let mut out = std::io::stdout();
+    let _ = write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()));
+    let _ = out.flush();
 }
 
 mod keyboard {
@@ -774,6 +832,15 @@ mod tests {
         assert!(!startup.first_run);
         assert_eq!(state.keys_preset, "standard");
         assert_eq!(state.key(app::Layer::Global, "send"), "Ctrl+R");
+    }
+
+    #[test]
+    fn base64_is_what_osc_52_expects() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64("curl é".as_bytes()), "Y3VybCDDqQ==");
     }
 
     #[test]
