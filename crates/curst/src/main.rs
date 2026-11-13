@@ -22,7 +22,10 @@ use curst_core::model::Request;
 use curst_core::secrets::{SecretIndex, SecretKey};
 use curst_core::store::{Library, Paths, Settings};
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
+use ratatui::crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event,
+};
 use ratatui::crossterm::execute;
 
 use app::{Action, Command, Outcome, SecretChange, State};
@@ -299,6 +302,7 @@ impl Runtime {
 
                 let actions = match event::read()? {
                     Event::Key(key) => app::action_for(&state, key),
+                    Event::Paste(text) => vec![Action::PasteText(text)],
                     Event::Mouse(mouse) if self.modes.mouse => {
                         // a click lands on what is on the screen now
                         if dirty && app::mouse_acts(mouse) {
@@ -419,6 +423,24 @@ impl Runtime {
                 self.secret_job(Job::Migrate { id, to, passphrase });
             }
             Command::EditBody { text, extension } => self.edit = Some((text, extension)),
+            Command::Copy(text) => {
+                copy_through_terminal(&text);
+
+                // locally, the system clipboard is set too: some terminals,
+                // such as Warp and Terminal.app, ignore OSC 52
+                if !over_ssh(|key| std::env::var_os(key).is_some()) {
+                    let results = self.results.clone();
+
+                    self.workers.push(thread::spawn(move || {
+                        if !copy_through_system(&text) {
+                            let _ = results.send(Action::Notice(
+                                "the clipboard was not set: no clipboard tool worked, and this terminal may ignore OSC 52"
+                                    .into(),
+                            ));
+                        }
+                    }));
+                }
+            }
             Command::ChangeSecrets { id, changes } => {
                 // a secret of an untrusted collection is never stored
                 let untrusted = changes.iter().any(|change| {
@@ -476,27 +498,40 @@ impl Runtime {
 /// hands the terminal to the user's editor and takes it back after
 /// the keyboard protocol that tells keys like Ctrl+1 apart from plain 1,
 /// switched on only where the terminal supports it
-/// the terminal modes curst switches on: the keyboard protocol and the
-/// mouse. they are switched off whenever the terminal is handed back, at
+/// the terminal modes curst switches on: the keyboard protocol, the mouse
+/// and bracketed paste. they are switched off whenever the terminal is handed back, at
 /// exit, around the editor and on a crash, or the shell would be left
 /// printing escape codes for every key and mouse move
 #[derive(Debug, Clone, Copy)]
 struct Modes {
     enhanced: bool,
     mouse: bool,
+
+    /// pasted text arrives as one event; without it, a pasted newline
+    /// would press Enter
+    paste: bool,
 }
 
 impl Modes {
     fn on(mouse: bool) -> Self {
         let enhanced = keyboard::enable();
         let mouse = mouse && execute!(std::io::stdout(), EnableMouseCapture).is_ok();
+        let paste = execute!(std::io::stdout(), EnableBracketedPaste).is_ok();
 
-        Self { enhanced, mouse }
+        Self {
+            enhanced,
+            mouse,
+            paste,
+        }
     }
 
     fn off(self) {
         if self.mouse {
             let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        }
+
+        if self.paste {
+            let _ = execute!(std::io::stdout(), DisableBracketedPaste);
         }
 
         keyboard::disable(self.enhanced);
@@ -510,6 +545,10 @@ impl Modes {
         if self.mouse {
             let _ = execute!(std::io::stdout(), EnableMouseCapture);
         }
+
+        if self.paste {
+            let _ = execute!(std::io::stdout(), EnableBracketedPaste);
+        }
     }
 
     /// switches the modes off before a crash is reported; ratatui's own
@@ -522,6 +561,103 @@ impl Modes {
             previous(info);
         }));
     }
+}
+
+/// `bytes` in base64, as OSC 52 carries them
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            if i <= chunk.len() {
+                out.push(char::from(ALPHABET[((n >> shift) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+
+    out
+}
+
+/// asks the terminal to put `text` on the clipboard, with OSC 52: it
+/// works over SSH too, but a terminal that does not allow it says nothing
+fn copy_through_terminal(text: &str) {
+    use std::io::Write;
+
+    let mut out = std::io::stdout();
+    let _ = write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()));
+    let _ = out.flush();
+}
+
+/// whether curst runs on another machine than the one the user sits at,
+/// where its system clipboard would be the wrong one
+fn over_ssh(set: impl Fn(&str) -> bool) -> bool {
+    set("SSH_CONNECTION") || set("SSH_TTY")
+}
+
+/// the programs that set the system clipboard from their input, to try in
+/// order
+fn clipboard_tools(wayland: bool) -> Vec<(&'static str, &'static [&'static str])> {
+    if cfg!(target_os = "macos") {
+        return vec![("pbcopy", &[])];
+    }
+
+    if cfg!(windows) {
+        return vec![("clip", &[])];
+    }
+
+    let mut tools: Vec<(&str, &[&str])> = Vec::new();
+
+    if wayland {
+        tools.push(("wl-copy", &[]));
+    }
+
+    tools.push(("xclip", &["-selection", "clipboard"]));
+    tools.push(("xsel", &["--clipboard", "--input"]));
+
+    tools
+}
+
+/// puts `text` on the system clipboard through its input, never its
+/// arguments, with the first tool that works; false when none did
+fn copy_through_system(text: &str) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
+
+    for (program, args) in clipboard_tools(wayland) {
+        let child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        let Ok(mut child) = child else {
+            continue;
+        };
+
+        let wrote = child
+            .stdin
+            .take()
+            .is_some_and(|mut input| input.write_all(text.as_bytes()).is_ok());
+
+        if child.wait().is_ok_and(|status| status.success()) && wrote {
+            return true;
+        }
+    }
+
+    false
 }
 
 mod keyboard {
@@ -774,6 +910,32 @@ mod tests {
         assert!(!startup.first_run);
         assert_eq!(state.keys_preset, "standard");
         assert_eq!(state.key(app::Layer::Global, "send"), "Ctrl+R");
+    }
+
+    #[test]
+    fn the_system_clipboard_is_for_local_sessions_only() {
+        assert!(over_ssh(|key| key == "SSH_CONNECTION"));
+        assert!(over_ssh(|key| key == "SSH_TTY"));
+        assert!(!over_ssh(|_| false));
+
+        let tools: Vec<&str> = clipboard_tools(true).iter().map(|(p, _)| *p).collect();
+
+        if cfg!(target_os = "macos") {
+            assert_eq!(tools, ["pbcopy"]);
+        } else if cfg!(windows) {
+            assert_eq!(tools, ["clip"]);
+        } else {
+            assert_eq!(tools, ["wl-copy", "xclip", "xsel"]);
+        }
+    }
+
+    #[test]
+    fn base64_is_what_osc_52_expects() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64("curl é".as_bytes()), "Y3VybCDDqQ==");
     }
 
     #[test]

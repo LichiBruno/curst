@@ -138,7 +138,7 @@ impl State {
 
     /// whether the active tab holds nothing worth keeping: never saved,
     /// never sent and empty
-    fn is_blank(&self) -> bool {
+    pub(super) fn is_blank(&self) -> bool {
         self.open.is_none()
             && self.outcome.is_none()
             && self.in_flight.is_none()

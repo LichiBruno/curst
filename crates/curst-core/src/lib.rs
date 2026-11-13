@@ -7,6 +7,7 @@
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::panic))]
 
+pub mod curl;
 pub mod http;
 pub mod model;
 pub mod secrets;

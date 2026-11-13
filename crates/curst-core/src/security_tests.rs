@@ -255,3 +255,73 @@ fn a_copied_collection_reaches_none_of_the_original_secrets() {
     assert_eq!(secrets.get(&key).unwrap(), None);
     assert!(!library.is_managed(&CollectionDir::open(copy)));
 }
+
+/// a pasted curl command with credentials in each usual place is saved
+/// with placeholders only, and its values reach only the secret store
+#[test]
+fn a_pasted_curl_command_saves_placeholders_only() {
+    let root = tempfile::tempdir().unwrap();
+    let library = Library::new(Paths::under(root.path()));
+    let collection = library.create_collection("Imported").unwrap();
+    let values = [
+        "BEARER-planted-11aa",
+        "PASSWORD-planted-22bb",
+        "COOKIE-planted-33cc",
+        "APIKEY-planted-44dd",
+    ];
+    let command = format!(
+        "curl 'https://api.example.com/x?api_key={}' -u ann:{} \
+         -H 'Proxy-Authorization: Bearer {}' -H 'Cookie: session={}' -H 'Accept: */*'",
+        values[3], values[1], values[0], values[2]
+    );
+    let imported = crate::curl::import(&command, |_| false).unwrap();
+    let kept: Vec<&str> = imported
+        .credentials
+        .iter()
+        .map(|c| c.value.expose())
+        .collect();
+
+    // every value was taken out, the session one with its cookie name
+    for value in values {
+        assert!(
+            kept.iter().any(|k| k.contains(value)),
+            "{value} was not taken out: {kept:?}"
+        );
+    }
+
+    collection
+        .create_request(&[], "Imported", &imported.request)
+        .unwrap();
+
+    // and with the token in Authorization itself, where it becomes the auth
+    let token = "AUTHORIZATION-planted-55ee";
+    let second = crate::curl::import(
+        &format!("curl https://api.example.com -H 'Authorization: Bearer {token}'"),
+        |_| false,
+    )
+    .unwrap();
+
+    assert_eq!(second.credentials[0].value.expose(), token);
+    collection
+        .create_request(&[], "Second", &second.request)
+        .unwrap();
+
+    let values: Vec<&str> = values.into_iter().chain([token]).collect();
+
+    let mut files = Vec::new();
+
+    every_file(root.path(), &mut files);
+
+    for (path, bytes) in &files {
+        for value in &values {
+            assert!(!contains(bytes, value), "{value} is in {path}");
+        }
+    }
+
+    // the scan saw the request file
+    assert!(
+        files
+            .iter()
+            .any(|(_, bytes)| contains(bytes, "{{api_key}}"))
+    );
+}

@@ -248,6 +248,8 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         "env.variables" => Action::EditVariables,
         "migrate" => Action::Migrate,
         "help" => Action::Help,
+        "copy" => Action::CopyResponse,
+        "copy-curl" => Action::CopyCurl,
         "palette" => Action::Palette,
         "keys" => Action::NextKeys,
         "theme" => Action::NextTheme,

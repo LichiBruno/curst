@@ -2927,3 +2927,164 @@ mod tabs {
         assert!(state.collection.is_none());
     }
 }
+
+mod curl {
+    use curst_core::secrets::SecretKey;
+    use curst_core::vars::VarName;
+
+    use super::*;
+
+    const COMMAND: &str = "curl 'https://api.example.com/v1/items?api_key=k123' \\\n  -u ann:pw \\\n  -H 'Accept: application/json'";
+
+    #[test]
+    fn a_pasted_command_becomes_a_request_and_its_credentials_secrets() {
+        let mut state = State::default();
+        let commands = update(&mut state, Action::PasteText(COMMAND.into()));
+
+        assert_eq!(state.request().url, "https://api.example.com/v1/items");
+        assert_eq!(state.params.pairs()[0].value, "{{api_key}}");
+        assert_eq!(state.headers.pairs()[0].name, "Accept");
+        assert_eq!(state.focus, Focus::Url);
+        assert!(
+            state
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("{{api_key}}, {{password}}")
+        );
+
+        // the values go to the secret store, never into the request
+        let [Command::ChangeSecrets { changes, .. }] = commands.as_slice() else {
+            panic!("{commands:?}");
+        };
+        let stored: Vec<(String, &str)> = changes
+            .iter()
+            .map(|change| match change {
+                SecretChange::Set(SecretKey::Global { name }, value) => {
+                    (name.to_string(), value.expose())
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect();
+
+        assert_eq!(
+            stored,
+            [
+                ("api_key".to_owned(), "k123"),
+                ("password".to_owned(), "pw")
+            ]
+        );
+        assert!(!format!("{:?}", state.request()).contains("k123"));
+    }
+
+    #[test]
+    fn a_command_opens_in_a_tab_of_its_own_when_the_current_one_is_used() {
+        let mut state = State::default();
+
+        type_text(&mut state, "https://kept.example");
+        update(&mut state, Action::PasteText("curl https://h/x".into()));
+
+        assert_eq!(state.tab_count(), 2);
+        assert_eq!(state.request().url, "https://h/x");
+    }
+
+    #[test]
+    fn other_text_goes_into_the_field_on_one_line() {
+        let mut state = State::default();
+
+        update(&mut state, Action::PasteText("https://h/a\nb\r\n".into()));
+
+        assert_eq!(state.request().url, "https://h/a b");
+
+        // a command that cannot be read says why, and changes nothing
+        update(&mut state, Action::PasteText("curl 'https://h".into()));
+
+        assert_eq!(state.request().url, "https://h/a b");
+        assert!(state.notice.as_deref().unwrap().starts_with("not imported"));
+    }
+
+    #[test]
+    fn a_paste_into_a_popup_stays_in_it() {
+        let mut state = State::default();
+
+        update(&mut state, Action::Palette);
+        update(&mut state, Action::PasteText(COMMAND.into()));
+
+        let Some(Popup::Palette(palette)) = &state.popup else {
+            panic!("the palette closed");
+        };
+
+        assert!(crate::app::editor::text_of(&palette.input).starts_with("curl "));
+        assert_eq!(state.request().url, "");
+    }
+
+    #[test]
+    fn copy_as_curl_keeps_variables_and_never_values() {
+        let mut state = State::default();
+
+        type_text(&mut state, "https://h/{{version}}");
+        state.auth = crate::app::AuthEditor::from_auth(&curst_core::model::Auth::Bearer {
+            token: "{{token}}".into(),
+        });
+        state.secret_values.insert(
+            SecretKey::Global {
+                name: VarName::new("token").unwrap(),
+            },
+            Some(curst_core::secrets::Secret::new("t0k-value")),
+        );
+
+        let commands = update(&mut state, Action::CopyCurl);
+        let [Command::Copy(text)] = commands.as_slice() else {
+            panic!("{commands:?}");
+        };
+
+        assert!(text.contains("Authorization: Bearer {{token}}"), "{text}");
+        assert!(!text.contains("t0k-value"));
+        assert!(curst_core::curl::parse(text).is_ok());
+    }
+
+    #[test]
+    fn copying_the_response_leaves_borders_and_notes_out() {
+        let mut state = State::default();
+
+        type_text(&mut state, "http://localhost/");
+
+        let commands = update(&mut state, Action::Send);
+        let (id, _) = super::sent(&commands);
+
+        update(
+            &mut state,
+            Action::responded(id, Ok(response(r#"{"a":1}"#))),
+        );
+
+        // y copies the body from any pane, whichever response tab shows
+        state.focus = Focus::Sidebar;
+        state.response_tab = ResponseTab::Headers;
+
+        let commands = press(&mut state, KeyCode::Char('y'));
+
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::Copy(text)] if text == "{\n  \"a\": 1\n}"
+        ));
+        assert!(
+            crate::ui::hints(&state)
+                .iter()
+                .any(|h| h.key == "y" && h.label == "copy body")
+        );
+
+        // in the URL, y is a letter
+        state.focus = Focus::Url;
+
+        assert_eq!(press(&mut state, KeyCode::Char('y')).len(), 0);
+        assert!(state.request().url.ends_with('y'));
+
+        state.outcome = None;
+
+        assert_eq!(update(&mut state, Action::CopyResponse).len(), 0);
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("there is no response to copy")
+        );
+    }
+}

@@ -497,6 +497,10 @@ pub(crate) fn hints(state: &State) -> Vec<Hint> {
         hints.one("cancel", "cancel");
     }
 
+    if matches!(state.outcome, Some(crate::app::Outcome::Response(_))) {
+        hints.one("copy", "copy body");
+    }
+
     hints.finish()
 }
 

@@ -82,6 +82,28 @@ impl ResponseView {
         self.widths[0] = widest(&self.body);
     }
 
+    /// the body as text to copy, JSON pretty-printed and without the notes
+    /// curst adds, and whether it was cut short when it arrived
+    pub(crate) fn copy_body(&self) -> Result<(String, bool), &'static str> {
+        let body = &self.response.body;
+
+        if self.response.kind() == BodyKind::Binary {
+            return Err("a binary body cannot be copied; save it to a file");
+        }
+
+        if body.is_empty() {
+            return Err("the body is empty");
+        }
+
+        let text = match self.response.kind() {
+            BodyKind::Json => self.response.pretty_json(),
+            _ => None,
+        }
+        .unwrap_or_else(|| String::from_utf8_lossy(body.preview()).into_owned());
+
+        Ok((text, body.is_truncated()))
+    }
+
     pub(crate) fn lines(&self, tab: ResponseTab) -> &[String] {
         match tab {
             ResponseTab::Body => &self.body,

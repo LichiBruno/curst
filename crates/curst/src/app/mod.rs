@@ -504,6 +504,13 @@ pub(crate) enum Action {
 
     /// scrolls the response by lines, up when negative, wherever the focus is
     ScrollResponse(isize),
+
+    /// text pasted into the terminal
+    PasteText(String),
+
+    /// copies the response tab's content, or the request as a curl command
+    CopyResponse,
+    CopyCurl,
     Migrate,
     Migrated {
         id: u64,
@@ -652,6 +659,9 @@ pub(crate) enum Command {
         environment: Option<EnvId>,
     },
 
+    /// puts text on the clipboard, through the terminal
+    Copy(String),
+
     /// writes the keymap preset, the theme or both to `config.toml`; what
     /// is `None` stays as it is in the file
     SavePreferences {
@@ -716,15 +726,15 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
             tabs::step(state, matches!(action, Action::NextRequest));
         }
         Action::RequestAt(index) => tabs::switch_to(state, index),
-        Action::Tabs => {
-            state.popup = Some(Popup::Tabs {
-                selected: state.active_tab,
-            });
-        }
-        Action::Settings => state.popup = Some(Popup::Settings),
-        Action::Palette => palette::open(state),
-        Action::Welcome => preferences::welcome(state),
-        Action::Help => open_help(state),
+        Action::Tabs
+        | Action::Settings
+        | Action::Palette
+        | Action::Welcome
+        | Action::Help
+        | Action::Environments => open_popup(state, &action),
+        Action::PasteText(text) => return request::paste(state, &text),
+        Action::CopyResponse => return copy_response(state),
+        Action::CopyCurl => return copy_curl(state),
         Action::EditBody => return request::edit_body(state),
         Action::Save => return save(state),
         Action::Cancel => return cancel(state),
@@ -798,7 +808,6 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         | Action::MoveUp
         | Action::MoveDown
         | Action::Trust => return sidebar::apply(state, &action),
-        Action::Environments => open_environments(state),
         // reports went to `report`, and these only mean something in a pop-up
         _ => {}
     }
@@ -806,12 +815,70 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
     Vec::new()
 }
 
-/// opens the help over where the focus is, which it lists first
-fn open_help(state: &mut State) {
-    state.popup = Some(Popup::Help {
-        scroll: 0,
-        here: keymap::layers(state).0,
-    });
+/// terminals may cut a copy longer than this
+const COPY_LIMIT: usize = 100 * 1024;
+
+/// copies the request as a curl command, with `{{name}}` for every
+/// variable, so no secret value goes with it
+fn copy_curl(state: &mut State) -> Vec<Command> {
+    state.notice =
+        Some("the request went to the clipboard as curl, with variables as {{name}}".into());
+
+    vec![Command::Copy(curst_core::curl::emit(&state.request()))]
+}
+
+/// copies the response body, whichever tab shows, without borders or notes
+fn copy_response(state: &mut State) -> Vec<Command> {
+    let Some(Outcome::Response(view)) = &state.outcome else {
+        state.notice = Some("there is no response to copy".into());
+
+        return Vec::new();
+    };
+
+    match view.copy_body() {
+        Err(why) => {
+            state.notice = Some(why.into());
+
+            Vec::new()
+        }
+        Ok((text, cut)) => {
+            let mut notice = "the response body went to the clipboard".to_owned();
+
+            if cut {
+                notice.push_str(", only the part kept in memory; save it for all of it");
+            } else if text.len() > COPY_LIMIT {
+                notice.push_str("; some terminals cut copies this long");
+            }
+
+            state.notice = Some(notice);
+
+            vec![Command::Copy(text)]
+        }
+    }
+}
+
+/// opens the pop-up an action asks for
+fn open_popup(state: &mut State, action: &Action) {
+    match action {
+        Action::Tabs => {
+            state.popup = Some(Popup::Tabs {
+                selected: state.active_tab,
+            });
+        }
+        Action::Settings => state.popup = Some(Popup::Settings),
+        Action::Palette => palette::open(state),
+        Action::Welcome => preferences::welcome(state),
+        Action::Environments => open_environments(state),
+
+        // the help lists the keys where the focus is first
+        Action::Help => {
+            state.popup = Some(Popup::Help {
+                scroll: 0,
+                here: keymap::layers(state).0,
+            });
+        }
+        _ => {}
+    }
 }
 
 /// applies what the runtime reports back: responses, saved files and

@@ -40,6 +40,8 @@ pub(super) const STANDARD: &[Row] = &[
     (L::TableTyping, "stop-edit", &["esc"]),
     (L::Panes, "quit", &["q"]),
     (L::Panes, "help", &["?"]),
+    (L::Panes, "copy-curl", &["C"]),
+    (L::Panes, "copy", &["y"]),
     (L::Panes, "focus.next", &["tab"]),
     (L::Panes, "focus.previous", &["shift+tab"]),
     (L::Panes, "cancel", &["esc"]),
