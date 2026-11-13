@@ -485,3 +485,53 @@ fn secret_home(state: &State, variable: Variable) -> (SecretKey, Command) {
         },
     )
 }
+
+/// puts the cursor where a field was clicked, giving it the focus first
+pub(super) fn place(state: &mut State, field: super::Field, row: u16, col: u16) {
+    match field {
+        super::Field::Url => {
+            if state.focus != Focus::Url {
+                state.stop_editing();
+                state.focus = Focus::Url;
+            }
+
+            super::mouse::place(&mut state.url, row, col);
+        }
+        super::Field::Body => {
+            if state.focus != Focus::Request {
+                state.stop_editing();
+                state.focus = Focus::Request;
+            }
+
+            if !matches!(state.body.kind, BodyKind::Json | BodyKind::Text) {
+                return;
+            }
+
+            state.body.typing = Some(BodyField::Text);
+            super::mouse::place(&mut state.body.text, row, col);
+        }
+        super::Field::Popup => {}
+    }
+}
+
+/// scrolls the response by `lines`, up when negative, wherever the focus is
+pub(super) fn scroll_response(state: &mut State, lines: isize) {
+    let page = state.response_height.get().max(1);
+    let last = state.response_line_count().saturating_sub(page);
+
+    state.scroll = state.scroll.saturating_add_signed(lines).min(last);
+}
+
+impl State {
+    /// the selected row of the request pane's table, when it shows one
+    pub(crate) fn selected_row(&self) -> Option<usize> {
+        let table = match self.request_tab {
+            RequestTab::Params => &self.params,
+            RequestTab::Headers => &self.headers,
+            RequestTab::Body if self.body.kind == BodyKind::Form => &self.body.form,
+            RequestTab::Body | RequestTab::Auth => return None,
+        };
+
+        (!table.rows.is_empty()).then_some(table.selected)
+    }
+}

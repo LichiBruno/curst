@@ -7,20 +7,26 @@ use ratatui::widgets::Paragraph;
 use curst_core::model::Request;
 use curst_core::secrets::detect;
 
-use super::{field, pane, tab_titles};
-use crate::app::{AuthKind, BodyField, BodyKind, Column, Focus, Layer, RequestTab, State, Table};
+use super::{field, pane, tab_regions, tab_titles};
+use crate::app::{
+    AuthKind, BodyField, BodyKind, Column, Field, Focus, Layer, RequestTab, RowCell, State, Table,
+    Target,
+};
 use crate::theme::Theme;
 
 pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
     let theme = &state.theme;
     let focused = state.focus == Focus::Request;
     let mut title = vec![Span::raw(" Request")];
+
     title.extend(tab_titles(
         theme,
         &RequestTab::ALL,
         state.request_tab,
         RequestTab::label,
     ));
+    state.region(area, Target::Pane(Focus::Request));
+    tab_regions(state, area, &title, 2, |i| Target::Tab(Focus::Request, i));
 
     let block = pane(theme, Line::from(title), focused);
     let mut inner = block.inner(area);
@@ -40,7 +46,7 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
 
     match state.request_tab {
         RequestTab::Params => table(
-            theme,
+            state,
             &state.params,
             focused,
             &format!("no query parameters, press {add} to add one"),
@@ -48,7 +54,7 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
             inner,
         ),
         RequestTab::Headers => table(
-            theme,
+            state,
             &state.headers,
             focused,
             &format!("no headers, press {add} to add one"),
@@ -122,14 +128,17 @@ fn body(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
     match state.body.kind {
         BodyKind::None => {}
         BodyKind::Form => table(
-            theme,
+            state,
             &state.body.form,
             focused,
             &format!("no form fields, press {add} to add one"),
             frame,
             content,
         ),
-        BodyKind::Json => frame.render_widget(&*text, content),
+        BodyKind::Json => {
+            state.region(content, Target::Text(Field::Body));
+            frame.render_widget(&*text, content);
+        }
         BodyKind::Text => {
             let [type_area, text_area] =
                 Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(content);
@@ -147,6 +156,7 @@ fn body(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
                 label_area,
             );
             frame.render_widget(&*field(theme, &state.body.content_type, None), field_area);
+            state.region(text_area, Target::Text(Field::Body));
             frame.render_widget(&*text, text_area);
         }
     }
@@ -210,13 +220,15 @@ fn row_area(area: Rect, index: usize) -> Option<Rect> {
 }
 
 pub(super) fn table(
-    theme: &Theme,
+    state: &State,
     table: &Table,
     focused: bool,
     empty: &str,
     frame: &mut Frame,
     area: Rect,
 ) {
+    let theme = &state.theme;
+
     if table.rows.is_empty() && table.editing.is_none() {
         frame.render_widget(
             Paragraph::new(Span::styled(empty.to_owned(), theme.muted)),
@@ -241,6 +253,11 @@ pub(super) fn table(
         ])
         .spacing(1)
         .areas(line);
+
+        state.region(check, Target::Row(index, RowCell::Check));
+        state.region(name_area, Target::Row(index, RowCell::Name));
+        state.region(value_area, Target::Row(index, RowCell::Value));
+
         let selected = focused && index == table.selected;
         let mut style = Style::default();
 

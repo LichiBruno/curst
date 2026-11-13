@@ -152,11 +152,22 @@ pub(super) fn apply(
 ) -> Result<Vec<Command>, Action> {
     let count = state.palette_entries(&palette).len();
 
+    // a click on an entry runs it, like choosing it and Enter
+    let action = match action {
+        Action::Pick(index) => {
+            palette.selected = index;
+
+            Action::ConfirmPopup
+        }
+        action => action,
+    };
+
     match action {
         Action::Type(key) => {
             palette.input.input(key);
             palette.selected = 0;
         }
+        Action::Place { row, col, .. } => super::mouse::place(&mut palette.input, row, col),
         Action::Up => {
             palette.selected = palette.selected.checked_sub(1).unwrap_or(count.max(1) - 1);
         }

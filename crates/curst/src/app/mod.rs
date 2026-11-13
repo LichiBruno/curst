@@ -1,5 +1,6 @@
 mod editor;
 mod keymap;
+mod mouse;
 mod palette;
 mod popup;
 mod preferences;
@@ -10,7 +11,7 @@ mod tabs;
 mod view_model;
 mod workspace;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -21,10 +22,13 @@ use curst_core::store::Backend;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui_textarea::TextArea;
 
+#[cfg(test)]
+pub(crate) use editor::body_text;
 pub(crate) use editor::{AuthEditor, AuthKind, BodyEditor, BodyField, BodyKind, Column, Table};
 #[cfg(test)]
 pub(crate) use keymap::{HelpRow, HelpSection};
 pub(crate) use keymap::{Hint, Hints, Keymap, Layer, action_for, help_lines};
+pub(crate) use mouse::{Cell as RowCell, Field, Target, mouse_actions, mouse_acts};
 pub(crate) use palette::{Entry, Palette};
 pub(crate) use popup::{Pending, Popup, Purpose, VarTab, VariablesEditor};
 pub(crate) use preferences::{PRESETS, Step, known_themes};
@@ -210,6 +214,9 @@ pub(crate) struct State {
     /// columns the response pane showed in the last frame, recorded by the
     /// view so sideways scrolling stops at the longest line
     pub(crate) response_width: Cell<usize>,
+
+    /// what the last frame drew where, for the mouse
+    pub(crate) regions: RefCell<Vec<mouse::Region>>,
     pub(crate) in_flight: Option<u64>,
     pub(crate) notice: Option<String>,
     pub(crate) collections: Vec<Workspace>,
@@ -280,6 +287,7 @@ impl Default for State {
             column: 0,
             response_height: Cell::new(PAGE),
             response_width: Cell::new(0),
+            regions: RefCell::new(Vec::new()),
             in_flight: None,
             notice: None,
             collections: Vec::new(),
@@ -472,6 +480,30 @@ pub(crate) enum Action {
 
     /// the first-run welcome
     Welcome,
+
+    /// what a mouse click or the wheel asks for
+    FocusOn(Focus),
+
+    /// the tab at this position of the focused pane, or of the pop-up
+    ShowTab(usize),
+
+    /// the row, or the item of a pop-up's list, at this position
+    Pick(usize),
+
+    /// edits a cell of the selected row
+    EditCell(Column),
+    SelectNode(NodeKey),
+
+    /// puts the cursor of a text field where it was clicked, counted from
+    /// the field's top left corner
+    Place {
+        field: Field,
+        row: u16,
+        col: u16,
+    },
+
+    /// scrolls the response by lines, up when negative, wherever the focus is
+    ScrollResponse(isize),
     Migrate,
     Migrated {
         id: u64,
@@ -692,15 +724,17 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         Action::Settings => state.popup = Some(Popup::Settings),
         Action::Palette => palette::open(state),
         Action::Welcome => preferences::welcome(state),
-        Action::Help => {
-            state.popup = Some(Popup::Help {
-                scroll: 0,
-                here: keymap::layers(state).0,
-            });
-        }
+        Action::Help => open_help(state),
         Action::EditBody => return request::edit_body(state),
         Action::Save => return save(state),
         Action::Cancel => return cancel(state),
+        Action::FocusOn(_)
+        | Action::ShowTab(_)
+        | Action::Pick(_)
+        | Action::EditCell(_)
+        | Action::SelectNode(_)
+        | Action::Place { .. }
+        | Action::ScrollResponse(_) => mouse::apply(state, action),
         Action::FocusNext | Action::FocusPrevious => {
             state.stop_editing();
             state.focus = step(
@@ -770,6 +804,14 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
     }
 
     Vec::new()
+}
+
+/// opens the help over where the focus is, which it lists first
+fn open_help(state: &mut State) {
+    state.popup = Some(Popup::Help {
+        scroll: 0,
+        here: keymap::layers(state).0,
+    });
 }
 
 /// applies what the runtime reports back: responses, saved files and

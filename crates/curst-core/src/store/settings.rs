@@ -6,6 +6,7 @@
 //!
 //! ```toml
 //! theme = "dark"
+//! mouse = true
 //!
 //! [keys]
 //! preset = "standard"
@@ -57,6 +58,9 @@ pub struct Settings {
     /// the theme: a built-in name, or a file in the themes folder
     pub theme: Option<String>,
 
+    /// whether clicks and the wheel work; on by default
+    pub mouse: Option<bool>,
+
     /// the keymap preset, such as `standard` or `vim`
     pub keys_preset: Option<String>,
 
@@ -72,7 +76,7 @@ pub struct Settings {
 }
 
 /// the known top-level keys and sections
-const KNOWN: [&str; 4] = ["theme", "keys", "http", "secrets"];
+const KNOWN: [&str; 5] = ["theme", "mouse", "keys", "http", "secrets"];
 
 fn read_document(path: &Path) -> Result<DocumentMut, StoreError> {
     match read_regular(path)? {
@@ -91,6 +95,18 @@ fn string(item: Option<&Item>, what: &str, warnings: &mut Vec<String>) -> Option
     }
 
     warnings.push(format!("{what} must be text"));
+
+    None
+}
+
+fn flag(item: Option<&Item>, what: &str, warnings: &mut Vec<String>) -> Option<bool> {
+    let item = item?;
+
+    if let Some(on) = item.as_bool() {
+        return Some(on);
+    }
+
+    warnings.push(format!("{what} must be true or false"));
 
     None
 }
@@ -138,6 +154,7 @@ impl Settings {
         }
 
         settings.theme = string(root.get("theme"), "theme", &mut warnings);
+        settings.mouse = flag(root.get("mouse"), "mouse", &mut warnings);
 
         let section = |name: &str| root.get(name).and_then(Item::as_table_like);
 
@@ -280,6 +297,7 @@ mod tests {
         write(
             &path,
             r#"theme = "light"
+mouse = false
 
 [keys]
 preset = "vim"
@@ -306,6 +324,7 @@ backend = "encrypted-file"
             Settings {
                 secrets_backend: Some(Backend::EncryptedFile),
                 theme: Some("light".into()),
+                mouse: Some(false),
                 keys_preset: Some("vim".into()),
                 key_bindings: vec![
                     ("global.send".into(), vec!["ctrl+enter".into()]),
@@ -326,6 +345,7 @@ backend = "encrypted-file"
         write(
             &path,
             r#"theme = 3
+mouse = "yes"
 color = "red"
 
 [keys]
@@ -353,7 +373,7 @@ backend = "vault"
                 ..Settings::default()
             }
         );
-        assert_eq!(warnings.len(), 7, "{warnings:?}");
+        assert_eq!(warnings.len(), 8, "{warnings:?}");
         assert!(warnings.iter().any(|w| w.contains("\"color\"")));
         assert!(warnings.iter().any(|w| w.contains("vault")));
 

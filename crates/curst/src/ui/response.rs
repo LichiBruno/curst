@@ -3,8 +3,8 @@ use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{pane, tab_titles};
-use crate::app::{Focus, Layer, Outcome, ResponseTab, State, skip_columns};
+use super::{pane, tab_regions, tab_titles};
+use crate::app::{Focus, Layer, Outcome, ResponseTab, State, Target, skip_columns};
 
 pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
     let theme = &state.theme;
@@ -16,6 +16,9 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
         state.response_tab,
         ResponseTab::label,
     ));
+
+    state.region(area, Target::Pane(Focus::Response));
+    tab_regions(state, area, &title, 2, |i| Target::Tab(Focus::Response, i));
 
     let mut block = pane(theme, Line::from(title), state.focus == Focus::Response);
 

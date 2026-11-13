@@ -6,7 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::pane;
-use crate::app::{Focus, Layer, RowKind, State, display, rows};
+use crate::app::{Focus, Layer, RowKind, State, Target, display, rows};
 
 fn method_tag(method: Method) -> &'static str {
     match method {
@@ -33,6 +33,7 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
 
     let inner = block.inner(area);
 
+    state.region(area, Target::Pane(Focus::Sidebar));
     frame.render_widget(block, area);
 
     let rows = rows(&state.collections, &state.sidebar.expanded);
@@ -69,6 +70,14 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
         .skip(first)
         .take(height)
         .map(|(index, row)| {
+            let line = Rect {
+                y: inner.y + u16::try_from(index - first).unwrap_or(0),
+                height: 1,
+                ..inner
+            };
+
+            state.region(line, Target::Node(row.key.clone()));
+
             let mut spans = vec![Span::raw("  ".repeat(row.depth))];
 
             match row.kind {

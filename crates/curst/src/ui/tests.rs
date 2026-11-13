@@ -32,11 +32,16 @@ fn sent_state(url: &str) -> (State, u64) {
 }
 
 /// hints as the footer lists them
-fn listed(pairs: &[(&str, &'static str)]) -> Vec<Hint> {
+fn listed(pairs: &[(&str, &'static str)]) -> Vec<(String, &'static str)> {
     pairs
         .iter()
         .map(|(key, label)| ((*key).to_owned(), *label))
         .collect()
+}
+
+/// the keys and labels of hints, what the footer shows of them
+fn shown(hints: Vec<Hint>) -> Vec<(String, &'static str)> {
+    hints.into_iter().map(|h| (h.key, h.label)).collect()
 }
 
 #[test]
@@ -49,7 +54,7 @@ fn the_global_keys_are_always_listed_but_a_popup_takes_them() {
     let mut state = State::default();
 
     assert_eq!(
-        global_hints(&state),
+        shown(global_hints(&state)),
         listed(&[
             ("Ctrl+R", "send"),
             ("Ctrl+S", "save"),
@@ -60,11 +65,15 @@ fn the_global_keys_are_always_listed_but_a_popup_takes_them() {
             ("Ctrl+C", "quit"),
         ])
     );
-    assert!(!hints(&state).iter().any(|(key, _)| key.starts_with("Ctrl")));
+    assert!(
+        !shown(hints(&state))
+            .iter()
+            .any(|(key, _)| key.starts_with("Ctrl"))
+    );
 
     update(&mut state, Action::Settings);
 
-    assert_eq!(global_hints(&state), listed(&[("Ctrl+C", "quit")]));
+    assert_eq!(shown(global_hints(&state)), listed(&[("Ctrl+C", "quit")]));
 }
 
 #[test]
@@ -138,7 +147,7 @@ fn editing_a_header_row() {
 
     insta::assert_snapshot!(render(&state, 80, 12));
     assert_eq!(
-        hints(&state),
+        shown(hints(&state)),
         listed(&[("Enter", "done"), ("Tab", "next field")])
     );
 }
@@ -180,13 +189,13 @@ fn text_body_with_its_content_type() {
 
     insta::assert_snapshot!(render(&state, 80, 12));
     assert_eq!(
-        hints(&state),
+        shown(hints(&state)),
         listed(&[("Enter", "done"), ("Tab", "next field")])
     );
 
     update(&mut state, Action::StopEdit);
 
-    assert!(hints(&state).contains(&("c".to_owned(), "content type")));
+    assert!(shown(hints(&state)).contains(&("c".to_owned(), "content type")));
 }
 
 #[test]
@@ -206,7 +215,7 @@ fn a_wide_response_scrolled_sideways() {
     }
 
     insta::assert_snapshot!(render(&state, 80, 14));
-    assert!(hints(&state).contains(&("h l".to_owned(), "sideways")));
+    assert!(shown(hints(&state)).contains(&("h l".to_owned(), "sideways")));
 }
 
 #[test]
@@ -237,7 +246,7 @@ mod collections {
     use crate::app::sample;
     use crate::app::{Focus, NodeKey, Popup};
 
-    fn with_collection() -> State {
+    pub(super) fn with_collection() -> State {
         let mut state = State::default();
         let mut workspace = sample();
 
@@ -274,7 +283,7 @@ mod collections {
         state.sidebar.cut = Some(key(&["users", "list"]));
 
         insta::assert_snapshot!(render(&state, 100, 12));
-        assert!(global_hints(&state).contains(&("Ctrl+S".to_owned(), "save")));
+        assert!(shown(global_hints(&state)).contains(&("Ctrl+S".to_owned(), "save")));
     }
 
     #[test]
@@ -284,7 +293,7 @@ mod collections {
         update(&mut state, Action::Environments);
 
         insta::assert_snapshot!(render(&state, 80, 12));
-        assert!(hints(&state).contains(&("v".to_owned(), "variables")));
+        assert!(shown(hints(&state)).contains(&("v".to_owned(), "variables")));
     }
 
     #[test]
@@ -380,7 +389,7 @@ mod trust {
         state.headers.selected = 1;
 
         insta::assert_snapshot!(render(&state, 80, 14));
-        assert!(hints(&state).contains(&("m".to_owned(), "make it a secret")));
+        assert!(shown(hints(&state)).contains(&("m".to_owned(), "make it a secret")));
 
         state.headers.rows[1].value = "Bearer {{token}}".into();
 
@@ -429,7 +438,7 @@ fn the_tab_switcher_numbers_tabs_by_their_keys() {
     let screen = render(&state, 80, 20);
 
     insta::assert_snapshot!(screen);
-    assert!(hints(&state).contains(&("1-9".to_owned(), "go to")));
+    assert!(shown(hints(&state)).contains(&("1-9".to_owned(), "go to")));
 }
 
 #[test]
@@ -444,18 +453,18 @@ fn hints_follow_the_keymap() {
     state.keymap = keymap;
 
     assert_eq!(warnings, Vec::<String>::new());
-    assert!(global_hints(&state).contains(&("F5".to_owned(), "send")));
+    assert!(shown(global_hints(&state)).contains(&("F5".to_owned(), "send")));
     assert!(
-        !global_hints(&state)
+        !shown(global_hints(&state))
             .iter()
             .any(|(_, label)| *label == "environments")
     );
 
     state.focus = Focus::Request;
 
-    assert!(hints(&state).contains(&("h l".to_owned(), "tab")));
-    assert!(hints(&state).contains(&("o".to_owned(), "add")));
-    assert!(hints(&state).contains(&("d d".to_owned(), "delete")));
+    assert!(shown(hints(&state)).contains(&("h l".to_owned(), "tab")));
+    assert!(shown(hints(&state)).contains(&("o".to_owned(), "add")));
+    assert!(shown(hints(&state)).contains(&("d d".to_owned(), "delete")));
 }
 
 #[test]
@@ -774,7 +783,7 @@ mod preferences {
         update(&mut state, Action::Down);
 
         assert_eq!(state.keys_preset, "vim");
-        assert!(hints(&state).contains(&("↑↓".to_owned(), "choose")));
+        assert!(shown(hints(&state)).contains(&("↑↓".to_owned(), "choose")));
 
         update(&mut state, Action::ConfirmPopup);
 
@@ -870,5 +879,373 @@ fn shifted_symbols_work_however_the_terminal_reports_shift() {
             matches!(palette.as_slice(), [Action::Palette]),
             "{palette:?}"
         );
+    }
+}
+
+mod mouse {
+    use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    use super::*;
+    use crate::app::{Focus, Popup, mouse_actions, mouse_acts};
+
+    const WIDTH: u16 = 120;
+    const HEIGHT: u16 = 24;
+
+    fn event(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// draws the screen, as the runtime does before a click, and finds
+    /// where `text` is on it
+    fn find(state: &State, text: &str) -> (u16, u16) {
+        let screen = render(state, WIDTH, HEIGHT);
+        let lines: Vec<&str> = screen.lines().collect();
+
+        for (y, line) in lines.iter().enumerate() {
+            // each line is quoted in the rendered text
+            let line: Vec<char> = line.chars().skip(1).collect();
+            let wanted: Vec<char> = text.chars().collect();
+
+            if let Some(x) = line.windows(wanted.len()).position(|w| w == wanted) {
+                return (u16::try_from(x).unwrap(), u16::try_from(y).unwrap());
+            }
+        }
+
+        panic!("{text:?} is not on the screen:\n{screen}");
+    }
+
+    /// draws, then sends what a mouse event at `(x, y)` gives
+    fn send(state: &mut State, kind: MouseEventKind, (x, y): (u16, u16)) -> Vec<Command> {
+        render(state, WIDTH, HEIGHT);
+
+        let mut commands = Vec::new();
+
+        for action in mouse_actions(state, event(kind, x, y)) {
+            commands.extend(update(state, action));
+        }
+
+        commands
+    }
+
+    fn click(state: &mut State, at: (u16, u16)) -> Vec<Command> {
+        send(state, MouseEventKind::Down(MouseButton::Left), at)
+    }
+
+    fn click_on(state: &mut State, text: &str) -> Vec<Command> {
+        let at = find(state, text);
+
+        click(state, at)
+    }
+
+    #[test]
+    fn only_a_press_and_the_wheel_do_anything() {
+        let mut state = State::default();
+
+        render(&state, WIDTH, HEIGHT);
+
+        let at = find(&state, "Response");
+
+        for kind in [
+            MouseEventKind::Up(MouseButton::Left),
+            MouseEventKind::Moved,
+            MouseEventKind::Drag(MouseButton::Left),
+            MouseEventKind::Down(MouseButton::Right),
+        ] {
+            assert!(!mouse_acts(event(kind, at.0, at.1)));
+            assert_eq!(mouse_actions(&state, event(kind, at.0, at.1)).len(), 0);
+        }
+
+        assert!(mouse_acts(event(MouseEventKind::ScrollDown, 0, 0)));
+
+        // a press focuses once, and its release changes nothing more
+        click(&mut state, at);
+
+        assert_eq!(state.focus, Focus::Response);
+        assert_eq!(state.response_tab, ResponseTab::Body);
+    }
+
+    #[test]
+    fn panes_tabs_and_the_method_answer_clicks() {
+        let mut state = State::default();
+
+        click_on(&mut state, "Headers");
+
+        assert_eq!(state.focus, Focus::Request);
+        assert_eq!(state.request_tab, RequestTab::Headers);
+
+        click_on(&mut state, "Timing");
+
+        assert_eq!(state.focus, Focus::Response);
+        assert_eq!(state.response_tab, ResponseTab::Timing);
+
+        let (x, y) = find(&state, "Method");
+
+        click(&mut state, (x, y + 1));
+
+        assert_eq!(state.focus, Focus::Method);
+        assert_eq!(state.method.as_str(), "POST");
+
+        // the first tab is the one whose method was just changed
+        update(&mut state, Action::NewTab);
+        click_on(&mut state, "POST new request");
+
+        assert_eq!(state.active_tab, 0);
+    }
+
+    #[test]
+    fn a_click_in_the_url_puts_the_cursor_there() {
+        let mut state = State::default();
+
+        state.url.insert_str("https://example.com/pets");
+        state.focus = Focus::Sidebar;
+
+        // the tab bar names it too, without the scheme
+        let (x, y) = find(&state, "https://example.com");
+
+        click(&mut state, (x + 11, y));
+
+        assert_eq!(state.focus, Focus::Url);
+        assert_eq!(state.url.cursor(), (0, "https://exa".len()));
+    }
+
+    #[test]
+    fn sidebar_rows_open_requests_and_fold_folders() {
+        let mut state = super::collections::with_collection();
+
+        state.focus = Focus::Url;
+        click_on(&mut state, "CREATE");
+
+        assert_eq!(state.focus, Focus::Sidebar);
+        assert_eq!(state.open.as_ref().map(|o| o.name.as_str()), Some("CREATE"));
+
+        click_on(&mut state, "Users");
+        click_on(&mut state, "LIST");
+
+        assert_eq!(state.open.as_ref().map(|o| o.name.as_str()), Some("LIST"));
+    }
+
+    #[test]
+    fn table_rows_select_then_edit_and_the_box_turns_them_off() {
+        let mut state = State::default();
+
+        state.request_tab = RequestTab::Headers;
+        state.headers = crate::app::Table::from_pairs(&[
+            curst_core::model::KeyValue::new("Accept", "*/*"),
+            curst_core::model::KeyValue::new("X-Trace", "on"),
+        ]);
+
+        click_on(&mut state, "X-Trace");
+
+        assert_eq!(state.focus, Focus::Request);
+        assert_eq!(state.headers.selected, 1);
+        assert!(!state.request_typing());
+
+        click_on(&mut state, "X-Trace");
+
+        assert!(state.request_typing());
+
+        click_on(&mut state, "[x] ");
+
+        assert!(!state.request_typing());
+        assert_eq!(state.headers.selected, 0);
+        assert!(!state.headers.rows[0].enabled);
+    }
+
+    #[test]
+    fn footer_keys_are_buttons() {
+        let mut state = State::default();
+
+        click_on(&mut state, "F1 help");
+
+        assert!(matches!(state.popup, Some(Popup::Help { .. })));
+
+        click_on(&mut state, "Esc close");
+
+        assert!(state.popup.is_none());
+    }
+
+    #[test]
+    fn a_popup_takes_the_clicks_and_some_close_from_outside() {
+        let mut state = State::default();
+
+        update(&mut state, Action::Settings);
+
+        // inside it, nothing under it is reached
+        let (x, y) = find(&state, "Keys");
+
+        click(&mut state, (x + 30, y + 3));
+
+        assert!(matches!(state.popup, Some(Popup::Settings)));
+
+        let commands = click_on(&mut state, "next preset");
+
+        assert_eq!(state.keys_preset, "vim");
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::SavePreferences { .. }]
+        ));
+
+        click(&mut state, (1, 1));
+
+        assert!(state.popup.is_none());
+        assert_eq!(state.focus, Focus::Url);
+
+        // a question is only answered on purpose
+        state.popup = Some(Popup::confirm("Really?", crate::app::Pending::CloseTab));
+        click(&mut state, (1, 1));
+
+        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+    }
+
+    #[test]
+    fn closing_changed_variables_by_a_click_still_asks() {
+        let mut state = super::collections::with_collection();
+
+        update(&mut state, Action::Environments);
+        click_on(&mut state, "Dev");
+
+        assert!(state.popup.is_none(), "a click on an environment uses it");
+
+        update(&mut state, Action::Environments);
+        update(&mut state, Action::Down);
+        update(&mut state, Action::EditVariables);
+        update(&mut state, Action::DeleteRow);
+        click(&mut state, (WIDTH - 1, 0));
+
+        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+    }
+
+    #[test]
+    fn list_popups_pick_by_click() {
+        let mut state = State::default();
+
+        update(&mut state, Action::NewTab);
+        update(&mut state, Action::Tabs);
+
+        let (x, y) = find(&state, "• GET");
+
+        click(&mut state, (x, y - 1));
+
+        assert_eq!(state.active_tab, 0);
+        assert!(state.popup.is_none());
+
+        update(&mut state, Action::Palette);
+
+        for c in "settings".chars() {
+            update(&mut state, Action::Type(key(KeyCode::Char(c))));
+        }
+
+        // the entry, not the query typed above it
+        click_on(&mut state, " settings ");
+
+        assert!(matches!(state.popup, Some(Popup::Settings)));
+
+        state.popup = None;
+        update(&mut state, Action::Welcome);
+        click_on(&mut state, "vim ");
+
+        assert_eq!(state.keys_preset, "vim");
+        assert!(matches!(state.popup, Some(Popup::Welcome { .. })));
+    }
+
+    #[test]
+    fn the_wheel_scrolls_what_is_under_it() {
+        let (mut state, id) = sent_state("http://localhost/");
+        let body: String = (0..100)
+            .map(|n| ["line ", &n.to_string(), "\n"].concat())
+            .collect();
+
+        update(
+            &mut state,
+            Action::responded(id, Ok(crate::app::tests::response(&body))),
+        );
+        state.focus = Focus::Url;
+
+        let at = find(&state, "line 0");
+
+        send(&mut state, MouseEventKind::ScrollDown, at);
+
+        assert_eq!(state.scroll, 3);
+        assert_eq!(
+            state.focus,
+            Focus::Url,
+            "the response scrolls without the focus"
+        );
+
+        send(&mut state, MouseEventKind::ScrollUp, at);
+
+        assert_eq!(state.scroll, 0);
+
+        // a field being typed in keeps the focus
+        state.request_tab = RequestTab::Headers;
+        state.focus = Focus::Request;
+        update(&mut state, Action::AddRow);
+
+        let at = find(&state, "Request");
+
+        assert!(state.request_typing());
+        assert_eq!(
+            mouse_actions(&state, event(MouseEventKind::ScrollDown, at.0, at.1 + 5)).len(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_body_starts_writing_there() {
+        let mut state = State::default();
+
+        state.request_tab = RequestTab::Body;
+        update(&mut state, Action::CycleKind);
+        state.body.text = crate::app::body_text("{\n  \"id\": 1\n}");
+
+        let (x, y) = find(&state, "\"id\"");
+
+        click(&mut state, (x + 2, y));
+
+        assert_eq!(state.focus, Focus::Request);
+        assert!(state.request_typing());
+        assert_eq!(state.body.text.cursor(), (1, 4));
+    }
+
+    #[test]
+    fn the_trust_question_answers_by_click() {
+        let mut state = State::default();
+        let mut shared = crate::app::sample();
+
+        shared.trusted = false;
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![shared],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![],
+            },
+        );
+
+        assert!(matches!(state.popup, Some(Popup::Trust { .. })));
+
+        click_on(&mut state, "not now");
+
+        assert!(state.popup.is_none());
+    }
+
+    #[test]
+    fn a_narrow_screen_has_no_sidebar_to_click() {
+        let mut state = super::collections::with_collection();
+
+        state.focus = Focus::Url;
+        render(&state, 50, HEIGHT);
+
+        for action in mouse_actions(&state, event(MouseEventKind::Down(MouseButton::Left), 1, 8)) {
+            update(&mut state, action);
+        }
+
+        assert_ne!(state.focus, Focus::Sidebar);
     }
 }
