@@ -25,7 +25,8 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
             _ => Color::Red,
         };
 
-        block = block.title(
+        // on the bottom border, so a narrow pane keeps its tab names
+        block = block.title_bottom(
             Line::from(Span::styled(
                 format!(" {} ", view.summary),
                 Style::default().fg(color),

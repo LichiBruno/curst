@@ -3,6 +3,7 @@
 #![cfg_attr(test, allow(clippy::panic))]
 
 mod app;
+mod storage;
 mod ui;
 
 use std::path::PathBuf;
@@ -14,6 +15,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use curst_core::http::{Cancel, Config, CurlExecutor, HttpExecutor};
+use curst_core::store::{Library, Paths};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
 
@@ -49,8 +51,10 @@ impl Cli {
 fn main() -> Result<()> {
     let config = Cli::parse().config();
     let executor: Arc<dyn HttpExecutor> = Arc::new(CurlExecutor::new(config));
+    // without a data folder the app still opens, for one-off requests
+    let library = Paths::from_env().map(Library::new);
     let mut terminal = ratatui::try_init().context("could not start the terminal UI")?;
-    let result = Runtime::new(executor).run(&mut terminal);
+    let result = Runtime::new(executor, library).run(&mut terminal);
 
     ratatui::try_restore().context("could not restore the terminal")?;
 
@@ -59,6 +63,7 @@ fn main() -> Result<()> {
 
 struct Runtime {
     executor: Arc<dyn HttpExecutor>,
+    library: Result<Library, String>,
     results: Sender<Action>,
     inbox: Receiver<Action>,
     cancel: Option<Cancel>,
@@ -66,11 +71,15 @@ struct Runtime {
 }
 
 impl Runtime {
-    fn new(executor: Arc<dyn HttpExecutor>) -> Self {
+    fn new(
+        executor: Arc<dyn HttpExecutor>,
+        library: Result<Library, curst_core::store::StoreError>,
+    ) -> Self {
         let (results, inbox) = mpsc::channel();
 
         Self {
             executor,
+            library: library.map_err(|e| e.to_string()),
             results,
             inbox,
             cancel: None,
@@ -81,6 +90,12 @@ impl Runtime {
     fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut state = State::default();
         let mut dirty = true;
+        let startup = match &self.library {
+            Ok(library) => storage::load_all(library),
+            Err(message) => Action::Notice(format!("collections are off: {message}")),
+        };
+
+        app::update(&mut state, startup);
 
         while !state.should_quit {
             if dirty {
@@ -155,6 +170,16 @@ impl Runtime {
                 };
 
                 let _ = self.results.send(Action::Saved(result));
+            }
+            command => {
+                let action = match &self.library {
+                    Ok(library) => storage::run(library, &state.collections, command),
+                    Err(message) => Some(Action::Notice(format!("collections are off: {message}"))),
+                };
+
+                if let Some(action) = action {
+                    let _ = self.results.send(action);
+                }
             }
         }
     }

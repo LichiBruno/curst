@@ -596,6 +596,7 @@ dependencies = [
  "insta",
  "ratatui",
  "ratatui-textarea",
+ "tempfile",
  "unicode-width",
 ]
 

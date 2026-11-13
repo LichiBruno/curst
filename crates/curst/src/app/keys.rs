@@ -1,6 +1,6 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::{Action, Focus, RequestTab, State};
+use super::{Action, Focus, Popup, RequestTab, State};
 
 pub(crate) fn action_for(state: &State, key: KeyEvent) -> Option<Action> {
     if key.kind == KeyEventKind::Release {
@@ -9,18 +9,20 @@ pub(crate) fn action_for(state: &State, key: KeyEvent) -> Option<Action> {
 
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
-    match key.code {
-        KeyCode::Char('c') if ctrl => return Some(Action::Quit),
-        KeyCode::Char('r') if ctrl => return Some(Action::Send),
-        _ => {}
+    // Ctrl+C always reaches the app, so two presses quit from anywhere
+    if ctrl && key.code == KeyCode::Char('c') {
+        return Some(Action::Quit);
     }
 
-    if state.save_prompt.is_some() {
-        return Some(match key.code {
-            KeyCode::Esc => Action::StopEdit,
-            KeyCode::Enter => Action::ConfirmSave,
-            _ => Action::Type(key),
-        });
+    if let Some(popup) = &state.popup {
+        return popup_key(popup, key);
+    }
+
+    match key.code {
+        KeyCode::Char('r') if ctrl => return Some(Action::Send),
+        KeyCode::Char('s') if ctrl => return Some(Action::Save),
+        KeyCode::Char('e') if ctrl => return Some(Action::Environments),
+        _ => {}
     }
 
     match state.focus {
@@ -32,6 +34,7 @@ pub(crate) fn action_for(state: &State, key: KeyEvent) -> Option<Action> {
             _ => Action::Type(key),
         }),
         Focus::Request if state.request_typing() => Some(typing_in_request(state, key)),
+        Focus::Sidebar => common(state, key).or_else(|| sidebar_key(key)),
         Focus::Method => common(state, key).or(match key.code {
             KeyCode::Left | KeyCode::Up => Some(Action::PreviousMethod),
             KeyCode::Right | KeyCode::Down | KeyCode::Enter | KeyCode::Char(' ') => {
@@ -56,6 +59,80 @@ pub(crate) fn action_for(state: &State, key: KeyEvent) -> Option<Action> {
             KeyCode::Char('s') => Some(Action::OpenSave),
             _ => None,
         }),
+    }
+}
+
+fn sidebar_key(key: KeyEvent) -> Option<Action> {
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    match key.code {
+        KeyCode::Up if shift => Some(Action::MoveUp),
+        KeyCode::Down if shift => Some(Action::MoveDown),
+        KeyCode::Char('K') => Some(Action::MoveUp),
+        KeyCode::Char('J') => Some(Action::MoveDown),
+        KeyCode::Up | KeyCode::Char('k') => Some(Action::Up),
+        KeyCode::Down | KeyCode::Char('j') => Some(Action::Down),
+        KeyCode::Left | KeyCode::Char('h') => Some(Action::Left),
+        KeyCode::Right | KeyCode::Char('l') => Some(Action::Right),
+        KeyCode::Home => Some(Action::Top),
+        KeyCode::End => Some(Action::Bottom),
+        KeyCode::Enter => Some(Action::Edit),
+        KeyCode::Char('n') => Some(Action::NewRequest),
+        KeyCode::Char('f') => Some(Action::NewFolder),
+        KeyCode::Char('c') => Some(Action::NewCollection),
+        KeyCode::Char('r') => Some(Action::Rename),
+        KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteItem),
+        KeyCode::Char('x') => Some(Action::Cut),
+        KeyCode::Char('p') => Some(Action::Paste),
+        _ => None,
+    }
+}
+
+fn popup_key(popup: &Popup, key: KeyEvent) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    match popup {
+        Popup::Prompt { .. } => Some(match key.code {
+            KeyCode::Esc => Action::ClosePopup,
+            KeyCode::Enter => Action::ConfirmPopup,
+            _ => Action::Type(key),
+        }),
+        Popup::Confirm { .. } => match key.code {
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => Some(Action::ConfirmPopup),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(Action::ClosePopup),
+            _ => None,
+        },
+        Popup::Environments { .. } => match key.code {
+            KeyCode::Up | KeyCode::Char('k') => Some(Action::Up),
+            KeyCode::Down | KeyCode::Char('j') => Some(Action::Down),
+            KeyCode::Enter => Some(Action::ConfirmPopup),
+            KeyCode::Esc | KeyCode::Char('q') => Some(Action::ClosePopup),
+            KeyCode::Char('e') if ctrl => Some(Action::ClosePopup),
+            KeyCode::Char('n') => Some(Action::NewEnvironment),
+            KeyCode::Char('r') => Some(Action::RenameEnvironment),
+            KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteEnvironment),
+            KeyCode::Char('v') => Some(Action::EditVariables),
+            _ => None,
+        },
+        Popup::Variables(editor) if editor.editing() => Some(match key.code {
+            KeyCode::Char('s') if ctrl => Action::Save,
+            KeyCode::Esc | KeyCode::Enter => Action::StopEdit,
+            KeyCode::Tab => Action::NextCell,
+            _ => Action::Type(key),
+        }),
+        Popup::Variables(_) => match key.code {
+            KeyCode::Char('s') if ctrl => Some(Action::Save),
+            KeyCode::Esc => Some(Action::ClosePopup),
+            KeyCode::Left | KeyCode::BackTab => Some(Action::PreviousTab),
+            KeyCode::Right | KeyCode::Tab => Some(Action::NextTab),
+            KeyCode::Up => Some(Action::Up),
+            KeyCode::Down => Some(Action::Down),
+            KeyCode::Enter => Some(Action::Edit),
+            KeyCode::Char('a') => Some(Action::AddRow),
+            KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteRow),
+            KeyCode::Char(' ') => Some(Action::ToggleRow),
+            _ => None,
+        },
     }
 }
 

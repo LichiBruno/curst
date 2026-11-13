@@ -229,13 +229,21 @@ pub fn resolve_request(request: &Request, lookup: &impl Lookup) -> (Request, Res
     (resolved, std::mem::take(out))
 }
 
+/// disabled pairs are never sent, so they are kept as written and add
+/// nothing to the resolution
 fn resolve_pairs(pairs: &[KeyValue], lookup: &impl Lookup, out: &mut Resolution) -> Vec<KeyValue> {
     pairs
         .iter()
-        .map(|p| KeyValue {
-            name: resolve(&p.name, lookup, out),
-            value: resolve(&p.value, lookup, out),
-            enabled: p.enabled,
+        .map(|p| {
+            if !p.enabled {
+                return p.clone();
+            }
+
+            KeyValue {
+                name: resolve(&p.name, lookup, out),
+                value: resolve(&p.value, lookup, out),
+                enabled: true,
+            }
         })
         .collect()
 }
@@ -411,6 +419,23 @@ mod tests {
         request.body = Body::None;
 
         assert_eq!(resolve_request(&request, &scopes).0.body, Body::None);
+    }
+
+    #[test]
+    fn disabled_pairs_are_left_alone() {
+        let mut off = KeyValue::new("x-{{gone}}", "{{gone}}");
+        off.enabled = false;
+
+        let request = Request {
+            headers: vec![off.clone()],
+            params: vec![off.clone()],
+            ..Request::default()
+        };
+        let (resolved, out) = resolve_request(&request, &Scopes::default());
+
+        assert_eq!(resolved.headers, [off.clone()]);
+        assert_eq!(resolved.params, [off]);
+        assert_eq!(out, Resolution::default());
     }
 
     proptest! {

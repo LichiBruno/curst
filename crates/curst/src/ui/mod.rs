@@ -1,27 +1,44 @@
+mod popup;
 mod request;
 mod response;
+mod sidebar;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Paragraph};
 
-use crate::app::{AuthKind, BodyField, BodyKind, Focus, RequestTab, State};
+use crate::app::{AuthKind, BodyField, BodyKind, Focus, RequestTab, State, display};
 
 const WIDE: u16 = 110;
 
+/// the sidebar's width for a terminal this wide, 0 when it is too narrow
+fn sidebar_width(width: u16) -> u16 {
+    match width {
+        100.. => 30,
+        60.. => 24,
+        _ => 0,
+    }
+}
+
 pub(crate) fn view(state: &State, frame: &mut Frame) {
-    let [top, panes, footer] = Layout::vertical([
-        Constraint::Length(3),
+    let [body, footer] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+    let [side, main] = Layout::horizontal([
+        Constraint::Length(sidebar_width(body.width)),
         Constraint::Fill(1),
-        Constraint::Length(1),
     ])
-    .areas(frame.area());
+    .areas(body);
+    let [top, panes] = Layout::vertical([Constraint::Length(3), Constraint::Fill(1)]).areas(main);
+
+    if side.width > 0 {
+        sidebar::draw(state, frame, side);
+    }
 
     url_bar(state, frame, top);
 
-    let direction = if frame.area().width >= WIDE {
+    let direction = if main.width >= WIDE {
         Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)])
     } else {
         Layout::vertical([Constraint::Percentage(45), Constraint::Percentage(55)])
@@ -32,8 +49,8 @@ pub(crate) fn view(state: &State, frame: &mut Frame) {
     response::draw(state, frame, right);
     draw_footer(state, frame, footer);
 
-    if let Some(prompt) = &state.save_prompt {
-        save_prompt(prompt, frame);
+    if let Some(popup) = &state.popup {
+        popup::draw(state, popup, frame);
     }
 }
 
@@ -79,31 +96,24 @@ fn url_bar(state: &State, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(method, method_area);
 
-    let title = if state.in_flight.is_some() {
-        Line::from(" URL · sending… ")
-    } else {
-        Line::from(" URL ")
+    let mut title = match &state.open {
+        Some(open) => format!(" {} ", display(&open.name)),
+        None => " URL ".to_owned(),
     };
-    let block = pane(title, state.focus == Focus::Url);
+
+    if state.is_dirty() {
+        title.push_str("● ");
+    }
+
+    if state.in_flight.is_some() {
+        title.push_str("· sending… ");
+    }
+
+    let block = pane(Line::from(title), state.focus == Focus::Url);
     let inner = block.inner(url_area);
 
     frame.render_widget(block, url_area);
     frame.render_widget(&state.url, inner);
-}
-
-fn save_prompt(prompt: &ratatui_textarea::TextArea<'static>, frame: &mut Frame) {
-    let [area] = Layout::vertical([Constraint::Length(3)])
-        .flex(Flex::Center)
-        .areas(frame.area());
-    let [area] = Layout::horizontal([Constraint::Max(60)])
-        .flex(Flex::Center)
-        .areas(area);
-    let block = pane(Line::from(" Save body to file "), true);
-    let inner = block.inner(area);
-
-    frame.render_widget(Clear, area);
-    frame.render_widget(block, area);
-    frame.render_widget(prompt, inner);
 }
 
 fn draw_footer(state: &State, frame: &mut Frame, area: Rect) {
@@ -130,13 +140,27 @@ fn draw_footer(state: &State, frame: &mut Frame, area: Rect) {
 
 /// the keys that work where the focus is, so they can be shown in the footer
 pub(crate) fn hints(state: &State) -> Vec<(&'static str, &'static str)> {
-    if state.save_prompt.is_some() {
-        return vec![("Enter", "save"), ("Esc", "close")];
+    if let Some(popup) = &state.popup {
+        return popup::hints(popup);
     }
 
     let mut hints = Vec::new();
 
+    // the most urgent key comes first, before the footer runs out of room
+    if state.is_dirty() {
+        hints.push(("Ctrl+S", "save"));
+    }
+
     match state.focus {
+        Focus::Sidebar => hints.extend([
+            ("Enter", "open"),
+            ("n", "request"),
+            ("f", "folder"),
+            ("c", "collection"),
+            ("r", "rename"),
+            ("d", "delete"),
+            ("x p", "move"),
+        ]),
         Focus::Url => hints.extend([("Enter", "send"), ("Tab", "next")]),
         Focus::Method => hints.extend([("←→", "change method"), ("Tab", "next")]),
         Focus::Request if state.request_typing() => {
@@ -193,6 +217,10 @@ pub(crate) fn hints(state: &State) -> Vec<(&'static str, &'static str)> {
         && !(state.focus == Focus::Request && state.request_typing())
     {
         hints.push(("Ctrl+R", "send"));
+    }
+
+    if !state.collections.is_empty() {
+        hints.push(("Ctrl+E", "env"));
     }
 
     hints.push(("Ctrl+C", "quit"));

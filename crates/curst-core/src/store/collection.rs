@@ -1,7 +1,7 @@
 //! one collection on disk: a folder with `collection.toml`, a tree of
 //! folders and request files, and an `environments` folder
 //!
-//! items are addressed by their path of slugs from the top. A request
+//! items are addressed by their path of slugs from the top. a request
 //! `<slug>.toml` and a folder `<slug>` never share a slug in one folder,
 //! because a new slug is chosen against both
 

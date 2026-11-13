@@ -54,6 +54,21 @@ pub(crate) struct Table {
 }
 
 impl Table {
+    pub(crate) fn from_pairs(pairs: &[KeyValue]) -> Self {
+        Self {
+            rows: pairs
+                .iter()
+                .map(|p| Row {
+                    name: p.name.clone(),
+                    value: p.value.clone(),
+                    enabled: p.enabled,
+                })
+                .collect(),
+            selected: 0,
+            editing: None,
+        }
+    }
+
     pub(crate) fn pairs(&self) -> Vec<KeyValue> {
         self.rows
             .iter()
@@ -181,6 +196,17 @@ impl BodyKind {
     }
 }
 
+/// a multi-line body field holding `text` exactly, a trailing newline
+/// included
+fn body_text(text: &str) -> TextArea<'static> {
+    let mut area = TextArea::new(text.split('\n').map(ToOwned::to_owned).collect());
+
+    area.set_placeholder_text("press Enter to write the body");
+    area.set_cursor_line_style(Style::default());
+
+    area
+}
+
 /// the text field of the body tab that receives keys
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BodyField {
@@ -212,6 +238,29 @@ impl Default for BodyEditor {
 }
 
 impl BodyEditor {
+    pub(crate) fn from_body(body: &Body) -> Self {
+        let mut editor = Self::default();
+
+        match body {
+            Body::None => {}
+            Body::Json(text) => {
+                editor.kind = BodyKind::Json;
+                editor.text = body_text(text);
+            }
+            Body::Text { content_type, text } => {
+                editor.kind = BodyKind::Text;
+                editor.text = body_text(text);
+                editor.content_type = single_line(content_type, TEXT_TYPE);
+            }
+            Body::Form(fields) => {
+                editor.kind = BodyKind::Form;
+                editor.form = Table::from_pairs(fields);
+            }
+        }
+
+        editor
+    }
+
     pub(crate) fn body(&self) -> Body {
         match self.kind {
             BodyKind::None => Body::None,
@@ -302,6 +351,26 @@ impl Default for AuthEditor {
 }
 
 impl AuthEditor {
+    pub(crate) fn from_auth(auth: &Auth) -> Self {
+        let mut editor = Self::default();
+
+        match auth {
+            Auth::None => {}
+            Auth::Basic { username, password } => {
+                editor.kind = AuthKind::Basic;
+                editor.username = single_line(username, "user name");
+                editor.password = single_line(password, "password");
+                editor.password.set_mask_char('•');
+            }
+            Auth::Bearer { token } => {
+                editor.kind = AuthKind::Bearer;
+                editor.token = single_line(token, "token");
+            }
+        }
+
+        editor
+    }
+
     pub(crate) fn auth(&self) -> Auth {
         match self.kind {
             AuthKind::None => Auth::None,
@@ -461,6 +530,39 @@ mod tests {
 
         assert_eq!(body.body(), Body::Form(vec![]));
         assert_eq!(body.kind.next(), BodyKind::None);
+    }
+
+    #[test]
+    fn editors_load_what_they_produce() {
+        let mut off = KeyValue::new("b", "2");
+        off.enabled = false;
+
+        let pairs = vec![KeyValue::new("a", "1"), off];
+
+        assert_eq!(Table::from_pairs(&pairs).pairs(), pairs);
+
+        for body in [
+            Body::None,
+            Body::Json("{\n}\n".into()),
+            Body::Text {
+                content_type: "text/csv".into(),
+                text: "a,b".into(),
+            },
+            Body::Form(pairs.clone()),
+        ] {
+            assert_eq!(BodyEditor::from_body(&body).body(), body);
+        }
+
+        for auth in [
+            Auth::None,
+            Auth::Basic {
+                username: "u".into(),
+                password: "p".into(),
+            },
+            Auth::Bearer { token: "t".into() },
+        ] {
+            assert_eq!(AuthEditor::from_auth(&auth).auth(), auth);
+        }
     }
 
     #[test]
