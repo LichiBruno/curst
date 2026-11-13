@@ -82,10 +82,13 @@ pub(crate) enum Layer {
 
     /// what a refresh found
     Review,
+
+    /// a new request's name and where it goes
+    SaveRequest,
 }
 
 impl Layer {
-    pub(crate) const ALL: [Self; 32] = [
+    pub(crate) const ALL: [Self; 33] = [
         Self::Always,
         Self::Global,
         Self::Panes,
@@ -118,6 +121,7 @@ impl Layer {
         Self::SpecChoice,
         Self::SaveQuestion,
         Self::Review,
+        Self::SaveRequest,
     ];
 
     /// the name used in `config.toml`, as in `"sidebar.rename" = "r"`
@@ -155,6 +159,7 @@ impl Layer {
             Self::SpecChoice => "spec-choice",
             Self::SaveQuestion => "save-question",
             Self::Review => "refresh-review",
+            Self::SaveRequest => "save-request",
         }
     }
 
@@ -193,6 +198,7 @@ impl Layer {
             Self::SpecChoice => "the specs of a folder",
             Self::SaveQuestion => "the question whether to save",
             Self::Review => "the review of a refresh",
+            Self::SaveRequest => "the save dialog",
         }
     }
 
@@ -510,6 +516,7 @@ pub(crate) fn layers(state: &State) -> (Vec<Layer>, bool) {
             Popup::SpecChoice { .. } => (L::SpecChoice, false),
             Popup::SaveVariables { .. } => (L::SaveQuestion, false),
             Popup::Review(_) => (L::Review, false),
+            Popup::SaveRequest(dialog) => (L::SaveRequest, !dialog.picking),
         };
 
         return (vec![L::Always, layer], text);

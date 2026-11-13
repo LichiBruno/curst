@@ -134,6 +134,7 @@ fn scrolls(popup: &Popup) -> bool {
         | Popup::SpecPreview(_)
         | Popup::SpecChoice { .. }
         | Popup::Review(_) => true,
+        Popup::SaveRequest(dialog) => dialog.picking,
         Popup::Variables(editor) => !editor.editing(),
         _ => false,
     }

@@ -200,6 +200,12 @@ pub(super) const STANDARD: &[Row] = &[
     (L::Review, "page-up", &["pgup", "K"]),
     (L::Review, "confirm", &["enter"]),
     (L::Review, "close", &["esc"]),
+    (L::SaveRequest, "tab.next", &["tab"]),
+    (L::SaveRequest, "tab.previous", &["shift+tab"]),
+    (L::SaveRequest, "up", &["up"]),
+    (L::SaveRequest, "down", &["down"]),
+    (L::SaveRequest, "confirm", &["enter"]),
+    (L::SaveRequest, "close", &["esc"]),
 ];
 
 /// what `vim` changes in `standard`: each row replaces the keys of that

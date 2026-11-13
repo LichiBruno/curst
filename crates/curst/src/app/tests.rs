@@ -804,6 +804,75 @@ mod collections {
     }
 
     #[test]
+    fn the_save_dialog_chooses_where_the_request_goes() {
+        let mut state = with_collection();
+        let mut untrusted = sample();
+
+        untrusted.id = LocalId::new("c2").unwrap();
+        untrusted.collection.name = "Strangers".into();
+        untrusted.trusted = false;
+        state.collections.push(untrusted);
+        state.focus = Focus::Url;
+        type_text(&mut state, "http://h/pets");
+        press_key(&mut state, ctrl('s'));
+
+        let Some(Popup::SaveRequest(dialog)) = &state.popup else {
+            panic!("no save dialog");
+        };
+        let labels: Vec<&str> = dialog.places.iter().map(|(_, l)| l.as_str()).collect();
+
+        assert_eq!(labels, ["Pets", "Pets › Users"]);
+
+        // typing names the request; while the list is open it does not
+        press(&mut state, KeyCode::Tab);
+        press(&mut state, KeyCode::Char('x'));
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+
+        let Some(Popup::SaveRequest(dialog)) = &state.popup else {
+            panic!("picking a place closed the dialog");
+        };
+
+        assert!(!dialog.picking);
+        assert_eq!(dialog.place, 1);
+        assert_eq!(editor::text_of(&dialog.input), "pets");
+
+        let commands = press(&mut state, KeyCode::Enter);
+        let [Command::Store { collection, change }] = commands.as_slice() else {
+            panic!("no store");
+        };
+
+        assert_eq!(collection.as_str(), "c1");
+        assert!(matches!(
+            change,
+            Change::CreateRequest { parent, name, .. } if parent == &["users"] && name == "pets"
+        ));
+    }
+
+    #[test]
+    fn the_save_dialog_wants_a_name_and_esc_closes_the_list_first() {
+        let mut state = with_collection();
+
+        press_key(&mut state, ctrl('s'));
+
+        if let Some(Popup::SaveRequest(dialog)) = &mut state.popup {
+            *dialog.input = editor::single_line("  ", "name");
+        }
+
+        assert_eq!(press(&mut state, KeyCode::Enter), Vec::new());
+        assert!(matches!(state.popup, Some(Popup::SaveRequest(_))));
+
+        press(&mut state, KeyCode::Tab);
+        press(&mut state, KeyCode::Esc);
+
+        assert!(matches!(&state.popup, Some(Popup::SaveRequest(d)) if !d.picking));
+
+        press(&mut state, KeyCode::Esc);
+
+        assert!(state.popup.is_none());
+    }
+
+    #[test]
     fn saving_a_new_request_asks_for_a_name() {
         let mut state = State::default();
 
@@ -821,11 +890,12 @@ mod collections {
         type_text(&mut state, "http://h/pets/{{id}}?x=1");
         press_key(&mut state, ctrl('s'));
 
-        let Some(Popup::Prompt { input, .. }) = &state.popup else {
-            panic!("no prompt");
+        let Some(Popup::SaveRequest(dialog)) = &state.popup else {
+            panic!("no save dialog");
         };
 
-        assert_eq!(editor::text_of(input), "pets");
+        assert_eq!(editor::text_of(&dialog.input), "pets");
+        assert_eq!(dialog.places[dialog.place].1, "Pets");
 
         let commands = press(&mut state, KeyCode::Enter);
         let [Command::Store { change, .. }] = commands.as_slice() else {
