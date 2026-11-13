@@ -17,7 +17,8 @@ use unicode_width::UnicodeWidthStr;
 use ratatui_textarea::TextArea;
 
 use crate::app::{
-    AuthKind, BodyKind, Field, Focus, Hint, Hints, Layer, Popup, RequestTab, State, Target, display,
+    AuthKind, BodyKind, Column, Field, Focus, Hint, Hints, Layer, Popup, RequestTab, State, Target,
+    display,
 };
 use crate::theme::Theme;
 
@@ -368,6 +369,21 @@ fn hints_width(hints: &[Hint]) -> usize {
         .sum()
 }
 
+/// the keys while a table cell is edited: from the name on to its value,
+/// and from the value to the end of the row
+pub(super) fn cell_hints(hints: &mut Hints, column: Column) {
+    match column {
+        Column::Name => {
+            hints
+                .one("next-cell", "to the value")
+                .one("stop-edit", "done");
+        }
+        Column::Value => {
+            hints.one("next-cell", "done");
+        }
+    }
+}
+
 /// the keys that work whatever has the focus; with a pop-up open, the
 /// keys that finish it, and quitting
 pub(crate) fn global_hints(state: &State) -> Vec<Hint> {
@@ -426,11 +442,14 @@ pub(crate) fn hints(state: &State) -> Vec<Hint> {
                 .pair("method.previous", "method.next", "change method")
                 .one("focus.next", "next");
         }
-        Focus::Request if state.request_typing() => {
-            hints
-                .one("stop-edit", "done")
-                .one("next-cell", "next field");
-        }
+        Focus::Request if state.request_typing() => match state.editing_column() {
+            Some(column) => cell_hints(&mut hints, column),
+            None => {
+                hints
+                    .one("stop-edit", "done")
+                    .one("next-cell", "next field");
+            }
+        },
         Focus::Request => {
             hints.pair("tab.previous", "tab.next", "tab");
 

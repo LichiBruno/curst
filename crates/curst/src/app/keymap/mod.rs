@@ -47,6 +47,9 @@ pub(crate) enum Layer {
     /// the multi-line body
     BodyTyping,
 
+    /// a cell of a table: a name, then its value
+    TableTyping,
+
     /// sideways scrolling of the response, tried before the other keys
     ResponsePan,
     Response,
@@ -67,7 +70,7 @@ pub(crate) enum Layer {
 }
 
 impl Layer {
-    pub(crate) const ALL: [Self; 26] = [
+    pub(crate) const ALL: [Self; 27] = [
         Self::Always,
         Self::Global,
         Self::Panes,
@@ -78,6 +81,7 @@ impl Layer {
         Self::Request,
         Self::RequestTyping,
         Self::BodyTyping,
+        Self::TableTyping,
         Self::ResponsePan,
         Self::Response,
         Self::Prompt,
@@ -109,6 +113,7 @@ impl Layer {
             Self::Request => "request",
             Self::RequestTyping => "request-typing",
             Self::BodyTyping => "body-typing",
+            Self::TableTyping => "table-typing",
             Self::ResponsePan => "response-pan",
             Self::Response => "response",
             Self::Prompt => "prompt",
@@ -141,6 +146,7 @@ impl Layer {
             Self::Request => "the request pane",
             Self::RequestTyping => "a request field being edited",
             Self::BodyTyping => "the body being edited",
+            Self::TableTyping => "a table cell being edited",
             Self::ResponsePan => "the response, sideways",
             Self::Response => "the response pane",
             Self::Prompt => "a name prompt",
@@ -471,6 +477,8 @@ pub(crate) fn layers(state: &State) -> (Vec<Layer>, bool) {
                 state.request_tab == RequestTab::Body && state.body.typing == Some(BodyField::Text);
             let layer = if body {
                 L::BodyTyping
+            } else if state.editing_column().is_some() {
+                L::TableTyping
             } else {
                 L::RequestTyping
             };

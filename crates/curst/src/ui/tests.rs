@@ -145,11 +145,9 @@ fn editing_a_header_row() {
         .insert_str("Accept");
     update(&mut state, Action::NextCell);
 
+    // on the value, Enter ends the row
     insta::assert_snapshot!(render(&state, 80, 12));
-    assert_eq!(
-        shown(hints(&state)),
-        listed(&[("Enter", "done"), ("Tab", "next field")])
-    );
+    assert_eq!(shown(hints(&state)), listed(&[("Enter", "done")]));
 }
 
 #[test]
@@ -1248,4 +1246,40 @@ mod mouse {
 
         assert_ne!(state.focus, Focus::Sidebar);
     }
+}
+
+#[test]
+fn a_new_row_shows_it_wants_a_name_and_a_value() {
+    let mut state = State::default();
+
+    state.focus = Focus::Request;
+    state.request_tab = RequestTab::Headers;
+    state.headers =
+        crate::app::Table::from_pairs(&[curst_core::model::KeyValue::new("Accept", "")]);
+    update(&mut state, Action::AddRow);
+
+    insta::assert_snapshot!(render(&state, 100, 18));
+    assert_eq!(
+        shown(hints(&state)),
+        listed(&[("Enter", "to the value"), ("Esc", "done")])
+    );
+
+    for c in "X-Trace".chars() {
+        update(&mut state, Action::Type(key(KeyCode::Char(c))));
+    }
+
+    // Enter goes on to the value, and from the value ends the row
+    for action in crate::app::action_for(&state, key(KeyCode::Enter)) {
+        update(&mut state, action);
+    }
+
+    assert_eq!(state.editing_column(), Some(crate::app::Column::Value));
+    assert_eq!(shown(hints(&state)), listed(&[("Enter", "done")]));
+
+    for action in crate::app::action_for(&state, key(KeyCode::Enter)) {
+        update(&mut state, action);
+    }
+
+    assert_eq!(state.editing_column(), None);
+    assert_eq!(state.headers.rows[1].name, "X-Trace");
 }

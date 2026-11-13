@@ -1,0 +1,22 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 100, 18)"
+---
+"┌ Collections ───────────────┐  GET new request               Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"│no collections yet          │┌ Method ─┐┌ URL ────────────────────────────────────────────────────┐"
+"│press c to add one          ││   GET   ││ https://example.com/api, then Enter to send             │"
+"│                            │└─────────┘└─────────────────────────────────────────────────────────┘"
+"│                            │┏ Request  Params  Headers  Body  Auth  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│                            │┃     Header                   Value                                 ┃"
+"│                            │┃[x]  Accept                   value                                 ┃"
+"│                            │┃[x]   header                  value                                 ┃"
+"│                            │┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"│                            │┌ Response  Body  Headers  Timing  Raw  ─────────────────────────────┐"
+"│                            ││no response yet, type a URL and press Enter                         │"
+"│                            ││                                                                    │"
+"│                            ││                                                                    │"
+"│                            ││                                                                    │"
+"│                            ││                                                                    │"
+"└────────────────────────────┘└────────────────────────────────────────────────────────────────────┘"
+" Enter to the value  Esc done                                                                       "
+" Ctrl+R send  Ctrl+S save  Ctrl+E environments  Ctrl+P commands  F1 help  Ctrl+C quit               "

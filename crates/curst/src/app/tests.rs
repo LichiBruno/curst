@@ -218,7 +218,7 @@ fn rows_can_be_deleted() {
     };
     press(&mut state, KeyCode::Char('a'));
     type_text(&mut state, "a");
-    press(&mut state, KeyCode::Enter);
+    press(&mut state, KeyCode::Esc);
     press(&mut state, KeyCode::Char('d'));
 
     assert_eq!(state.params.rows, Vec::new());
@@ -1212,7 +1212,7 @@ mod collections {
         press(&mut state, KeyCode::Right);
         press(&mut state, KeyCode::Char('a'));
         type_text(&mut state, "bad name");
-        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Esc);
 
         assert_eq!(press_key(&mut state, ctrl('s')), Vec::new());
         assert_eq!(state.notice.as_deref(), Some("a is defined twice"));
@@ -1244,11 +1244,11 @@ mod collections {
         }
 
         type_text(&mut state, "good");
-        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Esc);
         press(&mut state, KeyCode::Right);
         press(&mut state, KeyCode::Char('a'));
         type_text(&mut state, "g");
-        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Esc);
         press(&mut state, KeyCode::Char(' '));
 
         let commands = press_key(&mut state, ctrl('s'));

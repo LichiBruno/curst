@@ -48,6 +48,7 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
         RequestTab::Params => table(
             state,
             &state.params,
+            ["Parameter", "Value"],
             focused,
             &format!("no query parameters, press {add} to add one"),
             frame,
@@ -56,6 +57,7 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
         RequestTab::Headers => table(
             state,
             &state.headers,
+            ["Header", "Value"],
             focused,
             &format!("no headers, press {add} to add one"),
             frame,
@@ -130,6 +132,7 @@ fn body(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
         BodyKind::Form => table(
             state,
             &state.body.form,
+            ["Field", "Value"],
             focused,
             &format!("no form fields, press {add} to add one"),
             frame,
@@ -219,9 +222,12 @@ fn row_area(area: Rect, index: usize) -> Option<Rect> {
     })
 }
 
+/// a table of names and values under a line naming its two columns; an
+/// empty cell shows what belongs in it
 pub(super) fn table(
     state: &State,
     table: &Table,
+    columns: [&str; 2],
     focused: bool,
     empty: &str,
     frame: &mut Frame,
@@ -238,21 +244,40 @@ pub(super) fn table(
         return;
     }
 
-    let height = usize::from(area.height);
-    let first = table.selected.saturating_sub(height.saturating_sub(1));
-
-    for (index, row) in table.rows.iter().enumerate().skip(first).take(height) {
-        let Some(line) = row_area(area, index - first) else {
-            break;
-        };
-
-        let [check, name_area, value_area] = Layout::horizontal([
+    let cells = |line: Rect| -> [Rect; 3] {
+        Layout::horizontal([
             Constraint::Length(4),
             Constraint::Percentage(35),
             Constraint::Fill(1),
         ])
         .spacing(1)
-        .areas(line);
+        .areas(line)
+    };
+    let heading = theme.muted.add_modifier(Modifier::BOLD);
+
+    // the line naming the columns, when a row still fits under it
+    let top = usize::from(area.height >= 2);
+
+    if let Some(line) = row_area(area, 0).filter(|_| top == 1) {
+        let [_, name_area, value_area] = cells(line);
+
+        for (cell, label) in [(name_area, columns[0]), (value_area, columns[1])] {
+            frame.render_widget(
+                Paragraph::new(Span::styled(label.to_owned(), heading)),
+                cell,
+            );
+        }
+    }
+
+    let height = usize::from(area.height).saturating_sub(top);
+    let first = table.selected.saturating_sub(height.saturating_sub(1));
+
+    for (index, row) in table.rows.iter().enumerate().skip(first).take(height) {
+        let Some(line) = row_area(area, index - first + top) else {
+            break;
+        };
+
+        let [check, name_area, value_area] = cells(line);
 
         state.region(check, Target::Row(index, RowCell::Check));
         state.region(name_area, Target::Row(index, RowCell::Name));
@@ -285,14 +310,21 @@ pub(super) fn table(
             row.value.clone()
         };
 
-        for (column, cell, text) in [
-            (Column::Name, name_area, &row.name),
-            (Column::Value, value_area, &value),
+        for (column, cell, text, label) in [
+            (Column::Name, name_area, &row.name, columns[0]),
+            (Column::Value, value_area, &value, columns[1]),
         ] {
+            let empty = Span::styled(label.to_lowercase(), style.patch(theme.muted));
+
             match editing {
                 Some((edited, area)) if edited == column => {
-                    frame.render_widget(&*field(theme, area, None), cell);
+                    // a secret's value keeps its own explanation
+                    let placeholder =
+                        (column == Column::Name || !row.secret).then(|| label.to_lowercase());
+
+                    frame.render_widget(&*field(theme, area, placeholder), cell);
                 }
+                _ if text.is_empty() => frame.render_widget(Paragraph::new(empty), cell),
                 _ => frame.render_widget(Paragraph::new(Span::styled(text.clone(), style)), cell),
             }
         }

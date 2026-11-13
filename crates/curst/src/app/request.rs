@@ -523,15 +523,28 @@ pub(super) fn scroll_response(state: &mut State, lines: isize) {
 }
 
 impl State {
+    /// the table the request pane shows, if its tab has one
+    fn shown_table(&self) -> Option<&Table> {
+        match self.request_tab {
+            RequestTab::Params => Some(&self.params),
+            RequestTab::Headers => Some(&self.headers),
+            RequestTab::Body if self.body.kind == BodyKind::Form => Some(&self.body.form),
+            RequestTab::Body | RequestTab::Auth => None,
+        }
+    }
+
     /// the selected row of the request pane's table, when it shows one
     pub(crate) fn selected_row(&self) -> Option<usize> {
-        let table = match self.request_tab {
-            RequestTab::Params => &self.params,
-            RequestTab::Headers => &self.headers,
-            RequestTab::Body if self.body.kind == BodyKind::Form => &self.body.form,
-            RequestTab::Body | RequestTab::Auth => return None,
-        };
+        let table = self.shown_table()?;
 
         (!table.rows.is_empty()).then_some(table.selected)
+    }
+
+    /// the cell of the request pane's table being edited
+    pub(crate) fn editing_column(&self) -> Option<Column> {
+        self.shown_table()?
+            .editing
+            .as_ref()
+            .map(|(column, _)| *column)
     }
 }

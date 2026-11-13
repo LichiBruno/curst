@@ -167,7 +167,15 @@ fn variables(state: &State, editor: &VariablesEditor, frame: &mut Frame) {
     state.region(area, Target::Popup);
     tab_regions(state, area, &tabs, 2, Target::PopupTab);
     frame.render_widget(block, area);
-    table(state, editor.table(), true, &empty, frame, inner);
+    table(
+        state,
+        editor.table(),
+        ["Variable", "Value"],
+        true,
+        &empty,
+        frame,
+        inner,
+    );
 }
 
 /// the open tabs, numbered as the keys that reach them: 1 to 8 for the
@@ -812,9 +820,9 @@ pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
                 .one("close", "close");
         }
         Popup::Variables(editor) if editor.editing() => {
-            hints
-                .one("stop-edit", "done")
-                .one("next-cell", "next field");
+            if let Some((column, _)) = &editor.table().editing {
+                super::cell_hints(&mut hints, *column);
+            }
         }
         Popup::Variables(_) => {
             hints
