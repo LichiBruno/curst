@@ -363,6 +363,10 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
                 input.input(key);
                 state.popup = Some(Popup::Prompt { purpose, input });
             }
+            Action::Place { row, col, .. } => {
+                super::mouse::place(&mut input, row, col);
+                state.popup = Some(Popup::Prompt { purpose, input });
+            }
             Action::ClosePopup => {}
             Action::ConfirmPopup => {
                 let text = text_of(&input).trim().to_owned();
@@ -802,6 +806,18 @@ fn environments(
         .and_then(|i| environments.get(i))
         .cloned();
 
+    // a click on an environment uses it, like choosing it and Enter
+    let (chosen, action) = match action {
+        Action::Pick(index) => (
+            index
+                .checked_sub(1)
+                .and_then(|i| environments.get(i))
+                .cloned(),
+            Action::ConfirmPopup,
+        ),
+        action => (chosen, action),
+    };
+
     match action {
         Action::Up => selected = selected.saturating_sub(1),
         Action::Down => selected = (selected + 1).min(environments.len()),
@@ -891,6 +907,25 @@ fn variables(
 
             editor.table_mut().commit();
             editor.tab = step(&tabs, editor.tab, matches!(action, Action::NextTab));
+        }
+        Action::ShowTab(index) => {
+            if let Some(tab) = editor.tabs().get(index).copied() {
+                editor.table_mut().commit();
+                editor.tab = tab;
+            }
+        }
+        Action::Pick(index) => {
+            let table = editor.table_mut();
+
+            table.commit();
+            table.selected = index.min(table.rows.len().saturating_sub(1));
+        }
+        Action::EditCell(column) => {
+            let table = editor.table_mut();
+
+            if !table.rows.is_empty() {
+                table.edit(column);
+            }
         }
         Action::Up => editor.table_mut().select_previous(),
         Action::Down => editor.table_mut().select_next(),

@@ -113,7 +113,25 @@ pub(crate) fn welcome_key(
 ) -> Result<Vec<Command>, Action> {
     let forward = matches!(action, Action::Down);
 
+    // a click on a choice tries it, like moving to it
+    let action = match (step, action) {
+        (Step::Keys, Action::Pick(index)) => {
+            if let Some((preset, _)) = PRESETS.get(index) {
+                use_preset(state, preset);
+            }
+
+            Action::Pick(index)
+        }
+        (Step::Theme, Action::Pick(index)) => {
+            use_theme(state, index);
+
+            Action::Pick(index)
+        }
+        (_, action) => action,
+    };
+
     match (step, action) {
+        (_, Action::Pick(_)) => {}
         (Step::Keys, Action::Up | Action::Down) => {
             let next = cycle(preset_index(state), PRESETS.len(), forward);
 

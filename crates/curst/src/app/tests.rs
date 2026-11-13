@@ -2608,8 +2608,12 @@ mod plain_again {
     }
 
     fn global_hints_listed(state: &State) -> bool {
-        crate::ui::hints(state).contains(&("s".to_owned(), "secret"))
-            && crate::ui::global_hints(state).contains(&("Esc".to_owned(), "close"))
+        let has = |hints: Vec<crate::app::Hint>, key: &str, label: &str| {
+            hints.iter().any(|h| h.key == key && h.label == label)
+        };
+
+        has(crate::ui::hints(state), "s", "secret")
+            && has(crate::ui::global_hints(state), "Esc", "close")
     }
 }
 

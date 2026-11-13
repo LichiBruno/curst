@@ -22,7 +22,8 @@ use curst_core::model::Request;
 use curst_core::secrets::{SecretIndex, SecretKey};
 use curst_core::store::{Library, Paths, Settings};
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event};
+use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event};
+use ratatui::crossterm::execute;
 
 use app::{Action, Command, Outcome, SecretChange, State};
 use session::{Job, Session};
@@ -90,10 +91,13 @@ fn main() -> Result<()> {
     let executor: Arc<dyn HttpExecutor> = Arc::new(CurlExecutor::new(cli.config(&settings)));
     let startup = Startup::new(&cli, settings, warnings, paths);
     let mut terminal = ratatui::try_init().context("could not start the terminal UI")?;
-    let enhanced = keyboard::enable();
-    let result = Runtime::new(executor, library, enhanced).run(&mut terminal, &startup);
+    let modes = Modes::on(startup.settings.mouse != Some(false));
 
-    keyboard::disable(enhanced);
+    modes.off_on_panic();
+
+    let result = Runtime::new(executor, library, modes).run(&mut terminal, &startup);
+
+    modes.off();
     ratatui::try_restore().context("could not restore the terminal")?;
 
     result
@@ -201,15 +205,15 @@ struct Runtime {
     /// done, since that needs the terminal
     edit: Option<(String, &'static str)>,
 
-    /// whether the terminal's keyboard protocol is switched on
-    enhanced: bool,
+    /// what curst switched on in the terminal
+    modes: Modes,
 }
 
 impl Runtime {
     fn new(
         executor: Arc<dyn HttpExecutor>,
         library: Result<Library, curst_core::store::StoreError>,
-        enhanced: bool,
+        modes: Modes,
     ) -> Self {
         let (results, inbox) = mpsc::channel();
         let mut secret_jobs = None;
@@ -238,7 +242,7 @@ impl Runtime {
             secret_jobs,
             secrets_thread,
             edit: None,
-            enhanced,
+            modes,
         }
     }
 
@@ -285,27 +289,54 @@ impl Runtime {
                 dirty = false;
             }
 
-            let mut actions = Vec::new();
+            let mut wait = Duration::from_millis(50);
 
-            if event::poll(Duration::from_millis(50))? {
-                dirty = true;
+            // every waiting event is taken at once, so mouse moves never
+            // queue up ahead of keys; each one is read against the state the
+            // one before it left
+            while !state.should_quit && event::poll(wait)? {
+                wait = Duration::ZERO;
 
-                if let Event::Key(key) = event::read()? {
-                    actions.extend(app::action_for(&state, key));
+                let actions = match event::read()? {
+                    Event::Key(key) => app::action_for(&state, key),
+                    Event::Mouse(mouse) if self.modes.mouse => {
+                        // a click lands on what is on the screen now
+                        if dirty && app::mouse_acts(mouse) {
+                            terminal.draw(|frame| ui::view(&state, frame))?;
+                            dirty = false;
+                        }
+
+                        app::mouse_actions(&state, mouse)
+                    }
+                    Event::Resize(..) => {
+                        dirty = true;
+
+                        Vec::new()
+                    }
+                    _ => Vec::new(),
+                };
+
+                dirty |= !actions.is_empty();
+
+                for action in actions {
+                    for command in app::update(&mut state, action) {
+                        self.execute(command, &state);
+                    }
                 }
             }
 
-            actions.extend(self.inbox.try_iter());
-            dirty |= !actions.is_empty();
+            let replies: Vec<Action> = self.inbox.try_iter().collect();
 
-            for action in actions {
+            dirty |= !replies.is_empty();
+
+            for action in replies {
                 for command in app::update(&mut state, action) {
                     self.execute(command, &state);
                 }
             }
 
             if let Some((text, extension)) = self.edit.take() {
-                let result = edit_in_terminal(terminal, &text, extension, self.enhanced)?;
+                let result = edit_in_terminal(terminal, &text, extension, self.modes)?;
 
                 app::update(&mut state, Action::BodyEdited(result));
                 dirty = true;
@@ -445,6 +476,54 @@ impl Runtime {
 /// hands the terminal to the user's editor and takes it back after
 /// the keyboard protocol that tells keys like Ctrl+1 apart from plain 1,
 /// switched on only where the terminal supports it
+/// the terminal modes curst switches on: the keyboard protocol and the
+/// mouse. they are switched off whenever the terminal is handed back, at
+/// exit, around the editor and on a crash, or the shell would be left
+/// printing escape codes for every key and mouse move
+#[derive(Debug, Clone, Copy)]
+struct Modes {
+    enhanced: bool,
+    mouse: bool,
+}
+
+impl Modes {
+    fn on(mouse: bool) -> Self {
+        let enhanced = keyboard::enable();
+        let mouse = mouse && execute!(std::io::stdout(), EnableMouseCapture).is_ok();
+
+        Self { enhanced, mouse }
+    }
+
+    fn off(self) {
+        if self.mouse {
+            let _ = execute!(std::io::stdout(), DisableMouseCapture);
+        }
+
+        keyboard::disable(self.enhanced);
+    }
+
+    fn resume(self) {
+        if self.enhanced {
+            keyboard::enable();
+        }
+
+        if self.mouse {
+            let _ = execute!(std::io::stdout(), EnableMouseCapture);
+        }
+    }
+
+    /// switches the modes off before a crash is reported; ratatui's own
+    /// hook, which runs next, restores the screen
+    fn off_on_panic(self) {
+        let previous = std::panic::take_hook();
+
+        std::panic::set_hook(Box::new(move |info| {
+            self.off();
+            previous(info);
+        }));
+    }
+}
+
 mod keyboard {
     use ratatui::crossterm::event::{
         KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -473,7 +552,7 @@ fn edit_in_terminal(
     terminal: &mut DefaultTerminal,
     text: &str,
     extension: &str,
-    enhanced: bool,
+    modes: Modes,
 ) -> Result<Result<String, String>> {
     use ratatui::crossterm::execute;
     use ratatui::crossterm::terminal::{
@@ -481,7 +560,7 @@ fn edit_in_terminal(
     };
 
     // the same terminal is kept, only handed over for a while
-    keyboard::disable(enhanced);
+    modes.off();
     disable_raw_mode()?;
     execute!(std::io::stdout(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
@@ -492,10 +571,7 @@ fn edit_in_terminal(
     enable_raw_mode()?;
     execute!(std::io::stdout(), EnterAlternateScreen)?;
 
-    if enhanced {
-        keyboard::enable();
-    }
-
+    modes.resume();
     terminal.clear()?;
 
     Ok(result)

@@ -17,7 +17,7 @@ use unicode_width::UnicodeWidthStr;
 use ratatui_textarea::TextArea;
 
 use crate::app::{
-    AuthKind, BodyKind, Focus, Hint, Hints, Layer, Popup, RequestTab, State, display,
+    AuthKind, BodyKind, Field, Focus, Hint, Hints, Layer, Popup, RequestTab, State, Target, display,
 };
 use crate::theme::Theme;
 
@@ -33,6 +33,8 @@ fn sidebar_width(width: u16) -> u16 {
 }
 
 pub(crate) fn view(state: &State, frame: &mut Frame) {
+    state.clear_regions();
+
     let [body, footer] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(2)]).areas(frame.area());
     let [side, main] = Layout::horizontal([
@@ -80,6 +82,34 @@ pub(super) fn pane(theme: &Theme, title: Line<'static>, focused: bool) -> Block<
             .border_style(theme.accent)
     } else {
         block.border_style(theme.border)
+    }
+}
+
+/// records where the tab titles on the top border of `area` are: the
+/// spans of `title` from `first` on are the tabs, as [`tab_titles`] makes
+/// them, and the last span is only padding
+pub(super) fn tab_regions(
+    state: &State,
+    area: Rect,
+    title: &[Span],
+    first: usize,
+    target: impl Fn(usize) -> Target,
+) {
+    // a title starts after the corner of the border
+    let mut x = usize::from(area.x) + 1 + title.iter().take(first).map(Span::width).sum::<usize>();
+    let tabs = title.len().saturating_sub(first + 1);
+
+    for (index, span) in title.iter().skip(first).take(tabs).enumerate() {
+        let width = span.width();
+        let tab = Rect::new(
+            u16::try_from(x).unwrap_or(u16::MAX),
+            area.y,
+            u16::try_from(width).unwrap_or(0),
+            1,
+        );
+
+        state.region(tab.intersection(area), target(index));
+        x += width;
     }
 }
 
@@ -160,6 +190,16 @@ fn tab_bar(state: &State, frame: &mut Frame, area: Rect) {
     let mut spans = vec![Span::styled(if first > 0 { "‹" } else { " " }, dim)];
 
     for (index, text) in texts.iter().enumerate().take(last + 1).skip(first) {
+        let x: usize = spans.iter().map(Span::width).sum();
+        let tab = Rect::new(
+            area.x.saturating_add(u16::try_from(x).unwrap_or(u16::MAX)),
+            area.y,
+            u16::try_from(text.width()).unwrap_or(0),
+            1,
+        );
+
+        state.region(tab.intersection(area), Target::Request(index));
+
         let style = if labels[index].active {
             theme.selected.add_modifier(Modifier::BOLD)
         } else {
@@ -180,8 +220,8 @@ fn tab_bar(state: &State, frame: &mut Frame, area: Rect) {
         .one("request.close", "close")
         .finish()
         .iter()
-        .fold(String::new(), |mut text, (key, label)| {
-            let _ = write!(text, " {key} {label} ");
+        .fold(String::new(), |mut text, hint| {
+            let _ = write!(text, " {} {} ", hint.key, hint.label);
 
             text
         });
@@ -225,6 +265,10 @@ fn url_bar(state: &State, frame: &mut Frame, area: Rect) {
     let block = pane(theme, Line::from(title), state.focus == Focus::Url);
     let inner = block.inner(url_area);
 
+    state.region(method_area, Target::Method);
+    state.region(url_area, Target::Pane(Focus::Url));
+    state.region(inner, Target::Text(Field::Url));
+
     frame.render_widget(block, url_area);
     let placeholder = format!(
         "https://example.com/api, then {} to send",
@@ -261,10 +305,27 @@ pub(super) fn field<'a>(
 /// that work everywhere, always in the same place
 fn draw_footer(state: &State, frame: &mut Frame, area: Rect) {
     let theme = &state.theme;
-    let keys = |spans: &mut Vec<Span<'static>>, hints: Vec<Hint>| {
-        for (key, label) in hints {
-            spans.push(Span::styled(format!(" {key} "), theme.key));
-            spans.push(Span::styled(format!("{label} "), theme.muted));
+    let [top, bottom] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+
+    // each hint is a button for its action, where it has one
+    let keys = |spans: &mut Vec<Span<'static>>, line: Rect, hints: Vec<Hint>| {
+        let mut x: usize = spans.iter().map(Span::width).sum();
+
+        for hint in hints {
+            let key = Span::styled(format!(" {} ", hint.key), theme.key);
+            let label = Span::styled(format!("{} ", hint.label), theme.muted);
+            let width = key.width() + label.width();
+
+            if let Some(name) = hint.name {
+                let at = line.x.saturating_add(u16::try_from(x).unwrap_or(u16::MAX));
+                let button = Rect::new(at, line.y, u16::try_from(width).unwrap_or(0), 1);
+
+                state.region(button.intersection(line), Target::Run(name));
+            }
+
+            spans.extend([key, label]);
+            x += width;
         }
     };
     let mut here: Vec<Span<'static>> = Vec::new();
@@ -278,7 +339,7 @@ fn draw_footer(state: &State, frame: &mut Frame, area: Rect) {
         here.push(Span::raw(" "));
     }
 
-    keys(&mut here, hints(state));
+    keys(&mut here, top, hints(state));
 
     let mut everywhere = Vec::new();
     let mut global = global_hints(state);
@@ -290,13 +351,10 @@ fn draw_footer(state: &State, frame: &mut Frame, area: Rect) {
             break;
         }
 
-        global.retain(|(_, l)| *l != label);
+        global.retain(|hint| hint.label != label);
     }
 
-    keys(&mut everywhere, global);
-
-    let [top, bottom] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+    keys(&mut everywhere, bottom, global);
 
     frame.render_widget(Paragraph::new(Line::from(here)), top);
     frame.render_widget(Paragraph::new(Line::from(everywhere)), bottom);
@@ -306,7 +364,7 @@ fn draw_footer(state: &State, frame: &mut Frame, area: Rect) {
 fn hints_width(hints: &[Hint]) -> usize {
     hints
         .iter()
-        .map(|(key, label)| key.width() + label.width() + 3)
+        .map(|hint| hint.key.width() + hint.label.width() + 3)
         .sum()
 }
 

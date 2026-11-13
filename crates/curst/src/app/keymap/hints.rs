@@ -4,7 +4,14 @@
 use super::{Keymap, Layer, State, layers};
 
 /// a key, or keys, and what they do
-pub(crate) type Hint = (String, &'static str);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Hint {
+    pub(crate) key: String,
+    pub(crate) label: &'static str,
+
+    /// the action a click on the hint runs, for a hint of one action
+    pub(crate) name: Option<String>,
+}
 
 /// collects hints, looking keys up in a chain of layers
 pub(crate) struct Hints<'a> {
@@ -45,7 +52,11 @@ impl<'a> Hints<'a> {
     /// one action
     pub(crate) fn one(&mut self, name: &str, label: &'static str) -> &mut Self {
         if let Some(key) = self.key(name) {
-            self.list.push((key, label));
+            self.list.push(Hint {
+                key,
+                label,
+                name: Some(name.to_owned()),
+            });
         }
 
         self
@@ -60,7 +71,11 @@ impl<'a> Hints<'a> {
             (None, None) => return self,
         };
 
-        self.list.push((key, label));
+        self.list.push(Hint {
+            key,
+            label,
+            name: None,
+        });
 
         self
     }
@@ -68,7 +83,11 @@ impl<'a> Hints<'a> {
     /// the ends of a numbered run, such as `1-9`
     pub(crate) fn range(&mut self, first: &str, last: &str, label: &'static str) -> &mut Self {
         if let (Some(a), Some(b)) = (self.key(first), self.key(last)) {
-            self.list.push((format!("{a}-{b}"), label));
+            self.list.push(Hint {
+                key: format!("{a}-{b}"),
+                label,
+                name: None,
+            });
         }
 
         self

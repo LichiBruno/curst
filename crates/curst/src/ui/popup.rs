@@ -1,11 +1,11 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use super::request::table;
-use super::{field, pane, tab_titles};
+use super::{field, pane, tab_regions, tab_titles};
 use curst_core::model::LocalId;
 use curst_core::secrets::{Approval, SecretKey};
 use curst_core::store::Backend;
@@ -15,10 +15,9 @@ use ratatui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    Entry, Hint, Hints, Layer, PRESETS, Palette, Popup, State, Step, VarTab, VariablesEditor,
-    display,
+    Entry, Field, Hint, Hints, Layer, PRESETS, Palette, Popup, State, Step, Target, VarTab,
+    VariablesEditor, display,
 };
-use crate::theme::Theme;
 
 /// a box of at most `width` by `height` in the middle of the screen
 fn centered(frame: &Frame, width: u16, height: u16) -> Rect {
@@ -42,7 +41,9 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
             let inner = block.inner(area);
 
             frame.render_widget(Clear, area);
+            state.region(area, Target::Popup);
             frame.render_widget(block, area);
+            state.region(inner, Target::Text(Field::Popup));
             frame.render_widget(&*field(&state.theme, input, None), inner);
         }
         Popup::Confirm { message, .. } => {
@@ -60,6 +61,7 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
             ];
 
             frame.render_widget(Clear, area);
+            state.region(area, Target::Popup);
             frame.render_widget(
                 Paragraph::new(text).wrap(Wrap { trim: true }).block(block),
                 area,
@@ -106,6 +108,12 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
             }
 
             frame.render_widget(Clear, area);
+            state.region(area, Target::Popup);
+
+            for index in 0..=environments.len() {
+                line_region(state, block.inner(area), index, Target::Item(index));
+            }
+
             frame.render_widget(Paragraph::new(lines).block(block), area);
         }
         Popup::Trust { collection } => trust(state, collection, frame),
@@ -116,14 +124,7 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
             input,
             error,
             ..
-        } => passphrase(
-            &state.theme,
-            *new,
-            first.is_some(),
-            input,
-            error.as_deref(),
-            frame,
-        ),
+        } => passphrase(state, *new, first.is_some(), input, error.as_deref(), frame),
         Popup::Settings => settings(state, frame),
         Popup::Welcome { step, .. } => welcome(state, *step, frame),
         Popup::Tabs { selected } => tab_list(state, *selected, frame),
@@ -145,6 +146,8 @@ fn variables(state: &State, editor: &VariablesEditor, frame: &mut Frame) {
 
     title.extend(tab_titles(theme, &editor.tabs(), editor.tab, label));
 
+    let tabs = title.clone();
+
     if let (VarTab::Environment, Some(environment)) = (editor.tab, &editor.environment) {
         title.push(Span::raw(format!("· {} ", display(&environment.name))));
     }
@@ -161,8 +164,10 @@ fn variables(state: &State, editor: &VariablesEditor, frame: &mut Frame) {
     };
 
     frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+    tab_regions(state, area, &tabs, 2, Target::PopupTab);
     frame.render_widget(block, area);
-    table(&state.theme, editor.table(), true, &empty, frame, inner);
+    table(state, editor.table(), true, &empty, frame, inner);
 }
 
 /// the open tabs, numbered as the keys that reach them: 1 to 8 for the
@@ -215,6 +220,17 @@ fn tab_list(state: &State, selected: usize, frame: &mut Frame) {
     let area = centered(frame, 60, height);
 
     frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+
+    for index in 0..labels.len() {
+        line_region(
+            state,
+            area.inner(Margin::new(1, 1)),
+            index,
+            Target::Item(index),
+        );
+    }
+
     frame.render_widget(
         Paragraph::new(lines).block(pane(theme, Line::from(" Tabs "), true)),
         area,
@@ -268,7 +284,14 @@ fn palette_list(state: &State, palette: &Palette, frame: &mut Frame) {
     }
 
     frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
     frame.render_widget(block, area);
+    state.region(input_area, Target::Text(Field::Popup));
+
+    for index in first..entries.len().min(first + SHOWN) {
+        line_region(state, list_area, index - first, Target::Item(index));
+    }
+
     frame.render_widget(&*field(&state.theme, &palette.input, None), input_area);
     frame.render_widget(Paragraph::new(lines), list_area);
 }
@@ -324,12 +347,49 @@ fn help(state: &State, scroll: usize, here: &[Layer], frame: &mut Frame) {
     let title = Line::from(" Keys · rebind them in config.toml, [keys.bindings] ");
 
     frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
     frame.render_widget(
         Paragraph::new(lines)
             .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0))
             .block(pane(theme, title, true)),
         area,
     );
+}
+
+/// records line `row` of `inner` as `target`, for clicks
+fn line_region(state: &State, inner: Rect, row: usize, target: Target) {
+    let Ok(row) = u16::try_from(row) else {
+        return;
+    };
+
+    let line = Rect {
+        y: inner.y.saturating_add(row),
+        height: 1,
+        ..inner
+    };
+
+    state.region(line.intersection(inner), target);
+}
+
+/// records span `index` of `line`, a key, and the span after it, what it
+/// does, drawn on line `row` of `inner` without wrapping, as a button for
+/// the action `name`
+fn button(state: &State, inner: Rect, row: usize, line: &Line, index: usize, name: &str) {
+    let x: usize = line.spans.iter().take(index).map(Span::width).sum();
+    let width: usize = line.spans.iter().skip(index).take(2).map(Span::width).sum();
+    let (Ok(x), Ok(row), Ok(width)) = (u16::try_from(x), u16::try_from(row), u16::try_from(width))
+    else {
+        return;
+    };
+
+    let span = Rect::new(
+        inner.x.saturating_add(x),
+        inner.y.saturating_add(row),
+        width,
+        1,
+    );
+
+    state.region(span.intersection(inner), Target::Run(name.to_owned()));
 }
 
 /// a key, padded, as the pop-ups list them
@@ -380,8 +440,16 @@ fn settings(state: &State, frame: &mut Frame) {
         )),
     ];
     let area = centered(frame, 80, 10);
+    let inner = area.inner(Margin::new(1, 1));
 
     frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+
+    // each setting's line changes it
+    for (row, name) in [(0, "keys"), (1, "theme"), (4, "migrate")] {
+        line_region(state, inner, row, Target::Run(name.to_owned()));
+    }
+
     frame.render_widget(
         Paragraph::new(lines).block(pane(theme, Line::from(" Settings "), true)),
         area,
@@ -451,8 +519,24 @@ fn welcome(state: &State, step: Step, frame: &mut Frame) {
         Step::Keys => " Keys · 1 of 2 ",
         Step::Theme => " Theme · 2 of 2 ",
     };
+    let choices = match step {
+        Step::Keys => PRESETS.len(),
+        Step::Theme => state.themes.len(),
+    };
 
     frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+
+    // the choices come after the greeting and the question
+    for index in 0..choices {
+        line_region(
+            state,
+            area.inner(Margin::new(1, 1)),
+            4 + index,
+            Target::Item(index),
+        );
+    }
+
     frame.render_widget(
         Paragraph::new(lines).block(pane(theme, Line::from(title), true)),
         area,
@@ -481,8 +565,17 @@ fn choose_backend(state: &State, frame: &mut Frame) {
         )),
     ];
     let area = centered(frame, 68, 10);
+    let inner = area.inner(Margin::new(1, 1));
 
     frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+
+    // each choice takes two lines
+    for (row, name) in [(2, "backend.keychain"), (4, "backend.file")] {
+        line_region(state, inner, row, Target::Run(name.to_owned()));
+        line_region(state, inner, row + 1, Target::Run(name.to_owned()));
+    }
+
     frame.render_widget(
         Paragraph::new(lines).block(pane(theme, Line::from(" Keep secrets where? "), true)),
         area,
@@ -490,7 +583,7 @@ fn choose_backend(state: &State, frame: &mut Frame) {
 }
 
 fn passphrase(
-    theme: &Theme,
+    state: &State,
     new: bool,
     confirming: bool,
     input: &TextArea<'static>,
@@ -502,6 +595,7 @@ fn passphrase(
         (true, true) => " Type the passphrase again ",
         (false, _) => " Passphrase for secrets.age ",
     };
+    let theme = &state.theme;
     let area = centered(frame, 60, 4);
     let block = pane(theme, Line::from(title), true);
     let inner = block.inner(area);
@@ -509,6 +603,7 @@ fn passphrase(
         Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(inner);
 
     frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
     frame.render_widget(block, area);
     frame.render_widget(&*super::field(theme, input, None), field);
 
@@ -567,6 +662,7 @@ fn approve(state: &State, approval: &Approval, frame: &mut Frame) {
     let area = centered(frame, 70, height);
 
     frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
     frame.render_widget(
         Paragraph::new(lines).wrap(Wrap { trim: false }).block(pane(
             theme,
@@ -626,8 +722,23 @@ fn trust(state: &State, collection: &LocalId, frame: &mut Frame) {
     let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
     let area = centered(frame, 76, height);
     let block = pane(theme, Line::from(" Trust this folder? "), true);
+    let inner = block.inner(area);
 
     frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+
+    // the answers, then the folders it may have been moved from
+    if let Some(answers) = lines.get(6) {
+        button(state, inner, 6, answers, 0, "confirm");
+        button(state, inner, 6, answers, 2, "close");
+    }
+
+    for index in 0..state.orphans.len().min(9) {
+        let name = format!("trust.moved-{}", index + 1);
+
+        line_region(state, inner, 9 + index, Target::Run(name));
+    }
+
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
