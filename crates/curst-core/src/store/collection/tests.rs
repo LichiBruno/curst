@@ -129,6 +129,7 @@ token = "{{token}}"
             slug: "create-pet".into(),
             name: "Create pet".into(),
             request,
+            spec: None,
         }))
     );
 }
@@ -614,4 +615,78 @@ fn a_linked_collection_root_is_not_a_collection() {
 
     assert!(store.exists());
     assert!(!CollectionDir::open(&link).exists());
+}
+
+#[test]
+fn a_request_keeps_its_spec_origin_through_every_change() {
+    let (_dir, store) = new_collection();
+    let spec = SpecOrigin {
+        operation: "GET /pets/{petId}".into(),
+        fingerprint: "a1b2".into(),
+    };
+    let folder = store.create_folder(&[], "Pets").unwrap();
+    let slug = store
+        .create_from_spec(&[], "Get pet", &Request::default(), Some(&spec))
+        .unwrap();
+    let origin = |path: &[String]| match store.load().unwrap().collection.item(path) {
+        Some(Item::Request(saved)) => saved.spec.clone(),
+        other => panic!("{other:?}"),
+    };
+
+    assert_eq!(origin(std::slice::from_ref(&slug)), Some(spec.clone()));
+
+    // a save, a rename and a move each keep it
+    let edited = Request {
+        url: "{{base_url}}/pets/7".into(),
+        ..Request::default()
+    };
+
+    store
+        .save_request(std::slice::from_ref(&slug), &edited)
+        .unwrap();
+
+    let slug = store.rename(&[slug], "Pet by id").unwrap();
+    let slug = store
+        .move_item(&[slug], std::slice::from_ref(&folder))
+        .unwrap();
+    let path = vec![folder, slug];
+
+    assert_eq!(origin(&path), Some(spec.clone()));
+
+    // a refresh replaces the request and its fingerprint, not its name
+    let newer = SpecOrigin {
+        fingerprint: "c3d4".into(),
+        ..spec
+    };
+
+    store
+        .replace_from_spec(&path, &Request::default(), &newer)
+        .unwrap();
+
+    let collection = store.load().unwrap().collection;
+
+    assert_eq!(collection.item(&path).map(Item::name), Some("Pet by id"));
+    assert_eq!(origin(&path), Some(newer));
+}
+
+#[test]
+fn the_source_of_a_collection_survives_its_settings() {
+    let (_dir, store) = new_collection();
+    let source = Source {
+        location: "https://api.example.com/openapi.json".into(),
+        headers: vec![KeyValue::new("Authorization", "Bearer {{spec_token}}")],
+        picked: None,
+    };
+
+    store.save_source(Some(&source)).unwrap();
+    store.save_settings("Renamed", &[]).unwrap();
+
+    let collection = store.load().unwrap().collection;
+
+    assert_eq!(collection.name, "Renamed");
+    assert_eq!(collection.source, Some(source));
+
+    store.save_source(None).unwrap();
+
+    assert_eq!(store.load().unwrap().collection.source, None);
 }

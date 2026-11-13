@@ -6,7 +6,8 @@ use std::fmt;
 use std::str::FromStr;
 
 pub use collection::{
-    Collection, EnvId, Environment, Folder, Item, LocalId, SavedRequest, Variable,
+    Collection, EnvId, Environment, Folder, Item, LocalId, SavedRequest, Source, SpecOrigin,
+    Variable,
 };
 
 /// an HTTP method

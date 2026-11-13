@@ -237,6 +237,7 @@ pub(crate) mod tests {
                     method,
                     ..Request::default()
                 },
+                spec: None,
             })
         };
 
@@ -260,6 +261,7 @@ pub(crate) mod tests {
                     name: "Dev".into(),
                     variables: vec![Variable::new(VarName::new("a").unwrap(), "1")],
                 }],
+                source: None,
             },
             active_environment: None,
             trusted: true,

@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Auth, Body, EnvId, KeyValue, Method, Request, Variable};
+use crate::model::{Auth, Body, EnvId, KeyValue, Method, Request, Source, SpecOrigin, Variable};
 use crate::vars::VarName;
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -105,6 +105,66 @@ pub(crate) struct RequestFile {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auth: Option<AuthFile>,
+
+    /// for a request imported from a spec, where in it it came from
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) spec: Option<SpecFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SpecFile {
+    operation: String,
+    fingerprint: String,
+}
+
+impl From<&SpecOrigin> for SpecFile {
+    fn from(spec: &SpecOrigin) -> Self {
+        Self {
+            operation: spec.operation.clone(),
+            fingerprint: spec.fingerprint.clone(),
+        }
+    }
+}
+
+impl From<SpecFile> for SpecOrigin {
+    fn from(spec: SpecFile) -> Self {
+        Self {
+            operation: spec.operation,
+            fingerprint: spec.fingerprint,
+        }
+    }
+}
+
+/// where a collection's spec is fetched again
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SourceFile {
+    location: String,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    picked: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    headers: Vec<PairFile>,
+}
+
+impl From<&Source> for SourceFile {
+    fn from(source: &Source) -> Self {
+        Self {
+            location: source.location.clone(),
+            picked: source.picked.clone(),
+            headers: pairs(&source.headers),
+        }
+    }
+}
+
+impl From<SourceFile> for Source {
+    fn from(file: SourceFile) -> Self {
+        Self {
+            location: file.location,
+            headers: file.headers.into_iter().map(KeyValue::from).collect(),
+            picked: file.picked,
+        }
+    }
 }
 
 impl RequestFile {
@@ -139,7 +199,15 @@ impl RequestFile {
             headers: pairs(&request.headers),
             body,
             auth,
+            spec: None,
         }
+    }
+
+    /// the file of a request made from a spec
+    pub(crate) fn with_spec(mut self, spec: Option<&SpecOrigin>) -> Self {
+        self.spec = spec.map(SpecFile::from);
+
+        self
     }
 
     /// the request, or why the file does not describe one
@@ -260,6 +328,10 @@ pub(crate) struct CollectionFile {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) variables: Vec<VariableFile>,
+
+    /// for a collection imported from a spec, where to fetch it again
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source: Option<SourceFile>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -382,6 +454,7 @@ mod tests {
             name: "c".into(),
             order: vec![],
             variables: file.variables,
+            source: None,
         });
         let globals = to_toml(&GlobalsFile {
             variables: variables_to_file(&[Variable {

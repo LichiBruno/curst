@@ -1,0 +1,25 @@
+---
+source: crates/curst/src/ui/tests.rs
+assertion_line: 1542
+expression: "render(&state, 100, 20)"
+---
+"┌ Collections ───────────────┐  GET new request               Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"│no collections yet          │┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│press c to add one          ││   GET   │┃ https://example.com/api, then Enter to send             ┃"
+"│                            │└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"│                            │┌ Request  Params  Headers  Body  Auth  ─────────────────────────────┐"
+"│                            ││no query parameters, press a to add one                             │"
+"│    ┏ Import Store ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓    │"
+"│    ┃4 requests in 1 folder, from /specs/store.json                                          ┃    │"
+"│    ┃2 servers, an environment each, each holding the variables                              ┃    │"
+"│    ┃secrets to fill in after: x_api_key, access_token, token                                ┃────┘"
+"│    ┃                                                                                        ┃────┐"
+"│    ┃1 example value looked like a credential and was left out:                              ┃    │"
+"│    ┃  List orders: access_token, the name suggests a credential                             ┃    │"
+"│    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛    │"
+"│                            ││                                                                    │"
+"│                            ││                                                                    │"
+"│                            ││                                                                    │"
+"└────────────────────────────┘└────────────────────────────────────────────────────────────────────┘"
+" Enter import  ↑↓ scroll  Esc cancel                                                                "
+" Ctrl+C quit                                                                                        "

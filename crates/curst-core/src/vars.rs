@@ -37,6 +37,26 @@ impl VarName {
         valid.then(|| Self(name.to_owned()))
     }
 
+    /// a name made from any text, such as a header or parameter name:
+    /// lower case, `_` for what a name cannot hold, never empty
+    #[must_use]
+    pub fn from_hint(text: &str) -> Self {
+        let name: String = text
+            .trim()
+            .to_ascii_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .take(MAX_NAME)
+            .collect();
+        let name = name.trim_matches('_');
+
+        Self(if name.is_empty() {
+            "value".to_owned()
+        } else {
+            name.to_owned()
+        })
+    }
+
     /// the name as written
     #[must_use]
     pub fn as_str(&self) -> &str {

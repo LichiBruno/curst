@@ -67,9 +67,33 @@ pub(super) fn send(state: &mut State) -> Vec<Command> {
 }
 
 /// resolves and sends `request`, or asks for what is missing first
-pub(super) fn send_request(state: &mut State, request: Request) -> Vec<Command> {
-    // an untrusted collection lends no variables, even to a new request
-    let workspace = state.current_workspace().filter(|w| w.trusted);
+/// a request resolved in a collection's scope, or what stands in its way
+pub(super) enum Resolved {
+    /// every variable has a value: the request as it goes, and the
+    /// secrets it carries
+    Ready {
+        request: Request,
+        secrets: Vec<SecretKey>,
+    },
+
+    /// variables that are not defined or refer to themselves, as a notice
+    Blocked(String),
+
+    /// secrets known to have no value yet, each with how a list names it,
+    /// and a notice
+    Empty(Vec<(SecretKey, String)>, String),
+
+    /// secrets to fetch from the store first
+    Load(Vec<SecretKey>),
+}
+
+/// resolves `request` with the variables of `workspace`, which should be
+/// trusted, and the globals
+pub(super) fn resolve_in(
+    state: &State,
+    request: &Request,
+    workspace: Option<&Workspace>,
+) -> Resolved {
     let collection = workspace.map(|w| &w.id);
     let environment = workspace.and_then(|w| {
         w.active_environment
@@ -87,58 +111,86 @@ pub(super) fn send_request(state: &mut State, request: Request) -> Vec<Command> 
         global: &state.globals,
         secrets: Some(&values),
     };
-    let (resolved, resolution) = resolve_request(&request, &scopes);
+    let (resolved, resolution) = resolve_request(request, &scopes);
     let key = |(origin, name): &(Origin, VarName)| {
         SecretKey::for_variable(*origin, collection, environment, name.clone())
     };
 
     if !resolution.missing.is_empty() || !resolution.cyclic.is_empty() {
-        state.notice = Some(not_sent(workspace, &resolution));
+        let mut notice = not_sent(workspace, &resolution);
 
-        return Vec::new();
+        if let Some(hint) = where_they_are(state, workspace, &resolution.missing) {
+            notice = format!("{notice}; {hint}");
+        }
+
+        return Resolved::Blocked(notice);
     }
 
     if !resolution.unavailable.is_empty() {
         let keys: Vec<SecretKey> = resolution.unavailable.iter().filter_map(key).collect();
         let unknown: Vec<SecretKey> = keys
-            .into_iter()
+            .iter()
             .filter(|k| !state.secret_values.contains_key(k))
+            .cloned()
             .collect();
 
-        // the values are known, and some are empty: they are asked for, and
-        // the request goes once they are stored
-        if unknown.is_empty() {
-            let empty: Vec<(SecretKey, String)> = resolution
-                .unavailable
-                .iter()
-                .filter_map(key)
-                .map(|k| {
-                    let label = super::fill::label(workspace, &k);
+        if !unknown.is_empty() {
+            return Resolved::Load(unknown);
+        }
 
-                    (k, label)
-                })
-                .collect();
+        let empty = keys
+            .into_iter()
+            .map(|k| {
+                let label = super::fill::label(workspace, &k);
 
-            state.notice = Some(not_sent(workspace, &resolution));
-            super::fill::open(state, empty, Some(request));
+                (k, label)
+            })
+            .collect();
+
+        return Resolved::Empty(empty, not_sent(workspace, &resolution));
+    }
+
+    Resolved::Ready {
+        request: resolved,
+        secrets: resolution.secrets.iter().filter_map(key).collect(),
+    }
+}
+
+pub(super) fn send_request(state: &mut State, request: Request) -> Vec<Command> {
+    // an untrusted collection lends no variables, even to a new request
+    let workspace = state.current_workspace().filter(|w| w.trusted);
+
+    let (resolved, secrets) = match resolve_in(state, &request, workspace) {
+        Resolved::Ready { request, secrets } => (request, secrets),
+        Resolved::Blocked(notice) => {
+            state.notice = Some(notice);
 
             return Vec::new();
         }
 
-        state.next_id += 1;
-        state.waiting = Some(Waiting {
-            id: state.next_id,
-            then: Then::Send(request),
-        });
-        state.notice = Some(OPENING.into());
+        // the values are known, and some are empty: they are asked for, and
+        // the request goes once they are stored
+        Resolved::Empty(empty, notice) => {
+            state.notice = Some(notice);
+            super::fill::open(state, empty, Some(request));
 
-        return vec![Command::LoadSecrets {
-            id: state.next_id,
-            keys: unknown,
-        }];
-    }
+            return Vec::new();
+        }
+        Resolved::Load(unknown) => {
+            state.next_id += 1;
+            state.waiting = Some(Waiting {
+                id: state.next_id,
+                then: Then::Send(request),
+            });
+            state.notice = Some(OPENING.into());
 
-    let secrets: Vec<SecretKey> = resolution.secrets.iter().filter_map(key).collect();
+            return vec![Command::LoadSecrets {
+                id: state.next_id,
+                keys: unknown,
+            }];
+        }
+    };
+
     let mut commands = Vec::new();
 
     if state.in_flight.is_some() {
@@ -162,6 +214,47 @@ pub(super) fn send_request(state: &mut State, request: Request) -> Vec<Command> 
     });
 
     commands
+}
+
+/// where variables that are not defined for a request are defined after
+/// all, and what makes them apply: an environment not in use, or a request
+/// outside the collection that has them
+fn where_they_are(
+    state: &State,
+    workspace: Option<&Workspace>,
+    missing: &BTreeSet<VarName>,
+) -> Option<String> {
+    let first = missing.iter().next()?;
+    let has =
+        |variables: &[curst_core::model::Variable]| variables.iter().any(|v| v.name == *first);
+    let environments = state.key(Layer::Global, "environments");
+
+    if let Some(workspace) = workspace {
+        let other =
+            workspace.collection.environments.iter().find(|e| {
+                Some(&e.id) != workspace.active_environment.as_ref() && has(&e.variables)
+            })?;
+
+        return Some(format!(
+            "{{{{{first}}}}} is in the environment {}, which is not in use: {environments} chooses it",
+            other.name
+        ));
+    }
+
+    // in a collection not trusted: it lends nothing, on purpose
+    if state.current_workspace().is_some() {
+        return None;
+    }
+
+    let holder = state.collections.iter().filter(|w| w.trusted).find(|w| {
+        has(&w.collection.variables) || w.collection.environments.iter().any(|e| has(&e.variables))
+    })?;
+
+    Some(format!(
+        "{{{{{first}}}}} is in {}, and this request is outside any collection, so only global variables reach it: open it from {0}, or save it there with {}",
+        holder.collection.name,
+        state.key(Layer::Global, "save")
+    ))
 }
 
 /// why a request was not sent, naming every variable that blocks it
@@ -209,6 +302,7 @@ fn retry(state: &mut State, id: Option<u64>) -> Vec<Command> {
     match state.waiting.take() {
         Some(waiting) if id.is_none_or(|id| id == waiting.id) => match waiting.then {
             Then::Send(request) => send_request(state, request),
+            Then::Spec(job) => super::spec::run(state, job),
             Then::Save {
                 changes,
                 files,
@@ -290,14 +384,22 @@ pub(super) fn changed(state: &mut State, id: u64, result: Result<(), String>) ->
                 commands.extend(send_request(state, request));
             }
 
+            // the files were the last of it: curst can quit now
+            if std::mem::take(&mut state.quit_when_saved) {
+                super::quit(state);
+            }
+
             commands
         }
         (Err(message), _) => {
+            state.quit_when_saved = false;
             state.notice = Some(format!("nothing was saved: {message}"));
 
             Vec::new()
         }
-        (Ok(()), Then::Send(_) | Then::Migrate { .. } | Then::Reveal { .. }) => Vec::new(),
+        (Ok(()), Then::Send(_) | Then::Spec(_) | Then::Migrate { .. } | Then::Reveal { .. }) => {
+            Vec::new()
+        }
     }
 }
 

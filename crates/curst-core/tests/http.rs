@@ -786,3 +786,53 @@ fn a_redirect_from_https_to_http_stops() {
 
     assert_eq!(response.stopped.map(|s| s.url), Some(plain));
 }
+
+#[test]
+fn a_swagger_ui_page_leads_to_its_spec_over_http() {
+    let server = MockServer::start();
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/openapi/fixtures");
+    let read = |name: &str| std::fs::read_to_string(fixtures.join(name)).unwrap();
+
+    server.mock(|when, then| {
+        when.path("/docs/");
+        then.status(200)
+            .header("content-type", "text/html")
+            .body(read("swagger-ui.html"));
+    });
+    server.mock(|when, then| {
+        when.path("/docs/swagger-initializer.js");
+        then.status(200).body(read("swagger-initializer.js"));
+    });
+
+    let spec = server.mock(|when, then| {
+        when.path("/v1/openapi.yaml");
+        then.status(200).body(read("notes-3.1.yaml"));
+    });
+
+    // a redirect on the way is followed, as a browser would
+    server.mock(|when, then| {
+        when.path("/docs");
+        then.status(301).header("location", "/docs/");
+    });
+
+    let executor = CurlExecutor::default();
+    let cancel = Cancel::new();
+    let (value, at) = curst_core::openapi::discover(&http(&server, "/docs"), |url| {
+        curst_core::openapi::fetch_with(&executor, url, &[], &cancel, &RedirectRule::Any)
+    })
+    .unwrap();
+
+    assert_eq!(value["info"]["title"], "Notes");
+    assert_eq!(at, http(&server, "/v1/openapi.yaml"));
+    spec.assert();
+
+    // a relative server in it is resolved against where it was found
+    let converted = curst_core::openapi::convert(&value, Some(&at)).unwrap();
+    let base = converted.bundle.environments[0]
+        .1
+        .iter()
+        .find(|v| v.name.as_str() == "base_url")
+        .unwrap();
+
+    assert_eq!(base.value, http(&server, "/api"));
+}

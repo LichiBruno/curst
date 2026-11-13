@@ -24,7 +24,7 @@ pub use collection::{CollectionDir, CollectionStore, LoadIssue, Loaded};
 pub use library::Library;
 pub use paths::Paths;
 pub use registry::{Entry, Registry};
-pub use settings::{Backend, Settings};
+pub use settings::{Backend, SIDEBAR_WIDTHS, Settings};
 pub use theme::{ThemeFile, theme_names};
 
 pub(crate) use format::to_toml as format_toml;

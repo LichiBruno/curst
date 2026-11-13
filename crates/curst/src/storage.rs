@@ -3,10 +3,11 @@
 
 use std::path::{Path, PathBuf};
 
-use curst_core::model::{Collection, EnvId, LocalId};
+use curst_core::model::{Collection, EnvId, LocalId, Source};
+use curst_core::openapi;
 use curst_core::store::{CollectionDir, CollectionStore, Entry, Library, LoadIssue, StoreError};
 
-use crate::app::{Action, Change, Command, NodeKey, Stored, Workspace};
+use crate::app::{Action, Change, Command, NodeKey, SpecFound, SpecPreview, Stored, Workspace};
 
 fn describe(issues: Vec<LoadIssue>) -> Vec<String> {
     issues
@@ -141,6 +142,118 @@ pub(crate) fn load_all(library: &Library, cwd: Option<&Path>) -> Action {
     }
 }
 
+/// a path as the user typed it, `~` for the home folder, made absolute so
+/// it still works when curst starts somewhere else
+fn absolute(typed: &str) -> PathBuf {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"));
+    let expanded = match (typed.strip_prefix("~/"), home) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(typed),
+    };
+
+    std::path::absolute(&expanded).unwrap_or(expanded)
+}
+
+/// the spec at `location`, read and converted for a preview
+fn read_spec(location: &str, picked: Option<&str>) -> Result<SpecFound, String> {
+    let location = location.trim();
+
+    if location.is_empty() {
+        return Err("give a file, a folder or a URL".into());
+    }
+
+    let path = absolute(location);
+
+    if !path.exists() {
+        return Err(format!("there is nothing at {}", path.display()));
+    }
+
+    // a folder: the spec in it, the one picked, or a choice among them
+    let (file, picked) = if path.is_dir() {
+        let specs = openapi::specs_in(&path);
+        let chosen = match (picked, specs.len()) {
+            // only a spec found there, so a name cannot lead elsewhere
+            (Some(name), _) if specs.iter().any(|s| s == name) => name.to_owned(),
+            (Some(name), _) => {
+                return Err(format!("{name} is no longer a spec in {}", path.display()));
+            }
+            (None, 0) => {
+                return Err(format!(
+                    "no OpenAPI or Swagger spec is in {} or the folders under it",
+                    path.display()
+                ));
+            }
+            (None, 1) => specs[0].clone(),
+            (None, _) => {
+                return Ok(SpecFound::Choose {
+                    folder: path.display().to_string(),
+                    specs,
+                });
+            }
+        };
+
+        (path.join(&chosen), Some(chosen))
+    } else {
+        (path.clone(), None)
+    };
+
+    let text = openapi::read_file(&file).map_err(|e| e.to_string())?;
+    let value = openapi::parse(&text).map_err(|e| e.to_string())?;
+    let converted = openapi::convert(&value, None).map_err(|e| e.to_string())?;
+
+    Ok(SpecFound::Preview(Box::new(SpecPreview::new(
+        converted,
+        Source {
+            location: path.display().to_string(),
+            picked,
+            ..Source::default()
+        },
+    ))))
+}
+
+/// collections in and out of curst: bundles and specs
+fn transfer(library: &Library, collections: &[Workspace], command: Command) -> Option<Action> {
+    match command {
+        Command::ExportBundle { collection, path } => {
+            let Some(workspace) = collections.iter().find(|w| w.id == collection) else {
+                return Some(Action::Notice("that collection is gone".into()));
+            };
+
+            let result = curst_core::store::bundle::export(&workspace.collection, &path)
+                .map(|()| path)
+                .map_err(|e| e.to_string());
+
+            Some(Action::Exported(result))
+        }
+        Command::ImportBundle(path) => {
+            let result = library
+                .import_bundle(&path)
+                .and_then(|(dir, bundle)| {
+                    open(library, &dir, true)
+                        .map(|(workspace, _)| (Box::new(workspace), bundle.warnings))
+                })
+                .map_err(|e| e.to_string());
+
+            Some(Action::Imported(result))
+        }
+        Command::ReadSpec { location, picked } => {
+            Some(Action::SpecRead(read_spec(&location, picked.as_deref())))
+        }
+        Command::ImportSpec(preview) => {
+            let result = library
+                .import_spec(preview.converted, &preview.source)
+                .and_then(|(dir, bundle)| {
+                    open(library, &dir, true)
+                        .map(|(workspace, _)| (Box::new(workspace), bundle.warnings))
+                })
+                .map_err(|e| e.to_string());
+
+            Some(Action::Imported(result))
+        }
+        _ => None,
+    }
+}
+
 /// runs a store command, or returns `None` for one that is not about storage
 pub(crate) fn run(
     library: &Library,
@@ -207,27 +320,16 @@ pub(crate) fn run(
                 result,
             })
         }
-        Command::ExportBundle { collection, path } => {
-            let Some(workspace) = find(&collection) else {
-                return Some(Action::Notice("that collection is gone".into()));
-            };
+        Command::ExportBundle { .. }
+        | Command::ImportBundle(_)
+        | Command::ReadSpec { .. }
+        | Command::ImportSpec(_) => transfer(library, collections, command),
+        Command::SaveSidebarWidth(width) => {
+            let path = library.paths().config_file();
 
-            let result = curst_core::store::bundle::export(&workspace.collection, &path)
-                .map(|()| path)
-                .map_err(|e| e.to_string());
-
-            Some(Action::Exported(result))
-        }
-        Command::ImportBundle(path) => {
-            let result = library
-                .import_bundle(&path)
-                .and_then(|(dir, bundle)| {
-                    open(library, &dir, true)
-                        .map(|(workspace, _)| (Box::new(workspace), bundle.warnings))
-                })
-                .map_err(|e| e.to_string());
-
-            Some(Action::Imported(result))
+            curst_core::store::Settings::set_sidebar_width(&path, width)
+                .err()
+                .map(|err| Action::Notice(format!("settings not saved: {err}")))
         }
         Command::SavePreferences { keys, theme } => {
             let path = library.paths().config_file();
@@ -255,6 +357,8 @@ pub(crate) fn run(
         | Command::ChangeSecrets { .. }
         | Command::Migrate { .. }
         | Command::EditBody { .. }
+        | Command::FetchSpec { .. }
+        | Command::LoadSpec { .. }
         | Command::Copy(_) => None,
     }
 }
@@ -368,6 +472,17 @@ fn store(library: &Library, workspace: &Workspace, change: Change) -> Result<Sto
             dir.rename_environment(&id, &name)?;
         }
         Change::DeleteEnvironment(id) => dir.delete_environment(&id)?,
+        Change::ApplyRefresh { plan, choices } => {
+            curst_core::openapi::refresh::apply(&dir, &workspace.collection, &plan, &choices)?;
+        }
+        Change::SetSource(mut source) => {
+            // a path is kept absolute, so it works wherever curst starts
+            if !crate::app::is_url(&source.location) {
+                source.location = absolute(&source.location).display().to_string();
+            }
+
+            dir.save_source(Some(&source))?;
+        }
     }
 
     let loaded = dir.load()?;
@@ -398,6 +513,423 @@ mod tests {
         let library = Library::new(Paths::under(dir.path()));
 
         (dir, library)
+    }
+
+    const STORE_SPEC: &str = include_str!("../../curst-core/src/openapi/fixtures/store-3.0.json");
+    const NOTES_SPEC: &str = include_str!("../../curst-core/src/openapi/fixtures/notes-3.1.yaml");
+
+    fn read(library: &Library, location: &str, picked: Option<&str>) -> Result<SpecFound, String> {
+        let command = Command::ReadSpec {
+            location: location.to_owned(),
+            picked: picked.map(ToOwned::to_owned),
+        };
+
+        match run(library, &[], command) {
+            Some(Action::SpecRead(result)) => result,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_spec_file_is_previewed_then_imported_with_its_source() {
+        let (dir, library) = library();
+        let file = dir.path().join("store.json");
+
+        std::fs::write(&file, STORE_SPEC).unwrap();
+
+        let Ok(SpecFound::Preview(preview)) = read(&library, &file.display().to_string(), None)
+        else {
+            panic!("not read");
+        };
+
+        assert_eq!(preview.converted.requests, 4);
+        assert_eq!(preview.source.location, file.display().to_string());
+
+        // nothing is written until the preview is accepted
+        assert_eq!(library.collections().unwrap().len(), 0);
+
+        let Some(Action::Imported(Ok((workspace, _)))) =
+            run(&library, &[], Command::ImportSpec(preview))
+        else {
+            panic!("not imported");
+        };
+
+        assert_eq!(workspace.collection.name, "Store");
+        assert_eq!(
+            workspace
+                .collection
+                .source
+                .as_ref()
+                .map(|s| s.location.clone()),
+            Some(file.display().to_string())
+        );
+
+        // what is not a spec, or not there, says why
+        assert!(read(&library, "/no/such/spec.yaml", None).is_err());
+
+        std::fs::write(&file, "just: yaml\n").unwrap();
+
+        let Err(message) = read(&library, &file.display().to_string(), None) else {
+            panic!("read");
+        };
+
+        assert!(message.contains("not an OpenAPI"), "{message}");
+    }
+
+    mod refresh {
+        use curst_core::openapi;
+
+        use super::*;
+        use crate::app::{Popup, State, update};
+
+        /// the store spec a while later: an endpoint added, the order schema
+        /// changed, the health check gone
+        fn newer() -> String {
+            STORE_SPEC
+                .replace(
+                    "\"quantity\": { \"type\": \"integer\" }",
+                    "\"quantity\": { \"type\": \"number\" }",
+                )
+                .replace(
+                    "\"/health\": {\n      \"get\": { \"security\": [], \"responses\": { \"200\": { \"description\": \"up\" } } }\n    }",
+                    "\"/customers/{customerId}/orders\": {\n      \"get\": { \"tags\": [\"customers\"], \"summary\": \"Orders of a customer\", \"responses\": { \"200\": { \"description\": \"ok\" } } }\n    }",
+                )
+        }
+
+        /// a state holding the store spec, imported from `file`
+        fn imported(library: &Library, file: &Path) -> State {
+            let Ok(SpecFound::Preview(preview)) = read(library, &file.display().to_string(), None)
+            else {
+                panic!("not read");
+            };
+            let Some(Action::Imported(Ok((workspace, _)))) =
+                run(library, &[], Command::ImportSpec(preview))
+            else {
+                panic!("not imported");
+            };
+            let mut state = State::default();
+
+            update(&mut state, Action::Imported(Ok((workspace, Vec::new()))));
+            state.popup = None;
+
+            state
+        }
+
+        /// what the runtime does with a command: storage runs it, and its
+        /// answer goes back to the app
+        fn round_trip(library: &Library, state: &mut State, command: Command) -> Vec<Command> {
+            let action = run(library, &state.collections, command).unwrap();
+
+            update(state, action)
+        }
+
+        /// the spec loaded again, as the worker would
+        fn load(state: &mut State, commands: &[Command]) {
+            let [
+                Command::LoadSpec {
+                    id,
+                    collection,
+                    source,
+                    ..
+                },
+            ] = commands
+            else {
+                panic!("{commands:?}");
+            };
+            let offline = |_: &str| -> Result<openapi::Fetched, String> { Err("offline".into()) };
+            let result = openapi::refresh::load_source(source, offline)
+                .map(|(value, at)| Box::new(openapi::convert(&value, at.as_deref()).unwrap()));
+
+            update(
+                state,
+                Action::SpecLoaded {
+                    id: *id,
+                    collection: collection.clone(),
+                    result,
+                },
+            );
+        }
+
+        fn has(state: &State, operation: &str) -> bool {
+            fn walk(items: &[curst_core::model::Item], operation: &str) -> bool {
+                items.iter().any(|item| match item {
+                    curst_core::model::Item::Folder(f) => walk(&f.items, operation),
+                    curst_core::model::Item::Request(r) => {
+                        r.spec.as_ref().is_some_and(|s| s.operation == operation)
+                    }
+                })
+            }
+
+            walk(&state.collections[0].collection.items, operation)
+        }
+
+        fn screen(state: &State) -> String {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(110, 30)).unwrap();
+
+            terminal
+                .draw(|frame| crate::ui::view(state, frame))
+                .unwrap();
+
+            terminal.backend().to_string()
+        }
+
+        fn key(path: &[String], state: &State) -> NodeKey {
+            NodeKey {
+                collection: state.collections[0].id.clone(),
+                path: path.to_vec(),
+            }
+        }
+
+        #[test]
+        fn new_changed_and_gone_endpoints_are_offered_and_the_chosen_applied() {
+            let (dir, library) = library();
+            let file = dir.path().join("store.json");
+
+            std::fs::write(&file, STORE_SPEC).unwrap();
+
+            let mut state = imported(&library, &file);
+            let create = vec!["orders".to_owned(), "create-order".to_owned()];
+
+            // the request about to change is open, unedited
+            state.load_request(&key(&create, &state));
+
+            // nothing changed yet: up to date
+            let commands = update(&mut state, Action::RefreshSpec);
+
+            load(&mut state, &commands);
+
+            assert!(state.popup.is_none());
+            assert!(
+                state.notice.as_deref().unwrap().contains("up to date"),
+                "{:?}",
+                state.notice
+            );
+
+            // the spec changes
+            std::fs::write(&file, newer()).unwrap();
+
+            let commands = update(&mut state, Action::RefreshSpec);
+
+            load(&mut state, &commands);
+
+            let Some(Popup::Review(review)) = &state.popup else {
+                panic!("no review: {:?}", state.notice);
+            };
+
+            // the new one is taken, the change and the gone one left
+            assert_eq!(review.chosen, [true, false, false]);
+            assert!(review.label(1).starts_with("changed  POST /orders"));
+
+            let changed = review.plan.changed[0].clone();
+
+            update(&mut state, Action::Down);
+
+            insta::assert_snapshot!(screen(&state));
+
+            update(&mut state, Action::ToggleRow);
+
+            let mut commands = update(&mut state, Action::ConfirmPopup);
+
+            assert!(
+                matches!(commands.as_slice(), [Command::Store { .. }]),
+                "{commands:?}"
+            );
+            round_trip(&library, &mut state, commands.remove(0));
+
+            assert_eq!(
+                state.notice.as_deref(),
+                Some("refreshed: 1 added, 1 replaced, 0 deleted")
+            );
+            assert!(has(&state, "GET /customers/{customerId}/orders"));
+            assert!(has(&state, "GET /health"));
+
+            // the tab that showed it shows what the spec says now
+            assert_eq!(state.request(), changed.new);
+            assert!(!state.is_dirty());
+
+            // what was left is offered again, nothing else
+            let commands = update(&mut state, Action::RefreshSpec);
+
+            load(&mut state, &commands);
+
+            let Some(Popup::Review(review)) = &state.popup else {
+                panic!("no review");
+            };
+
+            assert_eq!(review.lines.len(), 1);
+            assert!(review.label(0).starts_with("gone"));
+        }
+
+        #[test]
+        fn a_request_with_unsaved_edits_is_held_back() {
+            let (dir, library) = library();
+            let file = dir.path().join("store.json");
+
+            std::fs::write(&file, STORE_SPEC).unwrap();
+
+            let mut state = imported(&library, &file);
+            let create = vec!["orders".to_owned(), "create-order".to_owned()];
+
+            state.load_request(&key(&create, &state));
+            state.url.insert_str("?mine");
+
+            std::fs::write(&file, newer()).unwrap();
+
+            let commands = update(&mut state, Action::RefreshSpec);
+
+            load(&mut state, &commands);
+
+            let Some(Popup::Review(review)) = &state.popup else {
+                panic!("no review");
+            };
+
+            assert_eq!(review.held, [false, true, false]);
+            assert!(review.label(1).contains("unsaved edits"));
+
+            // it cannot be taken
+            update(&mut state, Action::Down);
+            update(&mut state, Action::ToggleRow);
+
+            let Some(Popup::Review(review)) = &state.popup else {
+                panic!("no review");
+            };
+
+            assert!(!review.chosen[1]);
+            assert!(
+                state
+                    .notice
+                    .as_deref()
+                    .unwrap()
+                    .contains("save or close it")
+            );
+        }
+
+        #[test]
+        fn a_spec_that_moved_is_asked_for_and_refreshed_from_there() {
+            let (dir, library) = library();
+            let file = dir.path().join("store.json");
+            let moved = dir.path().join("moved.json");
+
+            std::fs::write(&file, STORE_SPEC).unwrap();
+
+            let mut state = imported(&library, &file);
+
+            std::fs::rename(&file, &moved).unwrap();
+
+            let commands = update(&mut state, Action::RefreshSpec);
+
+            load(&mut state, &commands);
+
+            let Some(Popup::Prompt { input, .. }) = &mut state.popup else {
+                panic!("not asked: {:?}", state.notice);
+            };
+
+            // the old place is offered to edit
+            assert_eq!(crate::app::editor_text(input), file.display().to_string());
+
+            input.select_all();
+            input.cut();
+            input.insert_str(moved.display().to_string());
+
+            let mut commands = update(&mut state, Action::ConfirmPopup);
+
+            assert_eq!(commands.len(), 1, "{commands:?}");
+
+            // once the new place is saved, the refresh runs from there
+            let commands = round_trip(&library, &mut state, commands.remove(0));
+
+            assert!(matches!(
+                commands.as_slice(),
+                [Command::LoadSpec { source, .. }] if source.location == moved.display().to_string()
+            ));
+
+            // and the source can be changed at any time, kept absolute
+            state.focus = crate::app::Focus::Sidebar;
+            update(&mut state, Action::ChangeSource);
+
+            let Some(Popup::Prompt { input, .. }) = &mut state.popup else {
+                panic!("not asked");
+            };
+
+            input.select_all();
+            input.cut();
+            input.insert_str("https://api.example.com/docs");
+
+            let mut commands = update(&mut state, Action::ConfirmPopup);
+
+            round_trip(&library, &mut state, commands.remove(0));
+
+            assert_eq!(
+                state.collections[0]
+                    .collection
+                    .source
+                    .as_ref()
+                    .map(|s| s.location.as_str()),
+                Some("https://api.example.com/docs")
+            );
+        }
+    }
+
+    #[test]
+    fn a_folder_gives_its_spec_or_a_choice_among_them() {
+        let (dir, library) = library();
+        let folder = dir.path().join("repo");
+        let folder_text = folder.display().to_string();
+
+        std::fs::create_dir_all(folder.join("api")).unwrap();
+
+        // nothing in it says so
+        let Err(message) = read(&library, &folder_text, None) else {
+            panic!("read");
+        };
+
+        assert!(message.contains("no OpenAPI"), "{message}");
+
+        // one spec is read at once, and remembered as the one picked
+        std::fs::write(folder.join("api/openapi.yaml"), NOTES_SPEC).unwrap();
+
+        let Ok(SpecFound::Preview(preview)) = read(&library, &folder_text, None) else {
+            panic!("not read");
+        };
+        let notes = format!("api{}openapi.yaml", std::path::MAIN_SEPARATOR);
+
+        assert_eq!(preview.source.location, folder_text);
+        assert_eq!(preview.source.picked.as_deref(), Some(notes.as_str()));
+
+        // several: a choice, then the one chosen
+        std::fs::write(folder.join("store.json"), STORE_SPEC).unwrap();
+
+        let Ok(SpecFound::Choose { specs, .. }) = read(&library, &folder_text, None) else {
+            panic!("no choice");
+        };
+
+        assert_eq!(specs, ["store.json".to_owned(), notes.clone()]);
+
+        let Ok(SpecFound::Preview(preview)) = read(&library, &folder_text, Some("store.json"))
+        else {
+            panic!("not read");
+        };
+
+        assert_eq!(preview.converted.bundle.name, "Store");
+
+        // a name that is not one of its specs leads nowhere else
+        std::fs::write(dir.path().join("outside.json"), STORE_SPEC).unwrap();
+
+        assert!(read(&library, &folder_text, Some("../outside.json")).is_err());
+        assert!(read(&library, &folder_text, Some("gone.json")).is_err());
+    }
+
+    #[test]
+    fn a_typed_path_is_made_absolute() {
+        let path = absolute("specs/api.yaml");
+
+        assert!(path.is_absolute());
+        assert!(path.ends_with("specs/api.yaml"));
+
+        if std::env::var_os("HOME").is_some() {
+            assert!(!absolute("~/api.yaml").starts_with("~"));
+        }
     }
 
     #[test]

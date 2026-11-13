@@ -5,9 +5,11 @@ mod mouse;
 mod palette;
 mod popup;
 mod preferences;
+mod refresh;
 mod request;
 mod send;
 mod sidebar;
+mod spec;
 mod tabs;
 mod view_model;
 mod workspace;
@@ -23,9 +25,9 @@ use curst_core::store::Backend;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui_textarea::TextArea;
 
-#[cfg(test)]
-pub(crate) use editor::body_text;
 pub(crate) use editor::{AuthEditor, AuthKind, BodyEditor, BodyField, BodyKind, Column, Table};
+#[cfg(test)]
+pub(crate) use editor::{body_text, text_of as editor_text};
 pub(crate) use fill::Fill;
 #[cfg(test)]
 pub(crate) use keymap::{HelpRow, HelpSection};
@@ -33,7 +35,9 @@ pub(crate) use keymap::{Hint, Hints, Keymap, Layer, action_for, help_lines};
 pub(crate) use mouse::{Cell as RowCell, Field, Target, mouse_actions, mouse_acts};
 pub(crate) use palette::{Entry, Palette};
 pub(crate) use popup::{Pending, Popup, Purpose, VarTab, VariablesEditor};
-pub(crate) use preferences::{PRESETS, Step, known_themes};
+pub(crate) use preferences::{AUTOMATIC_SIDEBAR, PRESETS, Step, known_themes};
+pub(crate) use refresh::{Kind as ReviewKind, Review};
+pub(crate) use spec::{Found as SpecFound, Preview as SpecPreview, is_url};
 pub(crate) use view_model::{ResponseView, display, skip_columns};
 pub(crate) use workspace::{NodeKey, RowKind, Sidebar, Workspace, rows};
 
@@ -151,6 +155,9 @@ pub(crate) enum Then {
     /// a request, as typed, its templates unresolved
     Send(Request),
 
+    /// a spec to fetch, its source's templates unresolved
+    Spec(spec::Job),
+
     /// secret changes, and the file writes that follow them once they
     /// succeed, and a request to send after
     Save {
@@ -220,6 +227,21 @@ pub(crate) struct State {
 
     /// what the last frame drew where, for the mouse
     pub(crate) regions: RefCell<Vec<mouse::Region>>,
+
+    /// the spec being fetched from a URL, if one is
+    pub(crate) spec_fetch: Option<u64>,
+
+    /// whether to quit once the variables being saved are
+    pub(crate) quit_when_saved: bool,
+
+    /// a spec being loaded again to refresh a collection, if one is
+    pub(crate) refresh_fetch: Option<u64>,
+
+    /// the last spec fetch sent, kept in case its host must be approved
+    pub(crate) spec_job: Option<(u64, spec::Job)>,
+
+    /// what follows a refresh once it is written
+    pub(crate) refreshing: refresh::Refreshing,
     pub(crate) in_flight: Option<u64>,
     pub(crate) notice: Option<String>,
     pub(crate) collections: Vec<Workspace>,
@@ -267,6 +289,9 @@ pub(crate) struct State {
     /// every theme that can be chosen
     pub(crate) themes: Vec<crate::theme::Theme>,
 
+    /// the most columns the sidebar takes; `None` sizes it to the terminal
+    pub(crate) sidebar_width: Option<u16>,
+
     /// the keys of a sequence pressed so far, such as the `g` of `g t`
     pub(crate) pending_keys: Vec<KeyEvent>,
     next_id: u64,
@@ -291,6 +316,11 @@ impl Default for State {
             response_height: Cell::new(PAGE),
             response_width: Cell::new(0),
             regions: RefCell::new(Vec::new()),
+            spec_fetch: None,
+            quit_when_saved: false,
+            refresh_fetch: None,
+            spec_job: None,
+            refreshing: refresh::Refreshing::default(),
             in_flight: None,
             notice: None,
             collections: Vec::new(),
@@ -311,6 +341,7 @@ impl Default for State {
             keys_preset: "standard".into(),
             key_bindings: Vec::new(),
             themes: preferences::known_themes(Vec::new()),
+            sidebar_width: None,
             pending_keys: Vec::new(),
             next_id: 0,
         }
@@ -477,9 +508,16 @@ pub(crate) enum Action {
     Help,
     Palette,
 
+    /// leaves without saving, in a question that offers to save
+    Discard,
+
     /// the settings' next keymap preset, or theme
     NextKeys,
     NextTheme,
+
+    /// a narrower or wider sidebar
+    SidebarNarrower,
+    SidebarWider,
 
     /// the first-run welcome
     Welcome,
@@ -520,6 +558,28 @@ pub(crate) enum Action {
     ImportCollection,
     Exported(Result<PathBuf, String>),
     Imported(Result<(Box<Workspace>, Vec<String>), String>),
+
+    /// an `OpenAPI` spec, from a file, folder or URL
+    ImportSpec,
+    SpecRead(Result<spec::Found, String>),
+    SpecFetched {
+        id: u64,
+        result: Result<Box<spec::Preview>, String>,
+    },
+
+    /// a collection refreshed from its spec, and where its spec is
+    RefreshSpec,
+    ChangeSource,
+    SpecNeedsApproval {
+        id: u64,
+        approval: Box<Approval>,
+    },
+    SpecLoaded {
+        id: u64,
+        collection: LocalId,
+        result:
+            Result<Box<curst_core::openapi::Converted>, curst_core::openapi::refresh::LoadError>,
+    },
     Migrate,
     Migrated {
         id: u64,
@@ -612,6 +672,15 @@ pub(crate) enum Change {
         name: String,
     },
     DeleteEnvironment(EnvId),
+
+    /// the endpoints a refresh offered that the user chose
+    ApplyRefresh {
+        plan: Box<curst_core::openapi::refresh::Plan>,
+        choices: curst_core::openapi::refresh::Choices,
+    },
+
+    /// where the collection's spec is
+    SetSource(curst_core::model::Source),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -679,6 +748,39 @@ pub(crate) enum Command {
 
     /// makes a new collection from a bundle file
     ImportBundle(PathBuf),
+
+    /// reads and converts the spec in a file, or in a folder, the one
+    /// picked there when it has several
+    ReadSpec {
+        location: String,
+        picked: Option<String>,
+    },
+
+    /// finds the spec at a URL and converts it, in the background; the
+    /// headers go only to the URL's own origin, and `source` is what the
+    /// collection keeps, its credentials as `{{variables}}`
+    FetchSpec {
+        id: u64,
+        url: String,
+        headers: Vec<curst_core::model::KeyValue>,
+        secrets: Vec<SecretKey>,
+        source: curst_core::model::Source,
+    },
+
+    /// loads a collection's spec again from its source, its templates
+    /// resolved, in the background
+    LoadSpec {
+        id: u64,
+        collection: LocalId,
+        source: curst_core::model::Source,
+        secrets: Vec<SecretKey>,
+    },
+
+    /// makes a new collection from a previewed spec
+    ImportSpec(Box<spec::Preview>),
+
+    /// writes how wide the sidebar is at most to `config.toml`
+    SaveSidebarWidth(u16),
 
     /// writes the keymap preset, the theme or both to `config.toml`; what
     /// is `None` stays as it is in the file
@@ -750,11 +852,12 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         | Action::Help
         | Action::Environments
         | Action::ExportCollection
-        | Action::ImportCollection => open_popup(state, &action),
+        | Action::ImportCollection
+        | Action::ImportSpec
+        | Action::ChangeSource
+        | Action::RefreshSpec => return open_popup(state, &action),
         Action::PasteText(text) => return request::paste(state, &text),
-        Action::CopyResponse => return copy_response(state),
-        Action::CopyCurl => return copy_curl(state),
-
+        Action::CopyResponse | Action::CopyCurl => return copy(state, &action),
         Action::EditBody => return request::edit_body(state),
         Action::Save => return save(state),
         Action::Cancel => return cancel(state),
@@ -773,20 +876,7 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
                 matches!(action, Action::FocusNext),
             );
         }
-        Action::NextTab | Action::PreviousTab => {
-            let forward = matches!(action, Action::NextTab);
-
-            match state.focus {
-                Focus::Request => {
-                    state.request_tab = step(&RequestTab::ALL, state.request_tab, forward);
-                }
-                Focus::Response => {
-                    state.response_tab = step(&ResponseTab::ALL, state.response_tab, forward);
-                    state.reset_scroll();
-                }
-                Focus::Sidebar | Focus::Method | Focus::Url => {}
-            }
-        }
+        Action::NextTab | Action::PreviousTab => step_tab(state, matches!(action, Action::NextTab)),
         Action::NextMethod => state.method = state.method.next(),
         Action::PreviousMethod => state.method = state.method.previous(),
         Action::Up
@@ -838,6 +928,15 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
 /// terminals may cut a copy longer than this
 const COPY_LIMIT: usize = 100 * 1024;
 
+/// copies the response body, or the request as a curl command
+fn copy(state: &mut State, action: &Action) -> Vec<Command> {
+    if matches!(action, Action::CopyCurl) {
+        copy_curl(state)
+    } else {
+        copy_response(state)
+    }
+}
+
 /// copies the request as a curl command, with `{{name}}` for every
 /// variable, so no secret value goes with it
 fn copy_curl(state: &mut State) -> Vec<Command> {
@@ -877,8 +976,22 @@ fn copy_response(state: &mut State) -> Vec<Command> {
     }
 }
 
+/// the next or previous tab of the pane with the focus
+fn step_tab(state: &mut State, forward: bool) {
+    match state.focus {
+        Focus::Request => {
+            state.request_tab = step(&RequestTab::ALL, state.request_tab, forward);
+        }
+        Focus::Response => {
+            state.response_tab = step(&ResponseTab::ALL, state.response_tab, forward);
+            state.reset_scroll();
+        }
+        Focus::Sidebar | Focus::Method | Focus::Url => {}
+    }
+}
+
 /// opens the pop-up an action asks for
-fn open_popup(state: &mut State, action: &Action) {
+fn open_popup(state: &mut State, action: &Action) -> Vec<Command> {
     match action {
         Action::Tabs => {
             state.popup = Some(Popup::Tabs {
@@ -891,6 +1004,9 @@ fn open_popup(state: &mut State, action: &Action) {
         Action::Environments => open_environments(state),
         Action::ExportCollection => sidebar::ask_export(state),
         Action::ImportCollection => state.popup = Some(Popup::prompt(Purpose::ImportBundle, "")),
+        Action::ImportSpec => spec::ask(state),
+        Action::ChangeSource => refresh::ask_source(state),
+        Action::RefreshSpec => return refresh::start(state),
 
         // the help lists the keys where the focus is first
         Action::Help => {
@@ -901,6 +1017,8 @@ fn open_popup(state: &mut State, action: &Action) {
         }
         _ => {}
     }
+
+    Vec::new()
 }
 
 /// applies what the runtime reports back: responses, saved files and
@@ -971,7 +1089,13 @@ fn report(state: &mut State, action: Action) -> Vec<Command> {
             Err(message) => state.notice = Some(message),
         },
         Action::Stored { collection, result } => match result {
-            Ok(stored) => return stored_change(state, &collection, *stored),
+            Ok(stored) => {
+                let mut commands = stored_change(state, &collection, *stored);
+
+                commands.extend(refresh::after_stored(state, &collection));
+
+                return commands;
+            }
             Err(message) => state.notice = Some(message),
         },
         Action::CollectionAdded(result) => match result {
@@ -989,14 +1113,37 @@ fn report(state: &mut State, action: Action) -> Vec<Command> {
             Err(message) => state.notice = Some(message),
         },
         Action::Notice(message) => state.notice = Some(message),
+        Action::Exported(_)
+        | Action::SpecRead(_)
+        | Action::SpecFetched { .. }
+        | Action::SpecNeedsApproval { .. }
+        | Action::SpecLoaded { .. }
+        | Action::Imported(_) => return transferred(state, action),
+        _ => {}
+    }
+
+    Vec::new()
+}
+
+/// what the runtime reports of bundles and specs going in and out
+fn transferred(state: &mut State, action: Action) -> Vec<Command> {
+    match action {
         Action::Exported(result) => {
             state.notice = Some(match result {
                 Ok(path) => format!("exported to {}", path.display()),
                 Err(message) => format!("not exported: {message}"),
             });
         }
+        Action::SpecRead(result) => spec::read(state, result),
+        Action::SpecFetched { id, result } => spec::fetched(state, id, result),
+        Action::SpecNeedsApproval { id, approval } => spec::needs_approval(state, id, *approval),
+        Action::SpecLoaded {
+            id,
+            collection,
+            result,
+        } => refresh::loaded(state, id, &collection, result),
         Action::Imported(result) => match result {
-            Ok((workspace, warnings)) => imported(state, *workspace, &warnings),
+            Ok((workspace, warnings)) => return imported(state, *workspace, &warnings),
             Err(message) => state.notice = Some(format!("not imported: {message}")),
         },
         _ => {}
@@ -1005,10 +1152,28 @@ fn report(state: &mut State, action: Action) -> Vec<Command> {
     Vec::new()
 }
 
-/// a collection made from a bundle: shown, selected, and its secrets asked
-/// for, since a bundle never carries their values
-fn imported(state: &mut State, workspace: Workspace, warnings: &[String]) {
+/// a collection made from a bundle or a spec: shown, selected, its first
+/// environment in use, and its secrets asked for, since neither carries
+/// their values
+fn imported(state: &mut State, mut workspace: Workspace, warnings: &[String]) -> Vec<Command> {
     let key = NodeKey::root(workspace.id.clone());
+    let first = workspace
+        .collection
+        .environments
+        .first()
+        .map(|e| e.id.clone());
+    let mut commands = Vec::new();
+
+    if workspace.active_environment.is_none()
+        && let Some(id) = first
+    {
+        workspace.active_environment = Some(id.clone());
+        commands.push(Command::SetActiveEnvironment {
+            collection: workspace.id.clone(),
+            environment: Some(id),
+        });
+    }
+
     let secrets = fill::secrets_of(&workspace);
     let mut notice = format!("imported {}", workspace.collection.name);
 
@@ -1021,6 +1186,8 @@ fn imported(state: &mut State, workspace: Workspace, warnings: &[String]) {
     state.sidebar.expanded.insert(key.clone());
     state.sidebar.selected = Some(key);
     fill::open(state, secrets, None);
+
+    commands
 }
 
 /// stops a request waiting for its secrets, or one in flight
@@ -1046,6 +1213,10 @@ fn reported(action: &Action) -> bool {
             | Action::CollectionAdded(_)
             | Action::Exported(_)
             | Action::Imported(_)
+            | Action::SpecRead(_)
+            | Action::SpecFetched { .. }
+            | Action::SpecNeedsApproval { .. }
+            | Action::SpecLoaded { .. }
             | Action::GlobalsSaved(_)
             | Action::Saved(_)
             | Action::Notice(_)
@@ -1065,17 +1236,29 @@ fn cancel(state: &mut State) -> Vec<Command> {
     Vec::new()
 }
 
-fn quit(state: &mut State) {
+pub(super) fn quit(state: &mut State) {
     let asked = matches!(
         state.popup,
-        Some(Popup::Confirm {
-            pending: Pending::Quit(_),
-            ..
-        })
+        Some(
+            Popup::Confirm {
+                pending: Pending::Quit(_),
+                ..
+            } | Popup::SaveVariables { .. }
+        )
     );
-    let variables = matches!(&state.popup, Some(Popup::Variables(editor)) if editor.is_changed());
 
-    if (state.any_dirty() || variables) && !asked {
+    // changed variables: whether to save them comes first
+    if !asked
+        && let Some(Popup::Variables(editor)) = state
+            .popup
+            .take_if(|p| matches!(p, Popup::Variables(editor) if editor.is_changed()))
+    {
+        state.popup = Some(Popup::SaveVariables { editor, quit: true });
+
+        return;
+    }
+
+    if state.any_dirty() && !asked {
         // on no, the pop-up that was open comes back
         let previous = state.popup.take().map(Box::new);
 

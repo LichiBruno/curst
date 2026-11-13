@@ -31,6 +31,11 @@ pub(crate) enum Purpose {
     MakeSecret(Place),
     ExportBundle(LocalId),
     ImportBundle,
+    ImportSpec,
+    ChangeSource(LocalId),
+
+    /// where a spec that is not where it was is now, to refresh from it
+    Relocate(LocalId),
 }
 
 impl Purpose {
@@ -47,6 +52,9 @@ impl Purpose {
             Self::MakeSecret(_) => "Name of the new secret",
             Self::ExportBundle(_) => "Export the collection to the file",
             Self::ImportBundle => "Import a bundle from the file",
+            Self::ImportSpec => "Import an OpenAPI spec: a file, folder or URL",
+            Self::ChangeSource(_) => "Where the spec of this collection is",
+            Self::Relocate(_) => "The spec moved: where is it now?",
         }
     }
 }
@@ -62,9 +70,6 @@ pub(crate) enum Pending {
 
     /// exporting a collection that holds plain-text credentials
     Export(LocalId, PathBuf),
-
-    /// closing the variable editor; on no it comes back as it was
-    CloseVariables(Box<VariablesEditor>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -318,6 +323,26 @@ pub(crate) enum Popup {
     /// values for secrets that have none
     Fill(Box<super::fill::Fill>),
 
+    /// whether to save the variables being left with changes; `quit` when
+    /// curst quits after
+    SaveVariables {
+        editor: Box<VariablesEditor>,
+        quit: bool,
+    },
+
+    /// what a spec becomes, before it is imported
+    SpecPreview(Box<super::spec::Preview>),
+
+    /// what a refresh found, to choose what to take
+    Review(Box<super::refresh::Review>),
+
+    /// the specs a folder holds, to choose one
+    SpecChoice {
+        folder: String,
+        specs: Vec<String>,
+        selected: usize,
+    },
+
     /// actions and saved requests, found by typing
     Palette(Box<super::Palette>),
 
@@ -330,10 +355,13 @@ pub(crate) enum Popup {
 
 impl Popup {
     pub(crate) fn prompt(purpose: Purpose, text: &str) -> Self {
-        let placeholder = if purpose == Purpose::SaveBody {
-            "file name"
-        } else {
-            "name"
+        let placeholder = match purpose {
+            Purpose::SaveBody | Purpose::ExportBundle(_) => "file name",
+            Purpose::ImportBundle => "path to the bundle file",
+            Purpose::ImportSpec | Purpose::ChangeSource(_) | Purpose::Relocate(_) => {
+                "a file, a folder, or a URL such as https://api.example.com/docs"
+            }
+            _ => "name",
         };
 
         Self::Prompt {
@@ -403,11 +431,11 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
         },
         Popup::Confirm { message, pending } => match action {
             Action::ConfirmPopup => return Ok(run_pending(state, pending)),
-            Action::ClosePopup => match pending {
-                Pending::CloseVariables(editor) => state.popup = Some(Popup::Variables(editor)),
-                Pending::Quit(previous) => state.popup = previous.map(|p| *p),
-                _ => {}
-            },
+            Action::ClosePopup => {
+                if let Pending::Quit(previous) = pending {
+                    state.popup = previous.map(|p| *p);
+                }
+            }
             other => {
                 state.popup = Some(Popup::Confirm { message, pending });
 
@@ -426,13 +454,26 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
         Popup::Tabs { selected } => return tab_switcher(state, selected, action),
         Popup::Help { scroll, here } => return help(state, scroll, here, action),
         Popup::Fill(fill) => return super::fill::apply(state, fill, action),
+        Popup::SaveVariables { editor, quit } => {
+            return save_question(state, editor, quit, action);
+        }
+        Popup::SpecPreview(preview) => return super::spec::preview_key(state, preview, action),
+        Popup::Review(review) => return super::refresh::review_key(state, review, action),
+        Popup::SpecChoice {
+            folder,
+            specs,
+            selected,
+        } => return super::spec::choice_key(state, folder, specs, selected, action),
         Popup::Palette(palette) => return super::palette::apply(state, palette, action),
         Popup::Welcome { step, then } => {
             return super::preferences::welcome_key(state, step, then, action);
         }
         Popup::Settings => match action {
             Action::Migrate => return Ok(super::send::migrate(state)),
-            Action::NextKeys | Action::NextTheme => {
+            Action::NextKeys
+            | Action::NextTheme
+            | Action::SidebarNarrower
+            | Action::SidebarWider => {
                 state.popup = Some(Popup::Settings);
 
                 return Ok(super::preferences::settings(state, &action).unwrap_or_default());
@@ -500,6 +541,11 @@ fn confirm_prompt(
             super::sidebar::export(state, collection, PathBuf::from(text))
         }
         Purpose::ImportBundle => vec![Command::ImportBundle(PathBuf::from(text))],
+        Purpose::ImportSpec => super::spec::start(state, &text),
+        Purpose::ChangeSource(collection) => {
+            super::refresh::set_source(state, collection, &text, false)
+        }
+        Purpose::Relocate(collection) => super::refresh::set_source(state, collection, &text, true),
         Purpose::Rename(key) if key.path.is_empty() => {
             vec![store(&key, Change::RenameCollection(text))]
         }
@@ -563,7 +609,6 @@ fn run_pending(state: &mut State, pending: Pending) -> Vec<Command> {
 
             Vec::new()
         }
-        Pending::CloseVariables(_) => Vec::new(),
     }
 }
 
@@ -995,10 +1040,10 @@ fn variables(
             editor.table_mut().commit();
 
             if editor.is_changed() {
-                state.popup = Some(Popup::confirm(
-                    "Close without saving the variables?",
-                    Pending::CloseVariables(editor),
-                ));
+                state.popup = Some(Popup::SaveVariables {
+                    editor,
+                    quit: false,
+                });
             }
 
             return Ok(Vec::new());
@@ -1013,6 +1058,52 @@ fn variables(
     state.popup = Some(Popup::Variables(editor));
 
     Ok(Vec::new())
+}
+
+/// the answer to whether to save the variables: save, don't save, or go
+/// back to them; when quitting, curst quits once they are saved
+fn save_question(
+    state: &mut State,
+    editor: Box<VariablesEditor>,
+    quit: bool,
+    action: Action,
+) -> Result<Vec<Command>, Action> {
+    match action {
+        Action::ConfirmPopup => {
+            let commands = save_variables(state, editor);
+
+            // a name that cannot be saved brings the editor back, to fix it
+            if matches!(state.popup, Some(Popup::Variables(_))) || !quit {
+                return Ok(commands);
+            }
+
+            // secrets are stored first, and the files written after them
+            if state.waiting.is_some() {
+                state.quit_when_saved = true;
+            } else {
+                super::quit(state);
+            }
+
+            Ok(commands)
+        }
+        Action::Discard => {
+            if quit {
+                super::quit(state);
+            }
+
+            Ok(Vec::new())
+        }
+        Action::ClosePopup => {
+            state.popup = Some(Popup::Variables(editor));
+
+            Ok(Vec::new())
+        }
+        other => {
+            state.popup = Some(Popup::SaveVariables { editor, quit });
+
+            Err(other)
+        }
+    }
 }
 
 fn save_variables(state: &mut State, mut editor: Box<VariablesEditor>) -> Vec<Command> {

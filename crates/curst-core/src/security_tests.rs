@@ -342,3 +342,34 @@ fn a_pasted_curl_command_saves_placeholders_only() {
             .any(|(_, bytes)| contains(bytes, "{{api_key}}"))
     );
 }
+
+/// an imported spec never writes an example credential: neither the one a
+/// security scheme's parameter gives, nor one in an ordinary parameter
+#[test]
+fn an_imported_spec_writes_no_example_credential() {
+    let root = tempfile::tempdir().unwrap();
+    let library = Library::new(Paths::under(root.path()));
+    let text = include_str!("openapi/fixtures/store-3.0.json");
+    let converted = crate::openapi::convert(&crate::openapi::parse(text).unwrap(), None).unwrap();
+
+    library
+        .import_spec(converted, &crate::model::Source::default())
+        .unwrap();
+
+    let mut files = Vec::new();
+
+    every_file(root.path(), &mut files);
+
+    assert!(
+        files
+            .iter()
+            .any(|(_, bytes)| contains(bytes, "{{access_token}}")),
+        "the request files were not scanned"
+    );
+
+    for (path, bytes) in &files {
+        for planted in ["DO_NOT_COPY", "eyJhbGci"] {
+            assert!(!contains(bytes, planted), "{planted} is in {path}");
+        }
+    }
+}

@@ -1,0 +1,56 @@
+openapi: 3.1.0
+info:
+  title: Notes
+  version: "3"
+servers:
+  - url: /api
+paths:
+  /notes:
+    post:
+      tags: [notes]
+      summary: Add a note
+      requestBody:
+        content:
+          application/json:
+            examples:
+              short:
+                value: &note
+                  text: buy milk
+                  pinned: false
+      responses:
+        200:
+          description: ok
+        default:
+          description: error
+    put:
+      tags: [notes]
+      summary: Replace notes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: array
+              items:
+                type: object
+                properties:
+                  text:
+                    type: [string, "null"]
+                  size:
+                    type: [integer, "null"]
+      responses:
+        200:
+          description: ok
+  /notes/search:
+    get:
+      summary: Search
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            examples: [milk]
+      responses:
+        200:
+          description: ok
+x-copy: *note

@@ -18,7 +18,7 @@ expression: screen
 "│         ┃ 8   GET     host-7/                                      ┃         │"
 "│         ┃     GET     host-8/                                      ┃         │"
 "│         ┃ 9   GET     host-9/                                      ┃         │"
-"│         ┃ • is the tab you are on                                  ┃         │"
+"│         ┃ • current tab                                            ┃         │"
 "│         ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛         │"
 "└──────────────────────┘└──────────────────────────────────────────────────────┘"
 " 1-9 go to  ↑↓ choose  Enter open  n new  w close  Esc back                     "
