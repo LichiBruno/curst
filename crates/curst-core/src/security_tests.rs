@@ -81,11 +81,7 @@ fn no_secret_value_reaches_any_file() {
     };
 
     pets.create_request(&[], "Get", &request).unwrap();
-    Settings {
-        secrets_backend: Some(Backend::EncryptedFile),
-    }
-    .save(&paths.config_file())
-    .unwrap();
+    Settings::set_backend(&paths.config_file(), Some(Backend::EncryptedFile)).unwrap();
 
     // the store: set, approve, rename and migrate twice
     let file = || {

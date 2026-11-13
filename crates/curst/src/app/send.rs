@@ -13,7 +13,9 @@ use curst_core::store::Backend;
 use curst_core::vars::{Origin, Resolution, Scopes, SecretValues, VarName, resolve_request};
 
 use super::popup::{Popup, VariablesEditor};
-use super::{Command, Focus, Locked, Outcome, SecretChange, State, Then, Waiting, Workspace};
+use super::{
+    Command, Focus, Layer, Locked, Outcome, SecretChange, State, Then, Waiting, Workspace,
+};
 
 const OPENING: &str = "opening secrets…";
 
@@ -53,8 +55,9 @@ pub(super) fn send(state: &mut State) -> Vec<Command> {
             .is_some_and(|w| !w.trusted)
     {
         state.notice = Some(format!(
-            "not sent: {} is in a collection you have not trusted; select it and press T",
-            open.name
+            "not sent: {} is in a collection you have not trusted; select it and press {}",
+            open.name,
+            state.key(Layer::Sidebar, "trust")
         ));
 
         return Vec::new();
@@ -386,10 +389,10 @@ pub(super) fn reveal(
 
         editor.table_mut().make_plain(value);
         state.popup = Some(Popup::Variables(editor));
-        state.notice = Some(
-            "it is a plain variable again; Ctrl+S writes its value to the file and deletes the secret"
-                .into(),
-        );
+        state.notice = Some(format!(
+            "it is a plain variable again; {} writes its value to the file and deletes the secret",
+            state.key(Layer::Variables, "save")
+        ));
 
         return Vec::new();
     }

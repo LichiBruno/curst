@@ -11,8 +11,8 @@ use super::editor::{AuthEditor, BodyEditor, Column, Table, show_cursor, text_of}
 use super::popup::{Popup, Purpose};
 use super::workspace::NodeKey;
 use super::{
-    Action, AuthKind, BodyField, BodyKind, Change, Command, Focus, OpenRequest, PAN, RequestTab,
-    SecretChange, State,
+    Action, AuthKind, BodyField, BodyKind, Change, Command, Focus, Layer, OpenRequest, PAN,
+    RequestTab, SecretChange, State,
 };
 
 impl State {
@@ -213,7 +213,10 @@ pub(super) fn navigate(state: &mut State, action: &Action) {
 pub(super) fn edit(state: &mut State) {
     match state.request_tab {
         RequestTab::Body if state.body.kind == BodyKind::None => {
-            state.notice = Some("choose a body type first, press t".into());
+            state.notice = Some(format!(
+                "choose a body type first, press {}",
+                state.key(Layer::Request, "kind")
+            ));
         }
         RequestTab::Body if state.body.kind != BodyKind::Form => {
             state.body.typing = Some(BodyField::Text);
@@ -263,7 +266,10 @@ pub(super) fn edit_body(state: &mut State) -> Vec<Command> {
         BodyKind::Json => "json",
         BodyKind::Text => "txt",
         BodyKind::None | BodyKind::Form => {
-            state.notice = Some("choose a JSON or text body first, press t".into());
+            state.notice = Some(format!(
+                "choose a JSON or text body first, press {}",
+                state.key(Layer::Request, "kind")
+            ));
 
             return Vec::new();
         }
@@ -419,7 +425,8 @@ pub(super) fn turn_into_secret(state: &mut State, place: Place, name: &VarName) 
     put_at(state, place, format!("{scheme}{{{{{name}}}}}"));
     state.notice = Some(if state.open.is_some() {
         format!(
-            "{{{{{name}}}}} holds it now; the plain value stays in the saved request until you press Ctrl+S"
+            "{{{{{name}}}}} holds it now; the plain value stays in the saved request until you press {}",
+            state.key(Layer::Global, "save")
         )
     } else {
         format!("{{{{{name}}}}} holds it now")

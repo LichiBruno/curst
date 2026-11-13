@@ -79,7 +79,7 @@ impl Session {
         let config_file = paths.config_file();
         let backend = Settings::load(&config_file)
             .ok()
-            .and_then(|s| s.secrets_backend);
+            .and_then(|(settings, _)| settings.secrets_backend);
 
         Self {
             config_file,
@@ -223,11 +223,7 @@ impl Session {
             Ok(copied) => copied,
             Err(err) => return done(Err(format!("nothing was moved: {err}"))),
         };
-        let settings = Settings {
-            secrets_backend: Some(to),
-        };
-
-        if let Err(err) = settings.save(&self.config_file) {
+        if let Err(err) = Settings::set_backend(&self.config_file, Some(to)) {
             return done(Err(format!("nothing was moved: {err}")));
         }
 
@@ -255,13 +251,7 @@ impl Session {
             self.secrets = None;
         }
 
-        let settings = Settings {
-            secrets_backend: Some(backend),
-        };
-
-        settings
-            .save(&self.config_file)
-            .map_err(|e| e.to_string())?;
+        Settings::set_backend(&self.config_file, Some(backend)).map_err(|e| e.to_string())?;
         self.backend = Some(backend);
 
         Ok(backend)
@@ -376,6 +366,7 @@ mod tests {
         assert_eq!(
             Settings::load(&Paths::under(dir.path()).config_file())
                 .unwrap()
+                .0
                 .secrets_backend,
             Some(Backend::EncryptedFile)
         );
@@ -418,6 +409,7 @@ mod tests {
         assert!(
             Settings::load(&Paths::under(dir.path()).config_file())
                 .unwrap()
+                .0
                 .secrets_backend
                 .is_none()
         );
@@ -563,6 +555,7 @@ mod tests {
         assert_eq!(
             Settings::load(&paths.config_file())
                 .unwrap()
+                .0
                 .secrets_backend,
             Some(Backend::EncryptedFile)
         );

@@ -166,7 +166,10 @@ impl Table {
 
         // a secret's value is typed blind, and never shown back
         if column == Column::Value && row.secret {
-            self.editing = Some((column, masked("new value, or Enter to keep it")));
+            self.editing = Some((
+                column,
+                masked("new value, or leave it empty to keep the old one"),
+            ));
 
             return;
         }

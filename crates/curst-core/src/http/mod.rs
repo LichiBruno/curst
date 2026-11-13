@@ -48,7 +48,7 @@ pub trait HttpExecutor: Send + Sync {
     /// response says where it pointed
     ///
     /// # Errors
-    /// any [`HttpError`], including [`HttpError::Cancelled`]
+    /// any [`HttpError`], including [`HttpError::Canceled`]
     fn execute(
         &self,
         request: &Request,
@@ -76,7 +76,7 @@ impl Cancel {
 
     /// whether [`Cancel::cancel`] was called
     #[must_use]
-    pub fn is_cancelled(&self) -> bool {
+    pub fn is_canceled(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
 }
@@ -149,9 +149,9 @@ pub enum HttpError {
     #[error("too many redirects")]
     TooManyRedirects,
 
-    /// the request was cancelled through its [`Cancel`] handle
-    #[error("cancelled")]
-    Cancelled,
+    /// the request was canceled through its [`Cancel`] handle
+    #[error("canceled")]
+    Canceled,
 
     /// the body could not be stored
     #[error("could not store the response body: {0}")]
@@ -171,11 +171,11 @@ mod tests {
         let cancel = Cancel::new();
         let other = cancel.clone();
 
-        assert!(!other.is_cancelled());
+        assert!(!other.is_canceled());
 
         cancel.cancel();
 
-        assert!(other.is_cancelled());
+        assert!(other.is_canceled());
     }
 
     #[test]

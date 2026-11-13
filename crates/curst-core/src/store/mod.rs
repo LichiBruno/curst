@@ -14,6 +14,7 @@ mod paths;
 mod registry;
 mod settings;
 mod slug;
+mod theme;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ pub use library::Library;
 pub use paths::Paths;
 pub use registry::{Entry, Registry};
 pub use settings::{Backend, Settings};
+pub use theme::{ThemeFile, theme_names};
 
 pub(crate) use format::to_toml as format_toml;
 

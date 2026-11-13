@@ -1,18 +1,24 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use super::request::table;
-use super::{pane, tab_titles};
+use super::{field, pane, tab_titles};
 use curst_core::model::LocalId;
 use curst_core::secrets::{Approval, SecretKey};
 use curst_core::store::Backend;
 
 use ratatui_textarea::TextArea;
 
-use crate::app::{Popup, State, VarTab, display};
+use unicode_width::UnicodeWidthStr;
+
+use crate::app::{
+    Entry, Hint, Hints, Layer, PRESETS, Palette, Popup, State, Step, VarTab, VariablesEditor,
+    display,
+};
+use crate::theme::Theme;
 
 /// a box of at most `width` by `height` in the middle of the screen
 fn centered(frame: &Frame, width: u16, height: u16) -> Rect {
@@ -27,26 +33,28 @@ fn centered(frame: &Frame, width: u16, height: u16) -> Rect {
 }
 
 pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
+    let theme = &state.theme;
+
     match popup {
         Popup::Prompt { purpose, input } => {
             let area = centered(frame, 60, 3);
-            let block = pane(Line::from(format!(" {} ", purpose.title())), true);
+            let block = pane(theme, Line::from(format!(" {} ", purpose.title())), true);
             let inner = block.inner(area);
 
             frame.render_widget(Clear, area);
             frame.render_widget(block, area);
-            frame.render_widget(&**input, inner);
+            frame.render_widget(&*field(&state.theme, input, None), inner);
         }
         Popup::Confirm { message, .. } => {
             let area = centered(frame, 60, 5);
-            let block = pane(Line::from(" Are you sure? "), true);
+            let block = pane(theme, Line::from(" Are you sure? "), true);
             let text = vec![
                 Line::from(display(message)),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled(" y ", Style::default().add_modifier(Modifier::BOLD)),
+                    key_span(state, Layer::Confirm, "confirm"),
                     Span::raw("yes   "),
-                    Span::styled(" n ", Style::default().add_modifier(Modifier::BOLD)),
+                    key_span(state, Layer::Confirm, "close"),
                     Span::raw("no"),
                 ]),
             ];
@@ -69,7 +77,7 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
             let height = u16::try_from(environments.len() + 3).unwrap_or(u16::MAX);
             let area = centered(frame, 44, height);
             let title = format!(" Environments · {} ", display(&workspace.collection.name));
-            let block = pane(Line::from(title), true);
+            let block = pane(theme, Line::from(title), true);
             let names = std::iter::once((None, "No environment".to_owned()))
                 .chain(environments.iter().map(|e| (Some(&e.id), display(&e.name))));
             let mut lines: Vec<Line> = names
@@ -78,7 +86,7 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
                     let active = id == workspace.active_environment.as_ref();
                     let mark = if active { "✓ " } else { "  " };
                     let style = if index == *selected {
-                        Style::default().add_modifier(Modifier::REVERSED)
+                        theme.selected
                     } else {
                         Style::default()
                     };
@@ -89,8 +97,11 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
 
             if environments.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    "  press n to add one",
-                    Style::default().fg(Color::DarkGray),
+                    format!(
+                        "  press {} to add one",
+                        state.key(Layer::Environments, "env.new")
+                    ),
+                    theme.muted,
                 )));
             }
 
@@ -98,61 +109,88 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
             frame.render_widget(Paragraph::new(lines).block(block), area);
         }
         Popup::Trust { collection } => trust(state, collection, frame),
-        Popup::ChooseBackend => choose_backend(frame),
+        Popup::ChooseBackend => choose_backend(state, frame),
         Popup::Passphrase {
             new,
             first,
             input,
             error,
             ..
-        } => passphrase(*new, first.is_some(), input, error.as_deref(), frame),
+        } => passphrase(
+            &state.theme,
+            *new,
+            first.is_some(),
+            input,
+            error.as_deref(),
+            frame,
+        ),
         Popup::Settings => settings(state, frame),
+        Popup::Welcome { step, .. } => welcome(state, *step, frame),
         Popup::Tabs { selected } => tab_list(state, *selected, frame),
-        Popup::Approve(approval) => approve(approval, frame),
-        Popup::Variables(editor) => {
-            let area = centered(frame, 100, frame.area().height.saturating_sub(4).max(8));
-            let label = |tab: VarTab| match (tab, &editor.environment) {
-                (VarTab::Environment, Some(_)) => "Environment",
-                (tab, _) => tab.label(),
-            };
-            let mut title = vec![Span::raw(" Variables")];
-
-            title.extend(tab_titles(&editor.tabs(), editor.tab, label));
-
-            if let (VarTab::Environment, Some(environment)) = (editor.tab, &editor.environment) {
-                title.push(Span::raw(format!("· {} ", display(&environment.name))));
-            }
-
-            let block = pane(Line::from(title), true);
-            let inner = block.inner(area);
-            let empty = match editor.tab {
-                VarTab::Environment => "no variables in this environment, press a to add one",
-                VarTab::Collection => "no collection variables, press a to add one",
-                VarTab::Globals => "no global variables, press a to add one",
-            };
-
-            frame.render_widget(Clear, area);
-            frame.render_widget(block, area);
-            table(editor.table(), true, empty, frame, inner);
-        }
+        Popup::Help { scroll, here } => help(state, *scroll, here, frame),
+        Popup::Palette(palette) => palette_list(state, palette, frame),
+        Popup::Approve(approval) => approve(state, approval, frame),
+        Popup::Variables(editor) => variables(state, editor, frame),
     }
+}
+
+fn variables(state: &State, editor: &VariablesEditor, frame: &mut Frame) {
+    let theme = &state.theme;
+    let area = centered(frame, 100, frame.area().height.saturating_sub(4).max(8));
+    let label = |tab: VarTab| match (tab, &editor.environment) {
+        (VarTab::Environment, Some(_)) => "Environment",
+        (tab, _) => tab.label(),
+    };
+    let mut title = vec![Span::raw(" Variables")];
+
+    title.extend(tab_titles(theme, &editor.tabs(), editor.tab, label));
+
+    if let (VarTab::Environment, Some(environment)) = (editor.tab, &editor.environment) {
+        title.push(Span::raw(format!("· {} ", display(&environment.name))));
+    }
+
+    let block = pane(theme, Line::from(title), true);
+    let inner = block.inner(area);
+    let add = state.key(Layer::Variables, "row.add");
+    let empty = match editor.tab {
+        VarTab::Environment => {
+            format!("no variables in this environment, press {add} to add one")
+        }
+        VarTab::Collection => format!("no collection variables, press {add} to add one"),
+        VarTab::Globals => format!("no global variables, press {add} to add one"),
+    };
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    table(&state.theme, editor.table(), true, &empty, frame, inner);
 }
 
 /// the open tabs, numbered as the keys that reach them: 1 to 8 for the
 /// first eight, and 9 for the last
 fn tab_list(state: &State, selected: usize, frame: &mut Frame) {
+    let theme = &state.theme;
     let labels = state.tab_labels();
     let last = labels.len() - 1;
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = theme.muted;
+    let key = |name: &str| state.keymap.key_for(Layer::Tabs, name);
+    let numbers: Vec<String> = (0..labels.len())
+        .map(|index| {
+            let name = match index {
+                _ if index == last && index >= 8 => "request.go-last".to_owned(),
+                0..8 => format!("request.go-{}", index + 1),
+                _ => return String::new(),
+            };
+
+            key(&name).unwrap_or_default()
+        })
+        .collect();
+    let width = numbers.iter().map(|n| n.width()).max().unwrap_or(0);
     let lines: Vec<Line> = labels
         .iter()
         .enumerate()
         .map(|(index, label)| {
-            let number = match index {
-                _ if index == last && index >= 8 => "9".to_owned(),
-                0..8 => (index + 1).to_string(),
-                _ => " ".to_owned(),
-            };
+            let number = &numbers[index];
+            let number = format!("{number}{}", " ".repeat(width - number.width()));
             let current = if label.active { "•" } else { " " };
             let dirty = if label.dirty { " ●" } else { "" };
             let text = format!(
@@ -161,7 +199,7 @@ fn tab_list(state: &State, selected: usize, frame: &mut Frame) {
                 display(&label.name)
             );
             let style = if index == selected {
-                Style::default().add_modifier(Modifier::REVERSED)
+                theme.selected
             } else {
                 Style::default()
             };
@@ -178,14 +216,130 @@ fn tab_list(state: &State, selected: usize, frame: &mut Frame) {
 
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(lines).block(pane(Line::from(" Tabs "), true)),
+        Paragraph::new(lines).block(pane(theme, Line::from(" Tabs "), true)),
         area,
     );
 }
 
-fn settings(state: &State, frame: &mut Frame) {
+/// the palette: the query, then what matches it, best first
+fn palette_list(state: &State, palette: &Palette, frame: &mut Frame) {
+    const SHOWN: usize = 12;
+
+    let theme = &state.theme;
+    let entries = state.palette_entries(palette);
+    let dim = theme.muted;
+    let rows = entries.len().clamp(1, SHOWN);
+    let height = u16::try_from(rows + 3).unwrap_or(u16::MAX);
+    let area = centered(frame, 72, height);
+    let block = pane(theme, Line::from(" Commands and requests "), true);
+    let inner = block.inner(area);
+    let [input_area, list_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+    let width = usize::from(list_area.width);
+    let first = palette.selected.saturating_sub(SHOWN - 1);
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (index, entry) in entries.iter().enumerate().skip(first).take(SHOWN) {
+        let (left, right) = match entry {
+            Entry::Run(command) => (
+                format!(" {}", command.what),
+                format!("{} ", command.keys.as_deref().unwrap_or(&command.name)),
+            ),
+            Entry::Open { method, title, .. } => (
+                format!(" {:<7} {}", method.as_str(), display(title)),
+                "open ".to_owned(),
+            ),
+        };
+        let gap = width.saturating_sub(left.width() + right.width()).max(1);
+        let style = if index == palette.selected {
+            theme.selected
+        } else {
+            Style::default()
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(format!("{left}{}", " ".repeat(gap)), style),
+            Span::styled(right, style.patch(dim)),
+        ]));
+    }
+
+    if entries.is_empty() {
+        lines.push(Line::from(Span::styled(" nothing matches", dim)));
+    }
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+    frame.render_widget(&*field(&state.theme, &palette.input, None), input_area);
+    frame.render_widget(Paragraph::new(lines), list_area);
+}
+
+fn help(state: &State, scroll: usize, here: &[Layer], frame: &mut Frame) {
+    let theme = &state.theme;
+    let sections = state.keymap.help(here);
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = theme.muted;
+    let width = sections
+        .iter()
+        .flat_map(|s| &s.rows)
+        .map(|r| r.keys.width())
+        .max()
+        .unwrap_or(0)
+        .min(24);
+    let what = sections
+        .iter()
+        .flat_map(|s| &s.rows)
+        .map(|r| r.what.width())
+        .max()
+        .unwrap_or(0)
+        .min(40);
+    let mut lines = Vec::new();
+
+    for section in &sections {
+        lines.push(Line::from(Span::styled(
+            format!(" {}", section.title),
+            bold,
+        )));
+
+        for row in &section.rows {
+            let pad = width.saturating_sub(row.keys.width());
+
+            lines.push(Line::from(vec![
+                Span::styled(format!("   {}{} ", row.keys, " ".repeat(pad)), bold),
+                Span::raw(format!(
+                    " {}{}  ",
+                    row.what,
+                    " ".repeat(what.saturating_sub(row.what.width()))
+                )),
+                Span::styled(row.name.clone(), dim),
+            ]));
+        }
+
+        lines.push(Line::default());
+    }
+
+    let height = frame.area().height.saturating_sub(4).max(8);
+    let area = centered(frame, 90, height);
+    let visible = usize::from(height.saturating_sub(2));
+    let scroll = scroll.min(lines.len().saturating_sub(visible));
+    let title = Line::from(" Keys · rebind them in config.toml, [keys.bindings] ");
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0))
+            .block(pane(theme, title, true)),
+        area,
+    );
+}
+
+/// a key, padded, as the pop-ups list them
+fn key_span(state: &State, layer: Layer, name: &str) -> Span<'static> {
+    Span::styled(format!(" {} ", state.key(layer, name)), state.theme.key)
+}
+
+fn settings(state: &State, frame: &mut Frame) {
+    let theme = &state.theme;
+    let bold = Style::default().add_modifier(Modifier::BOLD);
     let (now, action) = match state.backend {
         None => ("not chosen yet", "choose where to keep them"),
         Some(Backend::Keychain) => ("the system keychain", "move them to an encrypted file"),
@@ -194,59 +348,149 @@ fn settings(state: &State, frame: &mut Frame) {
             "move them to the keychain",
         ),
     };
-    let lines = vec![
+    let row = |label: &'static str, value: String, name: &str, what: &'static str| {
         Line::from(vec![
-            Span::raw("Secrets are kept in "),
+            Span::raw(format!("{label:<9}")),
+            Span::styled(format!("{value:<16}"), bold),
+            key_span(state, Layer::Settings, name),
+            Span::styled(what, theme.muted),
+        ])
+    };
+    let lines = vec![
+        row("Keys", state.keys_preset.clone(), "keys", "next preset"),
+        row("Theme", state.theme.name.clone(), "theme", "next theme"),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw(format!("{:<9}", "Secrets")),
             Span::styled(now, bold),
         ]),
-        Line::from(""),
-        Line::from(vec![Span::styled(" m ", bold), Span::raw(action)]),
+        Line::from(vec![
+            Span::raw(" ".repeat(9)),
+            key_span(state, Layer::Settings, "migrate"),
+            Span::raw(action),
+        ]),
         Line::from(""),
         Line::from(Span::styled(
-            "Moving copies every secret, checks each copy, then deletes the old ones.",
-            dim,
+            "Changes are saved to config.toml at once. Moving secrets copies each one,",
+            theme.muted,
+        )),
+        Line::from(Span::styled(
+            "checks the copy, then deletes the old one.",
+            theme.muted,
         )),
     ];
-    let area = centered(frame, 76, 7);
+    let area = centered(frame, 80, 10);
 
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(lines).block(pane(Line::from(" Settings "), true)),
+        Paragraph::new(lines).block(pane(theme, Line::from(" Settings "), true)),
         area,
     );
 }
 
-fn choose_backend(frame: &mut Frame) {
+/// the first run: how keys work, then how it looks, each tried at once
+fn welcome(state: &State, step: Step, frame: &mut Frame) {
+    let theme = &state.theme;
     let bold = Style::default().add_modifier(Modifier::BOLD);
+    let choice = |chosen: bool, name: &str, what: &str| {
+        let mark = if chosen { "›" } else { " " };
+        let style = if chosen {
+            theme.selected
+        } else {
+            Style::default()
+        };
+
+        Line::from(vec![
+            Span::raw(format!("  {mark} ")),
+            Span::styled(format!(" {name:<10}"), style),
+            Span::styled(format!("  {what}"), theme.muted),
+        ])
+    };
+    let mut lines = vec![
+        Line::from(Span::styled("Welcome to curst", bold)),
+        Line::from(""),
+    ];
+
+    match step {
+        Step::Keys => {
+            lines.push(Line::from("How do you like to move around?"));
+            lines.push(Line::from(""));
+
+            for (name, what) in PRESETS {
+                lines.push(choice(state.keys_preset == name, name, what));
+            }
+        }
+        Step::Theme => {
+            lines.push(Line::from(
+                "Which colors suit your terminal? It changes as you choose.",
+            ));
+            lines.push(Line::from(""));
+
+            for option in &state.themes {
+                let what = match option.name.as_str() {
+                    "dark" => "for a dark background",
+                    "light" => "for a light background",
+                    "mono" => "no color at all",
+                    _ => "yours, from the themes folder",
+                };
+
+                lines.push(choice(state.theme.name == option.name, &option.name, what));
+            }
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Both can be changed later in the settings, and every key in config.toml.",
+        theme.muted,
+    )));
+
+    let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
+    let area = centered(frame, 78, height);
+    let title = match step {
+        Step::Keys => " Keys · 1 of 2 ",
+        Step::Theme => " Theme · 2 of 2 ",
+    };
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(lines).block(pane(theme, Line::from(title), true)),
+        area,
+    );
+}
+
+fn choose_backend(state: &State, frame: &mut Frame) {
+    let theme = &state.theme;
     let lines = vec![
         Line::from("This request uses a secret. Where should curst keep secrets?"),
         Line::from(""),
         Line::from(vec![
-            Span::styled(" k ", bold),
+            key_span(state, Layer::Backend, "backend.keychain"),
             Span::raw("the system keychain: nothing to type, but it stays on"),
         ]),
         Line::from("    this machine, and some Linux setups have none"),
         Line::from(vec![
-            Span::styled(" f ", bold),
+            key_span(state, Layer::Backend, "backend.file"),
             Span::raw("an encrypted file: works everywhere, asks for a"),
         ]),
         Line::from("    passphrase once per session"),
         Line::from(""),
         Line::from(Span::styled(
             "You can switch later in Settings.",
-            Style::default().fg(Color::DarkGray),
+            theme.muted,
         )),
     ];
     let area = centered(frame, 68, 10);
 
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(lines).block(pane(Line::from(" Keep secrets where? "), true)),
+        Paragraph::new(lines).block(pane(theme, Line::from(" Keep secrets where? "), true)),
         area,
     );
 }
 
 fn passphrase(
+    theme: &Theme,
     new: bool,
     confirming: bool,
     input: &TextArea<'static>,
@@ -259,27 +503,26 @@ fn passphrase(
         (false, _) => " Passphrase for secrets.age ",
     };
     let area = centered(frame, 60, 4);
-    let block = pane(Line::from(title), true);
+    let block = pane(theme, Line::from(title), true);
     let inner = block.inner(area);
     let [field, message] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(inner);
 
     frame.render_widget(Clear, area);
     frame.render_widget(block, area);
-    frame.render_widget(input, field);
+    frame.render_widget(&*super::field(theme, input, None), field);
 
     if let Some(error) = error {
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                error.to_owned(),
-                Style::default().fg(Color::Yellow),
-            )),
+            Paragraph::new(Span::styled(error.to_owned(), theme.warning)),
             message,
         );
     }
 }
 
-fn approve(approval: &Approval, frame: &mut Frame) {
+fn approve(state: &State, approval: &Approval, frame: &mut Frame) {
+    let theme = &state.theme;
+
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let names: Vec<String> = approval
         .keys
@@ -308,15 +551,15 @@ fn approve(approval: &Approval, frame: &mut Frame) {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "⚠ plain http: anyone on the network path can read them",
-            Style::default().fg(Color::Yellow),
+            theme.warning,
         )));
     }
 
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled(" y ", bold),
+        key_span(state, Layer::Approve, "confirm"),
         Span::raw("send them there, now and later   "),
-        Span::styled(" n ", bold),
+        key_span(state, Layer::Approve, "close"),
         Span::raw("don't send"),
     ]));
 
@@ -325,20 +568,23 @@ fn approve(approval: &Approval, frame: &mut Frame) {
 
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(pane(Line::from(" Send secrets? "), true)),
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(pane(
+            theme,
+            Line::from(" Send secrets? "),
+            true,
+        )),
         area,
     );
 }
 
 fn trust(state: &State, collection: &LocalId, frame: &mut Frame) {
+    let theme = &state.theme;
     let Some(workspace) = state.workspace(collection) else {
         return;
     };
 
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = theme.muted;
     let path = std::fs::canonicalize(&workspace.root).unwrap_or_else(|_| workspace.root.clone());
     let mut lines = vec![
         Line::from(Span::styled(display(&path.display().to_string()), bold)),
@@ -351,9 +597,9 @@ fn trust(state: &State, collection: &LocalId, frame: &mut Frame) {
         Line::from("until you trust it. Trust it only if you trust where it came from."),
         Line::from(""),
         Line::from(vec![
-            Span::styled(" y ", bold),
+            key_span(state, Layer::Trust, "confirm"),
             Span::raw("trust it as a new collection   "),
-            Span::styled(" n ", bold),
+            key_span(state, Layer::Trust, "close"),
             Span::raw("not now, only look"),
         ]),
     ];
@@ -365,8 +611,13 @@ fn trust(state: &State, collection: &LocalId, frame: &mut Frame) {
         ));
 
         for (index, (_, old)) in state.orphans.iter().take(9).enumerate() {
+            let key = state
+                .keymap
+                .key_for(Layer::Trust, &format!("trust.moved-{}", index + 1))
+                .unwrap_or_default();
+
             lines.push(Line::from(vec![
-                Span::styled(format!(" {} ", index + 1), bold),
+                Span::styled(format!(" {key} "), bold),
                 Span::raw(display(&old.display().to_string())),
             ]));
         }
@@ -374,47 +625,96 @@ fn trust(state: &State, collection: &LocalId, frame: &mut Frame) {
 
     let height = u16::try_from(lines.len() + 2).unwrap_or(u16::MAX);
     let area = centered(frame, 76, height);
-    let block = pane(Line::from(" Trust this folder? "), true);
+    let block = pane(theme, Line::from(" Trust this folder? "), true);
 
     frame.render_widget(Clear, area);
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-pub(super) fn hints(popup: &Popup) -> Vec<(&'static str, &'static str)> {
+pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
+    let mut hints = Hints::here(state);
+
     match popup {
-        Popup::Prompt { .. } | Popup::Passphrase { .. } => vec![("Enter", "ok"), ("Esc", "cancel")],
-        Popup::Confirm { .. } => vec![("y", "yes"), ("n", "no")],
-        Popup::Trust { .. } => vec![("y", "trust"), ("n", "not now"), ("1-9", "moved from")],
-        Popup::ChooseBackend => vec![("k", "keychain"), ("f", "encrypted file"), ("Esc", "later")],
-        Popup::Approve(_) => vec![("y", "send"), ("n", "don't send")],
-        Popup::Settings => vec![("m", "move secrets"), ("Esc", "close")],
-        Popup::Tabs { .. } => vec![
-            ("1-9", "go to"),
-            ("↑↓", "choose"),
-            ("Enter", "open"),
-            ("n", "new"),
-            ("w", "close"),
-            ("Esc", "back"),
-        ],
-        Popup::Environments { .. } => vec![
-            ("↑↓", "choose"),
-            ("Enter", "use"),
-            ("n", "new"),
-            ("r", "rename"),
-            ("d", "delete"),
-            ("v", "variables"),
-            ("Esc", "close"),
-        ],
-        Popup::Variables(editor) if editor.editing() => {
-            vec![("Enter", "done"), ("Tab", "next field")]
+        Popup::Prompt { .. } | Popup::Passphrase { .. } => {
+            hints.one("confirm", "ok").one("close", "cancel");
         }
-        Popup::Variables(_) => vec![
-            ("←→", "tab"),
-            ("a", "add"),
-            ("Enter", "edit"),
-            ("Space", "on/off"),
-            ("s", "secret"),
-            ("d", "delete"),
-        ],
+        Popup::Confirm { .. } => {
+            hints.one("confirm", "yes").one("close", "no");
+        }
+        Popup::Trust { .. } => {
+            hints.one("confirm", "trust").one("close", "not now").range(
+                "trust.moved-1",
+                "trust.moved-9",
+                "moved from",
+            );
+        }
+        Popup::ChooseBackend => {
+            hints
+                .one("backend.keychain", "keychain")
+                .one("backend.file", "encrypted file")
+                .one("close", "later");
+        }
+        Popup::Approve(_) => {
+            hints.one("confirm", "send").one("close", "don't send");
+        }
+        Popup::Settings => {
+            hints
+                .one("keys", "keys")
+                .one("theme", "theme")
+                .one("migrate", "move secrets")
+                .one("close", "close");
+        }
+        Popup::Welcome { step, .. } => {
+            let next = if *step == Step::Keys { "next" } else { "done" };
+
+            hints
+                .pair("up", "down", "choose")
+                .one("confirm", next)
+                .one("close", "keep these");
+        }
+        Popup::Tabs { .. } => {
+            hints
+                .range("request.go-1", "request.go-last", "go to")
+                .pair("up", "down", "choose")
+                .one("confirm", "open")
+                .one("request.new", "new")
+                .one("request.close", "close")
+                .one("close", "back");
+        }
+        Popup::Environments { .. } => {
+            hints
+                .pair("up", "down", "choose")
+                .one("confirm", "use")
+                .one("env.new", "new")
+                .one("env.rename", "rename")
+                .one("env.delete", "delete")
+                .one("env.variables", "variables")
+                .one("close", "close");
+        }
+        Popup::Help { .. } => {
+            hints.pair("up", "down", "scroll").one("close", "close");
+        }
+        Popup::Palette(_) => {
+            hints
+                .pair("up", "down", "choose")
+                .one("confirm", "run")
+                .one("close", "close");
+        }
+        Popup::Variables(editor) if editor.editing() => {
+            hints
+                .one("stop-edit", "done")
+                .one("next-cell", "next field");
+        }
+        Popup::Variables(_) => {
+            hints
+                .pair("tab.previous", "tab.next", "tab")
+                .one("row.add", "add")
+                .one("edit", "edit")
+                .one("row.toggle", "on/off")
+                .one("make-secret", "secret")
+                .one("row.delete", "delete");
+        }
     }
+
+    hints.finish()
 }

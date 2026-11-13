@@ -169,7 +169,7 @@ fn is_jwt(word: &str) -> bool {
         && parts.iter().all(|p| base64url(p))
 }
 
-/// a credential recognised from the value alone
+/// a credential recognized from the value alone
 fn value_reason(value: &str) -> Option<Reason> {
     let value = value.trim();
 
@@ -398,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn credentials_recognised_by_their_shape() {
+    fn credentials_recognized_by_their_shape() {
         assert_eq!(check_pair("X-Anything", &jwt(), true), Some(Reason::Jwt));
         assert_eq!(check_value("Bearer abc.def"), Some(Reason::Bearer));
         assert_eq!(

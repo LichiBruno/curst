@@ -1,6 +1,8 @@
 mod editor;
-mod keys;
+mod keymap;
+mod palette;
 mod popup;
+mod preferences;
 mod request;
 mod send;
 mod sidebar;
@@ -20,8 +22,12 @@ use ratatui::crossterm::event::KeyEvent;
 use ratatui_textarea::TextArea;
 
 pub(crate) use editor::{AuthEditor, AuthKind, BodyEditor, BodyField, BodyKind, Column, Table};
-pub(crate) use keys::action_for;
-pub(crate) use popup::{Pending, Popup, Purpose, VarTab};
+#[cfg(test)]
+pub(crate) use keymap::{HelpRow, HelpSection};
+pub(crate) use keymap::{Hint, Hints, Keymap, Layer, action_for, help_lines};
+pub(crate) use palette::{Entry, Palette};
+pub(crate) use popup::{Pending, Popup, Purpose, VarTab, VariablesEditor};
+pub(crate) use preferences::{PRESETS, Step, known_themes};
 pub(crate) use view_model::{ResponseView, display, skip_columns};
 pub(crate) use workspace::{NodeKey, RowKind, Sidebar, Workspace, rows};
 
@@ -236,6 +242,23 @@ pub(crate) struct State {
     /// among them
     pub(crate) others: Vec<tabs::Parked>,
     pub(crate) active_tab: usize,
+
+    /// which key does what
+    pub(crate) keymap: Keymap,
+
+    /// the colors
+    pub(crate) theme: crate::theme::Theme,
+
+    /// the keymap preset in use, and the user's own bindings that go on
+    /// top of any preset
+    pub(crate) keys_preset: String,
+    pub(crate) key_bindings: Vec<(String, Vec<String>)>,
+
+    /// every theme that can be chosen
+    pub(crate) themes: Vec<crate::theme::Theme>,
+
+    /// the keys of a sequence pressed so far, such as the `g` of `g t`
+    pub(crate) pending_keys: Vec<KeyEvent>,
     next_id: u64,
 }
 
@@ -272,6 +295,12 @@ impl Default for State {
             collection: None,
             others: Vec::new(),
             active_tab: 0,
+            keymap: Keymap::standard(),
+            theme: crate::theme::Theme::dark(),
+            keys_preset: "standard".into(),
+            key_bindings: Vec::new(),
+            themes: preferences::known_themes(Vec::new()),
+            pending_keys: Vec::new(),
             next_id: 0,
         }
     }
@@ -355,6 +384,12 @@ pub(crate) enum Action {
     ToggleRow,
     CycleKind,
     Type(KeyEvent),
+
+    /// a key that starts a sequence, kept until the sequence completes
+    Pending(KeyEvent),
+
+    /// a sequence that went nowhere is dropped
+    ClearPending,
     OpenSave,
     NewRequest,
     NewFolder,
@@ -428,6 +463,15 @@ pub(crate) enum Action {
     /// opens the tab switcher
     Tabs,
     Settings,
+    Help,
+    Palette,
+
+    /// the settings' next keymap preset, or theme
+    NextKeys,
+    NextTheme,
+
+    /// the first-run welcome
+    Welcome,
     Migrate,
     Migrated {
         id: u64,
@@ -575,6 +619,13 @@ pub(crate) enum Command {
         collection: LocalId,
         environment: Option<EnvId>,
     },
+
+    /// writes the keymap preset, the theme or both to `config.toml`; what
+    /// is `None` stays as it is in the file
+    SavePreferences {
+        keys: Option<String>,
+        theme: Option<String>,
+    },
 }
 
 const PAGE: usize = 10;
@@ -582,9 +633,24 @@ const PAGE: usize = 10;
 /// columns moved by one sideways scroll
 const PAN: usize = 8;
 
-const NO_COLLECTION: &str = "create a collection first: press c in the sidebar";
+/// the notice for an action that needs a collection when there is none
+fn no_collection(state: &State) -> String {
+    format!(
+        "create a collection first: press {} in the sidebar",
+        state.key(Layer::Sidebar, "new-collection")
+    )
+}
 
 pub(crate) fn update(state: &mut State, action: Action) -> Vec<Command> {
+    // any action but the next key of a sequence ends the sequence
+    if let Action::Pending(key) = action {
+        state.pending_keys.push(key);
+
+        return Vec::new();
+    }
+
+    state.pending_keys.clear();
+
     let background = reported(&action);
 
     if !background {
@@ -624,6 +690,14 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
             });
         }
         Action::Settings => state.popup = Some(Popup::Settings),
+        Action::Palette => palette::open(state),
+        Action::Welcome => preferences::welcome(state),
+        Action::Help => {
+            state.popup = Some(Popup::Help {
+                scroll: 0,
+                here: keymap::layers(state).0,
+            });
+        }
         Action::EditBody => return request::edit_body(state),
         Action::Save => return save(state),
         Action::Cancel => return cancel(state),
@@ -715,7 +789,11 @@ fn report(state: &mut State, action: Action) -> Vec<Command> {
         },
         Action::SecretsLocked { id, locked } => send::locked(state, id, locked),
         Action::NeedsApproval { id, approval } => send::needs_approval(state, id, *approval),
-        Action::Responded { id, result } if state.in_flight != Some(id) => {
+        Action::Responded { id, mut result } if state.in_flight != Some(id) => {
+            if let Ok(view) = result.as_mut() {
+                view.name_save_key(&state.key(Layer::Response, "save-body"));
+            }
+
             let outcome = match *result {
                 Ok(view) => Outcome::Response(Box::new(view)),
                 Err(err) => Outcome::Error(err.to_string()),
@@ -723,14 +801,19 @@ fn report(state: &mut State, action: Action) -> Vec<Command> {
 
             tabs::deliver(state, id, outcome);
         }
-        Action::Responded { id, result } => {
+        Action::Responded { id, mut result } => {
             if state.in_flight == Some(id) {
+                if let Ok(view) = result.as_mut() {
+                    view.name_save_key(&state.key(Layer::Response, "save-body"));
+                }
+
                 if let Ok(view) = result.as_ref()
                     && let Some(stopped) = &view.response.stopped
                 {
                     state.notice = Some(format!(
-                        "the redirect to {} was not followed, since it would carry secrets there; press f in the response to follow it",
-                        display(&stopped.url)
+                        "the redirect to {} was not followed, since it would carry secrets there; press {} in the response to follow it",
+                        display(&stopped.url),
+                        state.key(Layer::Response, "follow"),
                     ));
                 }
 
@@ -811,9 +894,9 @@ fn reported(action: &Action) -> bool {
 fn cancel(state: &mut State) -> Vec<Command> {
     if state.waiting.is_some() {
         send::give_back(state);
-        state.notice = Some("cancelled".into());
+        state.notice = Some("canceled".into());
     } else if state.in_flight.take().is_some() {
-        state.notice = Some("request cancelled".into());
+        state.notice = Some("request canceled".into());
 
         return vec![Command::Cancel];
     }
@@ -863,7 +946,7 @@ fn save(state: &mut State) -> Vec<Command> {
 
             state.popup = Some(Popup::prompt(Purpose::SaveAs(parent), &name));
         }
-        None => state.notice = Some(NO_COLLECTION.into()),
+        None => state.notice = Some(no_collection(state)),
     }
 
     Vec::new()
@@ -882,7 +965,7 @@ fn suggested_name(state: &State) -> String {
 
 fn open_environments(state: &mut State) {
     let Some(workspace) = state.picked_workspace() else {
-        state.notice = Some(NO_COLLECTION.into());
+        state.notice = Some(no_collection(state));
 
         return;
     };

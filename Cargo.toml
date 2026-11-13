@@ -19,8 +19,8 @@ expect_used = "deny"
 panic = "deny"
 
 # opening the encrypted secrets file runs scrypt, which takes about 0.6 s
-# optimised and about 18 s in an unoptimised debug build, so the crates
-# doing that work are optimised in every build
+# optimized and about 18 s in an unoptimized debug build, so the crates
+# doing that work are optimized in every build
 [profile.dev.package.scrypt]
 opt-level = 3
 

@@ -1,6 +1,5 @@
 ---
 source: crates/curst/src/ui/tests.rs
-assertion_line: 68
 expression: "render(&state, 120, 14)"
 ---
 "┌ Collections ───────────────┐  GET localhost/pets                                Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
@@ -16,4 +15,4 @@ expression: "render(&state, 120, 14)"
 "│                            ││  "id": 1,                                                                              │"
 "└────────────────────────────┘└─────────────────────────────────────────────────────────────── 200 OK · 42.0 ms · 37 B ┘"
 " Enter send  Tab next                                                                                                   "
-" Ctrl+R send  Ctrl+S save  Ctrl+E environments  Ctrl+O settings  Ctrl+C quit                                            "
+" Ctrl+R send  Ctrl+S save  Ctrl+E environments  Ctrl+O settings  Ctrl+P commands  F1 help  Ctrl+C quit                  "

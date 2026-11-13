@@ -1,0 +1,20 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 90, 16)"
+---
+"┌ Collections ─────────┐  GET new request           Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"│no collections yet    │┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│press c to add one    ││   GET   │┃ https://example.com/api, then Enter to send         ┃"
+"│    ┏ Settings ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓━━━━┛"
+"│    ┃Keys     standard         k next preset                                       ┃────┐"
+"│    ┃Theme    dark             t next theme                                        ┃    │"
+"│    ┃                                                                              ┃    │"
+"│    ┃Secrets  not chosen yet                                                       ┃    │"
+"│    ┃          m choose where to keep them                                         ┃────┘"
+"│    ┃                                                                              ┃────┐"
+"│    ┃Changes are saved to config.toml at once. Moving secrets copies each one,     ┃    │"
+"│    ┃checks the copy, then deletes the old one.                                    ┃    │"
+"│    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛    │"
+"└──────────────────────┘└────────────────────────────────────────────────────────────────┘"
+" k keys  t theme  m move secrets  Esc close                                               "
+" Ctrl+C quit                                                                              "

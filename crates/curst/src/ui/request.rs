@@ -1,25 +1,28 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use curst_core::model::Request;
 use curst_core::secrets::detect;
 
-use super::{pane, tab_titles};
-use crate::app::{AuthKind, BodyField, BodyKind, Column, Focus, RequestTab, State, Table};
+use super::{field, pane, tab_titles};
+use crate::app::{AuthKind, BodyField, BodyKind, Column, Focus, Layer, RequestTab, State, Table};
+use crate::theme::Theme;
 
 pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
+    let theme = &state.theme;
     let focused = state.focus == Focus::Request;
     let mut title = vec![Span::raw(" Request")];
     title.extend(tab_titles(
+        theme,
         &RequestTab::ALL,
         state.request_tab,
         RequestTab::label,
     ));
 
-    let block = pane(Line::from(title), focused);
+    let block = pane(theme, Line::from(title), focused);
     let mut inner = block.inner(area);
 
     frame.render_widget(block, area);
@@ -29,25 +32,26 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
         let [content, line] =
             Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
 
-        frame.render_widget(
-            Paragraph::new(Span::styled(warning, Style::default().fg(Color::Yellow))),
-            line,
-        );
+        frame.render_widget(Paragraph::new(Span::styled(warning, theme.warning)), line);
         inner = content;
     }
 
+    let add = state.key(Layer::Request, "row.add");
+
     match state.request_tab {
         RequestTab::Params => table(
+            theme,
             &state.params,
             focused,
-            "no query parameters, press a to add one",
+            &format!("no query parameters, press {add} to add one"),
             frame,
             inner,
         ),
         RequestTab::Headers => table(
+            theme,
             &state.headers,
             focused,
-            "no headers, press a to add one",
+            &format!("no headers, press {add} to add one"),
             frame,
             inner,
         ),
@@ -83,33 +87,49 @@ pub(super) fn credential_warning(state: &State) -> Option<String> {
     Some(format!("⚠ {}, saved as plain text", reason.describe()))
 }
 
-fn kind_line(label: &str, value: &str) -> Paragraph<'static> {
+fn kind_line(theme: &Theme, label: &str, value: &str, key: &str) -> Paragraph<'static> {
     Paragraph::new(Line::from(vec![
-        Span::styled(format!("{label}: "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{label}: "), theme.muted),
         Span::styled(
             value.to_owned(),
             Style::default().add_modifier(Modifier::BOLD),
         ),
-        Span::styled("  (t to change)", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("  ({key} to change)"), theme.muted),
     ]))
 }
 
 fn body(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
+    let theme = &state.theme;
     let [kind_area, content] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
 
-    frame.render_widget(kind_line("Body type", state.body.kind.label()), kind_area);
+    let add = state.key(Layer::Request, "row.add");
+    let kind = state.key(Layer::Request, "kind");
+    let text = field(
+        theme,
+        &state.body.text,
+        Some(format!(
+            "press {} to write the body",
+            state.key(Layer::Request, "edit")
+        )),
+    );
+
+    frame.render_widget(
+        kind_line(theme, "Body type", state.body.kind.label(), &kind),
+        kind_area,
+    );
 
     match state.body.kind {
         BodyKind::None => {}
         BodyKind::Form => table(
+            theme,
             &state.body.form,
             focused,
-            "no form fields, press a to add one",
+            &format!("no form fields, press {add} to add one"),
             frame,
             content,
         ),
-        BodyKind::Json => frame.render_widget(&state.body.text, content),
+        BodyKind::Json => frame.render_widget(&*text, content),
         BodyKind::Text => {
             let [type_area, text_area] =
                 Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(content);
@@ -119,24 +139,33 @@ fn body(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
             let style = if selected {
                 Style::default().add_modifier(Modifier::BOLD)
             } else {
-                Style::default().fg(Color::DarkGray)
+                theme.muted
             };
 
             frame.render_widget(
                 Paragraph::new(Span::styled("Content-Type:", style)),
                 label_area,
             );
-            frame.render_widget(&state.body.content_type, field_area);
-            frame.render_widget(&state.body.text, text_area);
+            frame.render_widget(&*field(theme, &state.body.content_type, None), field_area);
+            frame.render_widget(&*text, text_area);
         }
     }
 }
 
 fn auth(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
+    let theme = &state.theme;
     let [kind_area, content] =
         Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(area);
 
-    frame.render_widget(kind_line("Auth type", state.auth.kind.label()), kind_area);
+    frame.render_widget(
+        kind_line(
+            theme,
+            "Auth type",
+            state.auth.kind.label(),
+            &state.key(Layer::Request, "kind"),
+        ),
+        kind_area,
+    );
 
     if state.auth.kind == AuthKind::None {
         return;
@@ -158,7 +187,7 @@ fn auth(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
         let style = if selected {
             Style::default().add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            theme.muted
         };
         let marker = if selected { "› " } else { "  " };
 
@@ -166,7 +195,7 @@ fn auth(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
             Paragraph::new(Span::styled(format!("{marker}{label}"), style)),
             label_area,
         );
-        frame.render_widget(field, field_area);
+        frame.render_widget(&*super::field(theme, field, None), field_area);
     }
 }
 
@@ -180,13 +209,17 @@ fn row_area(area: Rect, index: usize) -> Option<Rect> {
     })
 }
 
-pub(super) fn table(table: &Table, focused: bool, empty: &str, frame: &mut Frame, area: Rect) {
+pub(super) fn table(
+    theme: &Theme,
+    table: &Table,
+    focused: bool,
+    empty: &str,
+    frame: &mut Frame,
+    area: Rect,
+) {
     if table.rows.is_empty() && table.editing.is_none() {
         frame.render_widget(
-            Paragraph::new(Span::styled(
-                empty.to_owned(),
-                Style::default().fg(Color::DarkGray),
-            )),
+            Paragraph::new(Span::styled(empty.to_owned(), theme.muted)),
             area,
         );
 
@@ -212,13 +245,11 @@ pub(super) fn table(table: &Table, focused: bool, empty: &str, frame: &mut Frame
         let mut style = Style::default();
 
         if !row.enabled {
-            style = style
-                .fg(Color::DarkGray)
-                .add_modifier(Modifier::CROSSED_OUT);
+            style = style.patch(theme.muted).add_modifier(Modifier::CROSSED_OUT);
         }
 
         if selected {
-            style = style.add_modifier(Modifier::REVERSED);
+            style = style.patch(theme.selected);
         }
 
         let mark = if row.enabled { "[x]" } else { "[ ]" };
@@ -242,7 +273,9 @@ pub(super) fn table(table: &Table, focused: bool, empty: &str, frame: &mut Frame
             (Column::Value, value_area, &value),
         ] {
             match editing {
-                Some((edited, area)) if edited == column => frame.render_widget(area, cell),
+                Some((edited, area)) if edited == column => {
+                    frame.render_widget(&*field(theme, area, None), cell);
+                }
                 _ => frame.render_widget(Paragraph::new(Span::styled(text.clone(), style)), cell),
             }
         }

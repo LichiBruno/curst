@@ -5,11 +5,21 @@ mod sidebar;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
-use crate::app::{AuthKind, BodyField, BodyKind, Focus, Popup, RequestTab, State, display};
+use std::borrow::Cow;
+use std::fmt::Write;
+
+use unicode_width::UnicodeWidthStr;
+
+use ratatui_textarea::TextArea;
+
+use crate::app::{
+    AuthKind, BodyKind, Focus, Hint, Hints, Layer, Popup, RequestTab, State, display,
+};
+use crate::theme::Theme;
 
 const WIDE: u16 = 110;
 
@@ -61,19 +71,20 @@ pub(crate) fn view(state: &State, frame: &mut Frame) {
     }
 }
 
-pub(super) fn pane(title: Line<'static>, focused: bool) -> Block<'static> {
+pub(super) fn pane(theme: &Theme, title: Line<'static>, focused: bool) -> Block<'static> {
     let block = Block::bordered().title(title);
 
     if focused {
         block
             .border_type(BorderType::Thick)
-            .border_style(Style::default().fg(Color::Cyan))
+            .border_style(theme.accent)
     } else {
-        block.border_style(Style::default().fg(Color::DarkGray))
+        block.border_style(theme.border)
     }
 }
 
 pub(super) fn tab_titles<T: Copy + PartialEq>(
+    theme: &Theme,
     all: &[T],
     selected: T,
     label: impl Fn(T) -> &'static str,
@@ -84,7 +95,7 @@ pub(super) fn tab_titles<T: Copy + PartialEq>(
         let text = format!(" {} ", label(*tab));
 
         spans.push(if *tab == selected {
-            Span::styled(text, Style::default().add_modifier(Modifier::REVERSED))
+            Span::styled(text, theme.selected)
         } else {
             Span::raw(text)
         });
@@ -98,6 +109,7 @@ pub(super) fn tab_titles<T: Copy + PartialEq>(
 /// one label per open request, the active one highlighted; when they do
 /// not all fit, those far from the active one are left out
 fn tab_bar(state: &State, frame: &mut Frame, area: Rect) {
+    let theme = &state.theme;
     let labels = state.tab_labels();
     let texts: Vec<String> = labels
         .iter()
@@ -144,12 +156,12 @@ fn tab_bar(state: &State, frame: &mut Frame, area: Rect) {
         }
     }
 
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = theme.muted;
     let mut spans = vec![Span::styled(if first > 0 { "‹" } else { " " }, dim)];
 
     for (index, text) in texts.iter().enumerate().take(last + 1).skip(first) {
         let style = if labels[index].active {
-            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+            theme.selected.add_modifier(Modifier::BOLD)
         } else {
             dim
         };
@@ -162,7 +174,17 @@ fn tab_bar(state: &State, frame: &mut Frame, area: Rect) {
         spans.push(Span::styled("›", dim));
     }
 
-    let hint = " Ctrl+G tabs  Ctrl+T new  Ctrl+W close ";
+    let hint: String = Hints::everywhere(state)
+        .one("tabs", "tabs")
+        .one("request.new", "new")
+        .one("request.close", "close")
+        .finish()
+        .iter()
+        .fold(String::new(), |mut text, (key, label)| {
+            let _ = write!(text, " {key} {label} ");
+
+            text
+        });
     let shown: usize = spans.iter().map(|s| s.content.chars().count()).sum();
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -176,10 +198,14 @@ fn tab_bar(state: &State, frame: &mut Frame, area: Rect) {
 }
 
 fn url_bar(state: &State, frame: &mut Frame, area: Rect) {
+    let theme = &state.theme;
     let [method_area, url_area] =
         Layout::horizontal([Constraint::Length(11), Constraint::Fill(1)]).areas(area);
-    let method = Paragraph::new(Line::from(state.method.as_str()).bold().centered())
-        .block(pane(Line::from(" Method "), state.focus == Focus::Method));
+    let method = Paragraph::new(Line::from(state.method.as_str()).bold().centered()).block(pane(
+        theme,
+        Line::from(" Method "),
+        state.focus == Focus::Method,
+    ));
 
     frame.render_widget(method, method_area);
 
@@ -196,40 +222,78 @@ fn url_bar(state: &State, frame: &mut Frame, area: Rect) {
         title.push_str("· sending… ");
     }
 
-    let block = pane(Line::from(title), state.focus == Focus::Url);
+    let block = pane(theme, Line::from(title), state.focus == Focus::Url);
     let inner = block.inner(url_area);
 
     frame.render_widget(block, url_area);
-    frame.render_widget(&state.url, inner);
+    let placeholder = format!(
+        "https://example.com/api, then {} to send",
+        state.key(Layer::Url, "send")
+    );
+
+    frame.render_widget(&*field(theme, &state.url, Some(placeholder)), inner);
+}
+
+/// a text field to draw, its placeholder in the theme's colors and, when
+/// given, naming the current keys; only an empty field shows one, so only
+/// an empty field is copied
+pub(super) fn field<'a>(
+    theme: &Theme,
+    area: &'a TextArea<'static>,
+    placeholder: Option<String>,
+) -> Cow<'a, TextArea<'static>> {
+    if !area.is_empty() {
+        return Cow::Borrowed(area);
+    }
+
+    let mut area = area.clone();
+
+    area.set_placeholder_style(theme.muted);
+
+    if let Some(placeholder) = placeholder {
+        area.set_placeholder_text(placeholder);
+    }
+
+    Cow::Owned(area)
 }
 
 /// two lines: a message and the keys for the focused pane, then the keys
 /// that work everywhere, always in the same place
 fn draw_footer(state: &State, frame: &mut Frame, area: Rect) {
-    let keys = |spans: &mut Vec<Span<'static>>, hints: Vec<(&'static str, &'static str)>| {
+    let theme = &state.theme;
+    let keys = |spans: &mut Vec<Span<'static>>, hints: Vec<Hint>| {
         for (key, label) in hints {
-            spans.push(Span::styled(format!(" {key} "), Style::default().bold()));
-            spans.push(Span::styled(
-                format!("{label} "),
-                Style::default().fg(Color::DarkGray),
-            ));
+            spans.push(Span::styled(format!(" {key} "), theme.key));
+            spans.push(Span::styled(format!("{label} "), theme.muted));
         }
     };
     let mut here: Vec<Span<'static>> = Vec::new();
 
+    if let Some(pending) = state.pending_label() {
+        here.push(Span::styled(format!(" {pending} … "), theme.key));
+    }
+
     if let Some(notice) = &state.notice {
-        here.push(Span::styled(
-            format!(" {notice} "),
-            Style::default().fg(Color::Yellow),
-        ));
+        here.push(Span::styled(format!(" {notice} "), theme.warning));
         here.push(Span::raw(" "));
     }
 
     keys(&mut here, hints(state));
 
     let mut everywhere = Vec::new();
+    let mut global = global_hints(state);
 
-    keys(&mut everywhere, global_hints(state));
+    // too narrow for all of them: these go first, in this order, so help,
+    // the palette and quitting stay
+    for label in ["settings", "environments", "save", "send", "commands"] {
+        if hints_width(&global) <= usize::from(area.width) {
+            break;
+        }
+
+        global.retain(|(_, l)| *l != label);
+    }
+
+    keys(&mut everywhere, global);
 
     let [top, bottom] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
@@ -238,104 +302,125 @@ fn draw_footer(state: &State, frame: &mut Frame, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(everywhere)), bottom);
 }
 
+/// the columns a list of hints takes in the footer
+fn hints_width(hints: &[Hint]) -> usize {
+    hints
+        .iter()
+        .map(|(key, label)| key.width() + label.width() + 3)
+        .sum()
+}
+
 /// the keys that work whatever has the focus; with a pop-up open, the
 /// keys that finish it, and quitting
-pub(crate) fn global_hints(state: &State) -> Vec<(&'static str, &'static str)> {
+pub(crate) fn global_hints(state: &State) -> Vec<Hint> {
     match &state.popup {
         Some(Popup::Variables(editor)) if !editor.editing() => {
-            return vec![("Ctrl+S", "save"), ("Esc", "close"), ("Ctrl+C", "quit")];
+            let mut hints = Hints::here(state);
+
+            hints.one("save", "save").one("close", "close");
+
+            let mut list = hints.finish();
+
+            list.extend(Hints::everywhere(state).one("quit", "quit").finish());
+
+            return list;
         }
-        Some(_) => return vec![("Ctrl+C", "quit")],
+        Some(_) => return Hints::everywhere(state).one("quit", "quit").finish(),
         None => {}
     }
 
-    vec![
-        ("Ctrl+R", "send"),
-        ("Ctrl+S", "save"),
-        ("Ctrl+E", "environments"),
-        ("Ctrl+O", "settings"),
-        ("Ctrl+C", "quit"),
-    ]
+    Hints::everywhere(state)
+        .one("send", "send")
+        .one("save", "save")
+        .one("environments", "environments")
+        .one("settings", "settings")
+        .one("palette", "commands")
+        .one("help", "help")
+        .one("quit", "quit")
+        .finish()
 }
 
 /// the keys that work where the focus is; the ones that work everywhere
 /// are in [`global_hints`]
-pub(crate) fn hints(state: &State) -> Vec<(&'static str, &'static str)> {
+pub(crate) fn hints(state: &State) -> Vec<Hint> {
     if let Some(popup) = &state.popup {
-        return popup::hints(popup);
+        return popup::hints(state, popup);
     }
 
-    let mut hints = Vec::new();
+    let mut hints = Hints::here(state);
 
     match state.focus {
-        Focus::Sidebar => hints.extend([
-            ("Enter", "open"),
-            ("n", "request"),
-            ("f", "folder"),
-            ("c", "collection"),
-            ("r", "rename"),
-            ("d", "delete"),
-            ("x p", "move"),
-        ]),
-        Focus::Url => hints.extend([("Enter", "send"), ("Tab", "next")]),
-        Focus::Method => hints.extend([("←→", "change method"), ("Tab", "next")]),
+        Focus::Sidebar => {
+            hints
+                .one("edit", "open")
+                .one("new-request", "request")
+                .one("new-folder", "folder")
+                .one("new-collection", "collection")
+                .one("rename", "rename")
+                .one("delete", "delete")
+                .pair("cut", "paste", "move");
+        }
+        Focus::Url => {
+            hints.one("send", "send").one("focus.next", "next");
+        }
+        Focus::Method => {
+            hints
+                .pair("method.previous", "method.next", "change method")
+                .one("focus.next", "next");
+        }
         Focus::Request if state.request_typing() => {
-            let multi_line =
-                state.request_tab == RequestTab::Body && state.body.typing == Some(BodyField::Text);
-
-            if multi_line {
-                hints.push(("Esc", "done"));
-            } else {
-                hints.extend([("Enter", "done"), ("Tab", "next field")]);
-            }
+            hints
+                .one("stop-edit", "done")
+                .one("next-cell", "next field");
         }
         Focus::Request => {
-            hints.push(("←→", "tab"));
+            hints.pair("tab.previous", "tab.next", "tab");
 
             let table = matches!(state.request_tab, RequestTab::Params | RequestTab::Headers)
                 || (state.request_tab == RequestTab::Body && state.body.kind == BodyKind::Form);
 
             if table {
-                hints.extend([
-                    ("a", "add"),
-                    ("Enter", "edit"),
-                    ("Space", "on/off"),
-                    ("d", "delete"),
-                ]);
+                hints
+                    .one("row.add", "add")
+                    .one("edit", "edit")
+                    .one("row.toggle", "on/off")
+                    .one("row.delete", "delete");
             } else if state.request_tab == RequestTab::Auth && state.auth.kind != AuthKind::None
                 || state.request_tab == RequestTab::Body && state.body.kind != BodyKind::None
             {
-                hints.push(("Enter", "edit"));
+                hints.one("edit", "edit");
             }
 
             if state.request_tab == RequestTab::Body && state.body.kind == BodyKind::Text {
-                hints.push(("c", "content type"));
+                hints.one("content-type", "content type");
             }
 
             if matches!(state.request_tab, RequestTab::Body | RequestTab::Auth) {
-                hints.push(("t", "type"));
+                hints.one("kind", "type");
             }
 
             if request::credential_warning(state).is_some() {
-                hints.push(("m", "make it a secret"));
+                hints.one("make-secret", "make it a secret");
             }
         }
         Focus::Response => {
-            hints.extend([("←→", "tab"), ("↑↓", "scroll")]);
+            hints
+                .pair("tab.previous", "tab.next", "tab")
+                .pair("up", "down", "scroll");
 
             if state.last_column() > 0 || state.column > 0 {
-                hints.push(("h l", "sideways"));
+                hints.pair("left", "right", "sideways");
             }
 
-            hints.push(("s", "save"));
+            hints.one("save-body", "save");
         }
     }
 
     if state.in_flight.is_some() {
-        hints.push(("Esc", "cancel"));
+        hints.one("cancel", "cancel");
     }
 
-    hints
+    hints.finish()
 }
 
 #[cfg(test)]

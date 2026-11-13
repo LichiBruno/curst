@@ -1,6 +1,5 @@
 ---
 source: crates/curst/src/ui/tests.rs
-assertion_line: 254
 expression: "render(&state, 100, 12)"
 ---
 "┏ Collections ━━━━━━━━━━ Dev ┓  POST CREATE ●                 Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
@@ -14,4 +13,4 @@ expression: "render(&state, 100, 12)"
 "┃                            ┃│no response yet, type a URL and press Enter                         │"
 "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└────────────────────────────────────────────────────────────────────┘"
 " Enter open  n request  f folder  c collection  r rename  d delete  x p move                        "
-" Ctrl+R send  Ctrl+S save  Ctrl+E environments  Ctrl+O settings  Ctrl+C quit                        "
+" Ctrl+R send  Ctrl+S save  Ctrl+E environments  Ctrl+P commands  F1 help  Ctrl+C quit               "

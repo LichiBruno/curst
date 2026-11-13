@@ -135,8 +135,8 @@ fn perform(
     }
 
     if let Err(err) = outcome {
-        return Err(if cancel.is_cancelled() {
-            HttpError::Cancelled
+        return Err(if cancel.is_canceled() {
+            HttpError::Canceled
         } else {
             map_error(&err)
         });
@@ -355,6 +355,6 @@ impl Handler for Collector {
     }
 
     fn progress(&mut self, _dltotal: f64, _dlnow: f64, _ultotal: f64, _ulnow: f64) -> bool {
-        !self.cancel.is_cancelled()
+        !self.cancel.is_canceled()
     }
 }

@@ -1065,6 +1065,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "toml 1.2.1+spec-1.1.0",
+ "toml_edit",
  "windows-native-keyring-store",
  "zbus-secret-service-keyring-store",
  "zeroize",
@@ -4136,6 +4137,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

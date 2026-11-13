@@ -6,6 +6,7 @@ mod app;
 mod external;
 mod session;
 mod storage;
+mod theme;
 mod ui;
 
 use std::path::PathBuf;
@@ -19,7 +20,7 @@ use clap::Parser;
 use curst_core::http::{Cancel, Config, CurlExecutor, HttpError, HttpExecutor, RedirectRule};
 use curst_core::model::Request;
 use curst_core::secrets::{SecretIndex, SecretKey};
-use curst_core::store::{Library, Paths};
+use curst_core::store::{Library, Paths, Settings};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
 
@@ -29,9 +30,9 @@ use session::{Job, Session};
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
-    /// seconds a request may take
-    #[arg(long, value_name = "SECONDS", default_value_t = 30)]
-    timeout: u64,
+    /// seconds a request may take, 0 for no limit; overrides config.toml
+    #[arg(long, value_name = "SECONDS")]
+    timeout: Option<u64>,
 
     /// skip the TLS certificate and host name checks
     #[arg(short = 'k', long)]
@@ -40,32 +41,148 @@ struct Cli {
     /// trust the certificates in this PEM file instead of the system ones
     #[arg(long, value_name = "FILE")]
     cacert: Option<PathBuf>,
+
+    /// use the standard keys, ignoring the [keys] section of config.toml
+    #[arg(long)]
+    default_keys: bool,
 }
 
 impl Cli {
-    fn config(self) -> Config {
+    fn config(&self, settings: &Settings) -> Config {
+        let defaults = Config::default();
+        let timeout = match self.timeout.or(settings.http_timeout) {
+            Some(0) => None,
+            Some(seconds) => Some(Duration::from_secs(seconds)),
+            None => defaults.timeout,
+        };
+        let body_cap = settings
+            .http_max_body_mb
+            .and_then(|mb| usize::try_from(mb).ok())
+            .map_or(defaults.body_cap, |mb| mb.saturating_mul(1024 * 1024));
+
         Config {
-            timeout: (self.timeout > 0).then(|| Duration::from_secs(self.timeout)),
+            timeout,
+            body_cap,
             insecure: self.insecure,
-            ca_file: self.cacert,
-            ..Config::default()
+            ca_file: self.cacert.clone(),
+            ..defaults
         }
     }
 }
 
+/// `config.toml` and what was wrong in it; a file that cannot be read at all
+/// gives the defaults and one warning
+fn load_settings(paths: Option<&Paths>) -> (Settings, Vec<String>) {
+    let Some(paths) = paths else {
+        return (Settings::default(), Vec::new());
+    };
+
+    Settings::load(&paths.config_file())
+        .unwrap_or_else(|err| (Settings::default(), vec![err.to_string()]))
+}
+
 fn main() -> Result<()> {
-    let config = Cli::parse().config();
-    let executor: Arc<dyn HttpExecutor> = Arc::new(CurlExecutor::new(config));
+    let cli = Cli::parse();
     // without a data folder the app still opens, for one-off requests
     let library = Paths::from_env().map(Library::new);
+    let paths = library.as_ref().ok().map(Library::paths);
+    let (settings, warnings) = load_settings(paths);
+    let executor: Arc<dyn HttpExecutor> = Arc::new(CurlExecutor::new(cli.config(&settings)));
+    let startup = Startup::new(&cli, settings, warnings, paths);
     let mut terminal = ratatui::try_init().context("could not start the terminal UI")?;
     let enhanced = keyboard::enable();
-    let result = Runtime::new(executor, library, enhanced).run(&mut terminal);
+    let result = Runtime::new(executor, library, enhanced).run(&mut terminal, &startup);
 
     keyboard::disable(enhanced);
     ratatui::try_restore().context("could not restore the terminal")?;
 
     result
+}
+
+/// what `config.toml` set up before the terminal UI started
+struct Startup {
+    settings: Settings,
+    warnings: Vec<String>,
+
+    /// the preset and the user's bindings; with `--default-keys`, the
+    /// standard preset and none
+    keys_preset: String,
+    key_bindings: Vec<(String, Vec<String>)>,
+    theme: theme::Theme,
+
+    /// the built-in themes and those in the themes folder
+    themes: Vec<theme::Theme>,
+
+    /// whether there is no `config.toml` yet, so the welcome is shown
+    first_run: bool,
+}
+
+impl Startup {
+    fn new(
+        cli: &Cli,
+        settings: Settings,
+        mut warnings: Vec<String>,
+        paths: Option<&Paths>,
+    ) -> Self {
+        let themes_dir = paths.map(Paths::themes_dir);
+        let (theme, problems) =
+            theme::Theme::load(settings.theme.as_deref(), themes_dir.as_deref());
+
+        warnings.extend(problems);
+
+        // the others are only reported when chosen
+        let user = themes_dir.as_deref().map_or_else(Vec::new, |dir| {
+            curst_core::store::theme_names(dir)
+                .iter()
+                .filter(|name| theme::Theme::built_in(name).is_none())
+                .map(|name| theme::Theme::load(Some(name), Some(dir)).0)
+                .collect()
+        });
+        let (keys_preset, key_bindings) = if cli.default_keys {
+            ("standard".to_owned(), Vec::new())
+        } else {
+            (
+                settings
+                    .keys_preset
+                    .clone()
+                    .unwrap_or_else(|| "standard".to_owned()),
+                settings.key_bindings.clone(),
+            )
+        };
+
+        Self {
+            first_run: paths.is_some_and(|p| !p.config_file().exists()),
+            warnings,
+            keys_preset,
+            key_bindings,
+            theme,
+            themes: app::known_themes(user),
+            settings,
+        }
+    }
+
+    /// puts the preferences into `state`
+    fn apply(&self, state: &mut State) -> Vec<String> {
+        let preset = self.keys_preset.as_str();
+        let (keymap, mut problems) = app::Keymap::from_settings(Some(preset), &self.key_bindings);
+        let known = app::PRESETS.iter().any(|(name, _)| *name == preset);
+
+        state.keymap = keymap;
+        if known { preset } else { "standard" }.clone_into(&mut state.keys_preset);
+        state.key_bindings.clone_from(&self.key_bindings);
+        state.theme = self.theme.clone();
+        state.themes.clone_from(&self.themes);
+
+        if !state.themes.iter().any(|t| t.name == self.theme.name) {
+            state.themes.push(self.theme.clone());
+        }
+
+        let mut warnings = self.warnings.clone();
+
+        warnings.append(&mut problems);
+
+        warnings
+    }
 }
 
 struct Runtime {
@@ -125,8 +242,9 @@ impl Runtime {
         }
     }
 
-    fn run(mut self, terminal: &mut DefaultTerminal) -> Result<()> {
+    fn run(mut self, terminal: &mut DefaultTerminal, setup: &Startup) -> Result<()> {
         let mut state = State::default();
+        let warnings = setup.apply(&mut state);
         let mut dirty = true;
         let startup = match &self.library {
             Ok(library) => {
@@ -139,12 +257,26 @@ impl Runtime {
 
         app::update(&mut state, startup);
 
-        if let Ok(library) = &self.library {
-            let backend = curst_core::store::Settings::load(&library.paths().config_file())
-                .ok()
-                .and_then(|s| s.secrets_backend);
+        if self.library.is_ok() {
+            app::update(
+                &mut state,
+                Action::BackendKnown(setup.settings.secrets_backend),
+            );
+        }
 
-            app::update(&mut state, Action::BackendKnown(backend));
+        if let Some(first) = warnings.first() {
+            let more = warnings.len() - 1;
+            let message = if more == 0 {
+                format!("config.toml: {first}")
+            } else {
+                format!("config.toml: {first} (and {more} more)")
+            };
+
+            app::update(&mut state, Action::Notice(message));
+        }
+
+        if setup.first_run {
+            app::update(&mut state, Action::Welcome);
         }
 
         while !state.should_quit {
@@ -158,10 +290,8 @@ impl Runtime {
             if event::poll(Duration::from_millis(50))? {
                 dirty = true;
 
-                if let Event::Key(key) = event::read()?
-                    && let Some(action) = app::action_for(&state, key)
-                {
-                    actions.push(action);
+                if let Event::Key(key) = event::read()? {
+                    actions.extend(app::action_for(&state, key));
                 }
             }
 
@@ -193,7 +323,7 @@ impl Runtime {
             let _ = thread.join();
         }
 
-        // a cancelled transfer still owns its temporary body file until its
+        // a canceled transfer still owns its temporary body file until its
         // thread returns, so wait for every worker before leaving
         for worker in self.workers.drain(..) {
             let _ = worker.join();
@@ -528,22 +658,86 @@ mod tests {
     }
 
     #[test]
+    fn startup_reads_the_preferences_and_user_themes() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        let settings = Settings {
+            keys_preset: Some("vim".into()),
+            theme: Some("night".into()),
+            key_bindings: vec![("global.send".into(), vec!["f5".into()])],
+            ..Settings::default()
+        };
+
+        std::fs::create_dir_all(paths.themes_dir()).unwrap();
+        std::fs::write(paths.themes_dir().join("night.toml"), "accent = \"red\"\n").unwrap();
+        std::fs::write(paths.themes_dir().join("day.toml"), "base = \"light\"\n").unwrap();
+
+        let cli = Cli::try_parse_from(["curst"]).unwrap();
+        let startup = Startup::new(&cli, settings.clone(), Vec::new(), Some(&paths));
+        let mut state = State::default();
+        let warnings = startup.apply(&mut state);
+        let names: Vec<&str> = state.themes.iter().map(|t| t.name.as_str()).collect();
+
+        assert!(startup.first_run);
+        assert_eq!(warnings, Vec::<String>::new());
+        assert_eq!(names, ["dark", "light", "mono", "day", "night"]);
+        assert_eq!(state.theme.name, "night");
+        assert_eq!(state.keys_preset, "vim");
+        assert_eq!(state.key(app::Layer::Global, "send"), "F5");
+
+        // --default-keys is the way back from keys that broke everything
+        let cli = Cli::try_parse_from(["curst", "--default-keys"]).unwrap();
+        let mut state = State::default();
+
+        std::fs::write(paths.config_file(), "").unwrap();
+
+        let startup = Startup::new(&cli, settings, Vec::new(), Some(&paths));
+
+        startup.apply(&mut state);
+
+        assert!(!startup.first_run);
+        assert_eq!(state.keys_preset, "standard");
+        assert_eq!(state.key(app::Layer::Global, "send"), "Ctrl+R");
+    }
+
+    #[test]
     fn the_command_line_is_well_formed() {
         Cli::command().debug_assert();
     }
 
     #[test]
     fn defaults_keep_the_core_settings() {
-        let config = Cli::try_parse_from(["curst"]).unwrap().config();
+        let config = Cli::try_parse_from(["curst"])
+            .unwrap()
+            .config(&Settings::default());
 
         assert_eq!(config, Config::default());
+    }
+
+    #[test]
+    fn config_toml_fills_the_config_and_flags_win() {
+        let settings = Settings {
+            http_timeout: Some(0),
+            http_max_body_mb: Some(2),
+            ..Settings::default()
+        };
+        let config = Cli::try_parse_from(["curst"]).unwrap().config(&settings);
+
+        assert_eq!(config.timeout, None);
+        assert_eq!(config.body_cap, 2 * 1024 * 1024);
+
+        let config = Cli::try_parse_from(["curst", "--timeout", "7"])
+            .unwrap()
+            .config(&settings);
+
+        assert_eq!(config.timeout, Some(Duration::from_secs(7)));
     }
 
     #[test]
     fn flags_fill_the_config() {
         let config = Cli::try_parse_from(["curst", "-k", "--timeout", "0", "--cacert", "ca.pem"])
             .unwrap()
-            .config();
+            .config(&Settings::default());
 
         assert_eq!(config.timeout, None);
         assert!(config.insecure);
@@ -551,7 +745,7 @@ mod tests {
 
         let config = Cli::try_parse_from(["curst", "--timeout", "5"])
             .unwrap()
-            .config();
+            .config(&Settings::default());
 
         assert_eq!(config.timeout, Some(Duration::from_secs(5)));
     }
