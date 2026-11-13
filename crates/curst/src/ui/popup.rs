@@ -15,7 +15,7 @@ use ratatui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    Entry, Field, Hint, Hints, Layer, PRESETS, Palette, Popup, State, Step, Target, VarTab,
+    Entry, Field, Fill, Hint, Hints, Layer, PRESETS, Palette, Popup, State, Step, Target, VarTab,
     VariablesEditor, display,
 };
 
@@ -130,6 +130,7 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
         Popup::Tabs { selected } => tab_list(state, *selected, frame),
         Popup::Help { scroll, here } => help(state, *scroll, here, frame),
         Popup::Palette(palette) => palette_list(state, palette, frame),
+        Popup::Fill(fill) => fill_list(state, fill, frame),
         Popup::Approve(approval) => approve(state, approval, frame),
         Popup::Variables(editor) => variables(state, editor, frame),
     }
@@ -243,6 +244,62 @@ fn tab_list(state: &State, selected: usize, frame: &mut Frame) {
         Paragraph::new(lines).block(pane(theme, Line::from(" Tabs "), true)),
         area,
     );
+}
+
+/// the secrets to fill in, each marked once it has a value, and the field
+/// for the selected one, which never shows what is typed
+fn fill_list(state: &State, fill: &Fill, frame: &mut Frame) {
+    let theme = &state.theme;
+    let mut lines = vec![
+        Line::from("These secrets have no value yet. Type each one; it goes to your"),
+        Line::from("secret store, never into a file. Leave one empty to skip it."),
+        Line::from(""),
+    ];
+
+    for (index, (_, label)) in fill.secrets.iter().enumerate() {
+        let mark = if fill.values[index].is_some() {
+            "✓"
+        } else {
+            " "
+        };
+        let style = if index == fill.selected {
+            theme.selected
+        } else {
+            Style::default()
+        };
+
+        lines.push(Line::from(Span::styled(
+            format!(" {mark} {}", display(label)),
+            style,
+        )));
+    }
+
+    let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let area = centered(frame, 72, rows.saturating_add(4));
+    let title = format!(
+        " Secrets to fill in · {} of {} ",
+        fill.filled(),
+        fill.secrets.len()
+    );
+    let block = pane(theme, Line::from(title), true);
+    let inner = block.inner(area);
+    let [list_area, _, input_area] = Layout::vertical([
+        Constraint::Length(rows),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+
+    for index in 0..fill.secrets.len() {
+        line_region(state, list_area, 3 + index, Target::Item(index));
+    }
+
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(lines), list_area);
+    frame.render_widget(&*field(theme, &fill.input, None), input_area);
 }
 
 /// the palette: the query, then what matches it, best first
@@ -812,6 +869,12 @@ pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
         }
         Popup::Help { .. } => {
             hints.pair("up", "down", "scroll").one("close", "close");
+        }
+        Popup::Fill(_) => {
+            hints
+                .one("confirm", "keep and go on")
+                .pair("up", "down", "move")
+                .one("close", "done");
         }
         Popup::Palette(_) => {
             hints

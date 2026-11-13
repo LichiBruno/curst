@@ -5,6 +5,7 @@
 //! the registry is also guarded by a lock file, because more than one curst
 //! process may change it at once
 
+pub mod bundle;
 mod collection;
 mod format;
 pub(crate) mod fs;
