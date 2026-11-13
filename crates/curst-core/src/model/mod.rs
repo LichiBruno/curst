@@ -1,6 +1,13 @@
-//! the request model, free of any I/O
+//! the request and collection model, free of any I/O
+
+mod collection;
 
 use std::fmt;
+use std::str::FromStr;
+
+pub use collection::{
+    Collection, EnvId, Environment, Folder, Item, LocalId, SavedRequest, Variable,
+};
 
 /// an HTTP method
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -74,6 +81,23 @@ impl Method {
 impl fmt::Display for Method {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
+    }
+}
+
+/// a method name curst does not support
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("unknown HTTP method {0:?}")]
+pub struct UnknownMethod(pub String);
+
+impl FromStr for Method {
+    type Err = UnknownMethod;
+
+    /// parses a method name, ignoring case
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|m| m.as_str().eq_ignore_ascii_case(name))
+            .ok_or_else(|| UnknownMethod(name.to_owned()))
     }
 }
 
@@ -302,6 +326,18 @@ mod tests {
         }
 
         assert_eq!(Method::Patch.to_string(), "PATCH");
+    }
+
+    #[test]
+    fn methods_parse_ignoring_case() {
+        for method in Method::ALL {
+            assert_eq!(method.as_str().to_lowercase().parse(), Ok(method));
+        }
+
+        assert_eq!(
+            "TRACE".parse::<Method>(),
+            Err(UnknownMethod("TRACE".into()))
+        );
     }
 
     #[test]
