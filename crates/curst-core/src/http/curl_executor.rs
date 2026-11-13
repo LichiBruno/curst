@@ -2,7 +2,10 @@ use std::io;
 
 use curl::easy::{Easy2, Handler, HttpVersion, List, SslOpt, WriteError};
 
-use super::{Cancel, Config, HttpError, HttpExecutor, Response, ResponseBody, Timings};
+use super::{
+    Cancel, Config, HttpError, HttpExecutor, RedirectRule, Response, ResponseBody, StoppedRedirect,
+    Timings,
+};
 use crate::model::{Auth, Method, Request};
 use crate::url;
 
@@ -34,7 +37,12 @@ struct Hop {
 }
 
 impl HttpExecutor for CurlExecutor {
-    fn execute(&self, request: &Request, cancel: &Cancel) -> Result<Response, HttpError> {
+    fn execute(
+        &self,
+        request: &Request,
+        cancel: &Cancel,
+        rule: &RedirectRule,
+    ) -> Result<Response, HttpError> {
         let mut easy = Easy2::new(Collector::new(cancel.clone(), self.config.body_cap));
         let start = url::origin(&request.full_url());
         let mut hop = Hop {
@@ -62,14 +70,26 @@ impl HttpExecutor for CurlExecutor {
                 return Ok(response);
             };
 
+            let to_get = response.status == 303 && hop.method != Method::Head
+                || matches!(response.status, 301 | 302) && hop.method == Method::Post;
+
+            if !rule.allows(&next) {
+                response.timings = timings;
+                response.redirects = redirects;
+                response.stopped = Some(StoppedRedirect {
+                    url: next,
+                    method: if to_get { Method::Get } else { hop.method },
+                    keeps_body: !to_get && hop.body.is_some(),
+                });
+
+                return Ok(response);
+            }
+
             if redirects == self.config.max_redirects {
                 return Err(HttpError::TooManyRedirects);
             }
 
             redirects += 1;
-
-            let to_get = response.status == 303 && hop.method != Method::Head
-                || matches!(response.status, 301 | 302) && hop.method == Method::Post;
 
             if to_get {
                 hop.method = Method::Get;
@@ -246,6 +266,7 @@ fn finish(easy: &mut Easy2<Collector>, url: &str) -> Result<Response, curl::Erro
         timings,
         effective_url: url.to_owned(),
         redirects: 0,
+        stopped: None,
     })
 }
 

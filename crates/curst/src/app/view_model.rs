@@ -292,6 +292,7 @@ mod tests {
             },
             effective_url: "https://h/".into(),
             redirects: 0,
+            stopped: None,
         }
     }
 

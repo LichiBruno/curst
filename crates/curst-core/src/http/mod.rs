@@ -10,18 +10,51 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub use curl_executor::CurlExecutor;
-pub use response::{BodyKind, Response, ResponseBody, Timings};
+pub use response::{BodyKind, Response, ResponseBody, StoppedRedirect, Timings};
 
 use crate::model::Request;
+use crate::url::Origin;
+
+/// which redirects may be followed
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum RedirectRule {
+    /// any, as [`Config::follow_redirects`] allows
+    #[default]
+    Any,
+
+    /// only those that stay within these origins; a request that carries
+    /// secrets may go only where every one of them is approved
+    Within(Vec<Origin>),
+}
+
+impl RedirectRule {
+    /// whether a redirect to `url` may be followed
+    #[must_use]
+    pub fn allows(&self, url: &str) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Within(origins) => {
+                crate::url::origin(url).is_some_and(|origin| origins.contains(&origin))
+            }
+        }
+    }
+}
 
 /// sends a request and waits for the whole response
 /// implementations block, so callers run them on a worker thread
 pub trait HttpExecutor: Send + Sync {
-    /// sends `request`, stopping early when `cancel` is triggered
+    /// sends `request`, stopping early when `cancel` is triggered; a
+    /// redirect `redirects` does not allow is not followed, and the
+    /// response says where it pointed
     ///
     /// # Errors
     /// any [`HttpError`], including [`HttpError::Cancelled`]
-    fn execute(&self, request: &Request, cancel: &Cancel) -> Result<Response, HttpError>;
+    fn execute(
+        &self,
+        request: &Request,
+        cancel: &Cancel,
+        redirects: &RedirectRule,
+    ) -> Result<Response, HttpError>;
 }
 
 /// a handle that stops a request in flight, cheap to clone and share
@@ -143,6 +176,19 @@ mod tests {
         cancel.cancel();
 
         assert!(other.is_cancelled());
+    }
+
+    #[test]
+    fn redirect_rules() {
+        let within = RedirectRule::Within(vec![crate::url::origin("https://a.example").unwrap()]);
+
+        assert!(RedirectRule::Any.allows("http://anything/"));
+        assert!(RedirectRule::default().allows("relative"));
+        assert!(within.allows("https://A.example:443/x"));
+        assert!(!within.allows("http://a.example/x"));
+        assert!(!within.allows("https://a.example:8443/x"));
+        assert!(!within.allows("https://b.example/x"));
+        assert!(!within.allows("not a url"));
     }
 
     #[test]

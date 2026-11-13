@@ -1,10 +1,12 @@
 //! every collection in the data folder, and the global variables
 
 use std::fs;
+use std::path::Path;
 
-use super::collection::CollectionDir;
+use super::collection::{CollectionDir, LoadIssue};
 use super::format::{GlobalsFile, to_toml, variables_from_file, variables_to_file};
 use super::fs::{read_optional, write_atomic};
+use super::registry::canonical;
 use super::{Paths, Registry, StoreError, slug};
 use crate::model::Variable;
 
@@ -33,6 +35,25 @@ impl Library {
         Registry::new(self.paths.registry_file())
     }
 
+    /// the `.curst/` folder in `dir`, when it holds a collection; a link
+    /// named `.curst` is not followed
+    #[must_use]
+    pub fn local_collection(dir: &Path) -> Option<CollectionDir> {
+        let collection = CollectionDir::open(dir.join(".curst"));
+
+        collection.exists().then_some(collection)
+    }
+
+    /// whether curst made and owns this collection's folder, inside the data
+    /// folder; any other folder, such as a `.curst/` folder in a repository,
+    /// is never renamed or deleted by curst
+    #[must_use]
+    pub fn is_managed(&self, collection: &CollectionDir) -> bool {
+        let root = canonical(collection.root());
+
+        root.parent() == Some(canonical(&self.paths.collections_dir()).as_path())
+    }
+
     /// every collection in the data folder, sorted by folder name; each one
     /// is registered, so it has a local id
     ///
@@ -41,7 +62,7 @@ impl Library {
     pub fn collections(&self) -> Result<Vec<CollectionDir>, StoreError> {
         let dir = self.paths.collections_dir();
 
-        if !dir.is_dir() {
+        if super::fs::node(&dir) != super::fs::Node::Dir {
             return Ok(Vec::new());
         }
 
@@ -123,20 +144,30 @@ impl Library {
         fs::remove_dir_all(collection.root()).map_err(|e| StoreError::io(collection.root(), e))
     }
 
-    /// the variables every collection can use
+    /// the variables every collection can use, with a warning for each
+    /// secret whose value was written into the file
     ///
     /// # Errors
     /// when `globals.toml` cannot be read or is broken
-    pub fn globals(&self) -> Result<Vec<Variable>, StoreError> {
+    pub fn globals(&self) -> Result<(Vec<Variable>, Vec<LoadIssue>), StoreError> {
         let path = self.paths.globals_file();
         let Some(text) = read_optional(&path)? else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), Vec::new()));
         };
 
         let file: GlobalsFile =
             toml::from_str(&text).map_err(|e| StoreError::parse(&path, e.message()))?;
+        let read = variables_from_file(file.variables).map_err(|e| StoreError::parse(&path, e))?;
+        let issues = read
+            .warnings
+            .into_iter()
+            .map(|message| LoadIssue {
+                path: path.clone(),
+                message,
+            })
+            .collect();
 
-        variables_from_file(file.variables).map_err(|e| StoreError::parse(&path, e))
+        Ok((read.variables, issues))
     }
 
     /// saves the global variables
@@ -230,15 +261,60 @@ mod tests {
     }
 
     #[test]
+    fn local_folders_are_found_and_never_managed() {
+        let (dir, library) = library();
+        let project = dir.path().join("project");
+
+        assert_eq!(Library::local_collection(&project), None);
+
+        CollectionDir::create(project.join(".curst"), "Project").unwrap();
+
+        let local = Library::local_collection(&project).unwrap();
+        let managed = library.create_collection("Mine").unwrap();
+
+        assert!(!library.is_managed(&local));
+        assert!(library.is_managed(&managed));
+
+        // spelled through a detour, it is still the same folder
+        let detour = library
+            .paths()
+            .collections_dir()
+            .join("../collections/mine");
+
+        assert!(library.is_managed(&CollectionDir::open(detour)));
+
+        #[cfg(unix)]
+        {
+            let elsewhere = dir.path().join("elsewhere");
+
+            fs::create_dir(&elsewhere).unwrap();
+            std::os::unix::fs::symlink(project.join(".curst"), elsewhere.join(".curst")).unwrap();
+
+            assert_eq!(Library::local_collection(&elsewhere), None);
+        }
+    }
+
+    #[test]
     fn globals_round_trip() {
         let (_dir, library) = library();
         let globals = vec![Variable::new(VarName::new("user").unwrap(), "me")];
 
-        assert_eq!(library.globals().unwrap(), Vec::new());
+        assert_eq!(library.globals().unwrap(), (Vec::new(), Vec::new()));
 
         library.save_globals(&globals).unwrap();
 
-        assert_eq!(library.globals().unwrap(), globals);
+        assert_eq!(library.globals().unwrap(), (globals, Vec::new()));
+
+        fs::write(
+            library.paths().globals_file(),
+            "[[variables]]\nname = \"t\"\nvalue = \"oops\"\nsecret = true\n",
+        )
+        .unwrap();
+
+        let (variables, issues) = library.globals().unwrap();
+
+        assert!(variables[0].secret && variables[0].value.is_empty());
+        assert_eq!(issues[0].path, library.paths().globals_file());
 
         fs::write(library.paths().globals_file(), "variables = 1").unwrap();
 

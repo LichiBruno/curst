@@ -28,6 +28,24 @@ pub struct Response {
 
     /// how many redirects were followed
     pub redirects: u32,
+
+    /// a redirect that was not followed because its target is not approved
+    /// for the secrets in the request
+    pub stopped: Option<StoppedRedirect>,
+}
+
+/// a redirect left for the user to follow, with the request it would send
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoppedRedirect {
+    /// where it points, resolved against the URL that answered
+    pub url: String,
+
+    /// the method the next request uses: a 303, or a 301 or 302 after a
+    /// POST, turns into a GET
+    pub method: crate::model::Method,
+
+    /// whether the next request keeps the body
+    pub keeps_body: bool,
 }
 
 impl Response {
@@ -285,6 +303,7 @@ mod tests {
             timings: Timings::default(),
             effective_url: "http://h/".into(),
             redirects: 0,
+            stopped: None,
         }
     }
 

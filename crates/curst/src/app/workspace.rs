@@ -13,6 +13,14 @@ pub(crate) struct Workspace {
     pub(crate) root: PathBuf,
     pub(crate) collection: Collection,
     pub(crate) active_environment: Option<EnvId>,
+
+    /// whether its requests may be sent and its secrets used; a `.curst/`
+    /// folder is untrusted until the user says otherwise
+    pub(crate) trusted: bool,
+
+    /// whether curst made its folder, in the data folder; curst never
+    /// renames or deletes any other
+    pub(crate) managed: bool,
 }
 
 impl Workspace {
@@ -77,7 +85,8 @@ impl NodeKey {
         self.collection == other.collection && self.path.starts_with(&other.path)
     }
 
-    /// the same node after `from` was renamed or moved to `to`
+    /// the same node after `from` was renamed or moved to `to`, also into
+    /// another collection
     pub(crate) fn rebased(&self, from: &Self, to: &Self) -> Self {
         if !self.is_within(from) {
             return self.clone();
@@ -109,6 +118,9 @@ pub(crate) struct Row {
     pub(crate) name: String,
     pub(crate) kind: RowKind,
     pub(crate) expanded: bool,
+
+    /// whether the collection the row belongs to is trusted
+    pub(crate) trusted: bool,
 }
 
 /// what the sidebar shows open, which row is selected and what is cut
@@ -142,10 +154,17 @@ pub(crate) fn rows(collections: &[Workspace], expanded: &HashSet<NodeKey>) -> Ve
             name: workspace.collection.name.clone(),
             kind: RowKind::Collection,
             expanded: open,
+            trusted: workspace.trusted,
         });
 
         if open {
+            let start = rows.len();
+
             add_items(&mut rows, &workspace.collection.items, &key, 1, expanded);
+
+            for row in &mut rows[start..] {
+                row.trusted = workspace.trusted;
+            }
         }
     }
 
@@ -172,6 +191,7 @@ fn add_items(
                     name: folder.name.clone(),
                     kind: RowKind::Folder,
                     expanded: open,
+                    trusted: true,
                 });
 
                 if open {
@@ -184,6 +204,7 @@ fn add_items(
                 name: request.name.clone(),
                 kind: RowKind::Request(request.request.method),
                 expanded: false,
+                trusted: true,
             }),
         }
     }
@@ -241,6 +262,8 @@ pub(crate) mod tests {
                 }],
             },
             active_environment: None,
+            trusted: true,
+            managed: true,
         }
     }
 

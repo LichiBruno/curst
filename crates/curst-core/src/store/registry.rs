@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use super::format::to_toml;
-use super::fs::{read_optional, with_lock, write_atomic};
+use super::fs::{Node, node, read_optional, with_lock, write_atomic};
 use super::{StoreError, ids};
 use crate::model::{EnvId, LocalId};
 
@@ -56,7 +56,7 @@ pub struct Registry {
 
 /// the canonical form of `path`, also for a path that no longer exists,
 /// so entries match however the path was spelled
-fn canonical(path: &Path) -> PathBuf {
+pub(crate) fn canonical(path: &Path) -> PathBuf {
     if let Ok(path) = fs::canonicalize(path) {
         return path;
     }
@@ -195,6 +195,73 @@ impl Registry {
         self.update(|entries| entries.retain(|e| e.path != path))
     }
 
+    /// marks the collection at `path` trusted or not
+    ///
+    /// # Errors
+    /// [`StoreError::NotFound`] when `path` is not registered, or when the
+    /// registry cannot be read or written
+    pub fn set_trusted(&self, path: &Path, trusted: bool) -> Result<Entry, StoreError> {
+        let path = canonical(path);
+
+        self.update(|entries| {
+            let entry = entries
+                .iter_mut()
+                .find(|e| e.path == path)
+                .ok_or_else(|| StoreError::NotFound(path.display().to_string()))?;
+
+            entry.trusted = trusted;
+
+            Ok(entry.clone())
+        })?
+    }
+
+    /// entries whose folder no longer exists, such as a `.curst/` folder
+    /// moved outside curst
+    ///
+    /// # Errors
+    /// when the registry cannot be read
+    pub fn orphans(&self) -> Result<Vec<Entry>, StoreError> {
+        Ok(self
+            .entries()?
+            .into_iter()
+            .filter(|e| node(&e.path) == Node::Missing)
+            .collect())
+    }
+
+    /// gives the folder at `path` the local id, trust and secrets of the
+    /// entry `from`, whose folder has gone; the entry `path` had is dropped
+    ///
+    /// # Errors
+    /// [`StoreError::Invalid`] unless `from` is an entry whose folder is
+    /// missing right now, or when the registry cannot be written
+    pub fn reattach(&self, path: &Path, from: &LocalId) -> Result<Entry, StoreError> {
+        let path = canonical(path);
+
+        self.update(|entries| {
+            let Some(index) = entries.iter().position(|e| e.id == *from) else {
+                return Err(StoreError::Invalid(format!(
+                    "no collection has the id {from}"
+                )));
+            };
+
+            if node(&entries[index].path) != Node::Missing {
+                return Err(StoreError::Invalid(format!(
+                    "{} still exists, so its secrets stay with it",
+                    entries[index].path.display()
+                )));
+            }
+
+            entries[index].path.clone_from(&path);
+            entries[index].trusted = true;
+
+            let entry = entries[index].clone();
+
+            entries.retain(|e| e.path != path || e.id == *from);
+
+            Ok(entry)
+        })?
+    }
+
     /// remembers the active environment of the collection at `path`
     ///
     /// # Errors
@@ -308,6 +375,57 @@ mod tests {
             .collect();
 
         assert_eq!(left, [false]);
+    }
+
+    #[test]
+    fn trust_can_be_given_and_taken() {
+        let (dir, registry, collection) = setup();
+
+        assert!(!registry.register(&collection, false).unwrap().trusted);
+        assert!(registry.set_trusted(&collection, true).unwrap().trusted);
+        assert!(registry.find(&collection).unwrap().unwrap().trusted);
+        assert!(!registry.set_trusted(&collection, false).unwrap().trusted);
+        assert!(matches!(
+            registry.set_trusted(&dir.path().join("unknown"), true),
+            Err(StoreError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn secrets_follow_a_moved_folder_only_when_the_old_one_is_gone() {
+        let (dir, registry, collection) = setup();
+        let old = registry.register(&collection, true).unwrap();
+        let moved = dir.path().join("moved");
+
+        fs::create_dir(&moved).unwrap();
+
+        let fresh = registry.register(&moved, false).unwrap();
+
+        // the old folder still exists: its secrets stay with it
+        assert!(matches!(
+            registry.reattach(&moved, &old.id),
+            Err(StoreError::Invalid(_))
+        ));
+        assert_eq!(registry.orphans().unwrap(), Vec::new());
+
+        fs::remove_dir(&collection).unwrap();
+
+        assert_eq!(registry.orphans().unwrap(), std::slice::from_ref(&old));
+
+        let entry = registry.reattach(&moved, &old.id).unwrap();
+
+        assert_eq!((entry.id.clone(), entry.trusted), (old.id.clone(), true));
+        assert_eq!(registry.entries().unwrap(), [entry]);
+        assert!(
+            registry
+                .find(&moved)
+                .unwrap()
+                .is_some_and(|e| e.id != fresh.id)
+        );
+        assert!(matches!(
+            registry.reattach(&moved, &fresh.id),
+            Err(StoreError::Invalid(_))
+        ));
     }
 
     #[test]

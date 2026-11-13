@@ -12,7 +12,7 @@ use super::format::{
     CollectionFile, EnvironmentFile, FolderFile, RequestFile, to_toml, variables_from_file,
     variables_to_file,
 };
-use super::fs::{read_optional, write_atomic};
+use super::fs::{Node, node, not_plain, read_regular, write_atomic};
 use super::{StoreError, ids, slug};
 use crate::model::{Collection, EnvId, Environment, Folder, Item, Request, SavedRequest, Variable};
 
@@ -21,10 +21,15 @@ const FOLDER_FILE: &str = "folder.toml";
 const ENVIRONMENTS: &str = "environments";
 const EXTENSION: &str = ".toml";
 
+/// a folder's children by file name, and the names refused because they are
+/// links or special files
+type Children = (Vec<(String, Kind)>, Vec<String>);
+
 /// environment files with their content, or why it could not be read
 type EnvironmentFiles = Vec<(PathBuf, Result<EnvironmentFile, StoreError>)>;
 
-/// a file that could not be read; the rest of the collection still loads
+/// a problem found in a file while loading: a file that could not be read,
+/// or a secret whose value was written into it; the rest still loads
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoadIssue {
     /// the file
@@ -179,7 +184,8 @@ fn parse<T: serde::de::DeserializeOwned>(path: &Path, text: &str) -> Result<T, S
 }
 
 fn read_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, StoreError> {
-    let text = fs::read_to_string(path).map_err(|e| StoreError::io(path, e))?;
+    let text =
+        read_regular(path)?.ok_or_else(|| StoreError::NotFound(path.display().to_string()))?;
 
     parse(path, &text)
 }
@@ -225,27 +231,40 @@ impl CollectionDir {
     /// whether `root` holds a collection
     #[must_use]
     pub fn exists(&self) -> bool {
-        self.root.join(COLLECTION_FILE).is_file()
+        node(&self.root) == Node::Dir && node(&self.root.join(COLLECTION_FILE)) == Node::File
     }
 
+    /// the folder at `parent`, every step of it a real folder
     fn folder_dir(&self, parent: &[String]) -> Result<PathBuf, StoreError> {
-        let dir = parent
-            .iter()
-            .fold(self.root.clone(), |dir, slug| dir.join(slug));
-
-        if dir.is_dir() && (parent.is_empty() || !reserved(parent)) {
-            Ok(dir)
-        } else {
-            Err(not_found(parent))
+        if reserved(parent) {
+            return Err(not_found(parent));
         }
+
+        let mut dir = self.root.clone();
+
+        if node(&dir) != Node::Dir {
+            return Err(not_found(parent));
+        }
+
+        for slug in parent {
+            dir.push(slug);
+
+            if node(&dir) != Node::Dir {
+                return Err(not_found(parent));
+            }
+        }
+
+        Ok(dir)
     }
 
     fn locate(&self, path: &[String]) -> Result<Located, StoreError> {
         let (slug, parent) = path.split_last().ok_or_else(|| not_found(path))?;
         let parent = self.folder_dir(parent)?;
-        let kind = if parent.join(entry(Kind::Request, slug)).is_file() {
+        let kind = if node(&parent.join(entry(Kind::Request, slug))) == Node::File {
             Kind::Request
-        } else if parent.join(slug).is_dir() && !(path.len() == 1 && slug == ENVIRONMENTS) {
+        } else if node(&parent.join(slug)) == Node::Dir
+            && !(path.len() == 1 && slug == ENVIRONMENTS)
+        {
             Kind::Folder
         } else {
             return Err(not_found(path));
@@ -274,13 +293,11 @@ impl CollectionDir {
     }
 
     /// the file names of a folder's children, in display order: first as
-    /// `order` lists them, then the rest by name
-    fn children(
-        dir: &Path,
-        top: bool,
-        order: &[String],
-    ) -> Result<Vec<(String, Kind)>, StoreError> {
+    /// `order` lists them, then the rest by name; links and other special
+    /// files are returned apart, never followed
+    fn children(dir: &Path, top: bool, order: &[String]) -> Result<Children, StoreError> {
         let mut children = Vec::new();
+        let mut refused = Vec::new();
 
         for entry in fs::read_dir(dir).map_err(|e| StoreError::io(dir, e))? {
             let entry = entry.map_err(|e| StoreError::io(dir, e))?;
@@ -293,14 +310,18 @@ impl CollectionDir {
                 continue;
             }
 
-            let path = entry.path();
+            let kind = entry.file_type().map_err(|e| StoreError::io(dir, e))?;
 
-            if path.is_dir() {
+            if kind.is_dir() {
                 if !(top && name == ENVIRONMENTS) {
                     children.push((name, Kind::Folder));
                 }
             } else if name.ends_with(EXTENSION) {
-                children.push((name, Kind::Request));
+                if kind.is_file() {
+                    children.push((name, Kind::Request));
+                } else {
+                    refused.push(name);
+                }
             }
         }
 
@@ -310,7 +331,7 @@ impl CollectionDir {
             (listed, name.clone())
         });
 
-        Ok(children)
+        Ok((children, refused))
     }
 
     fn order_of(&self, parent: &[String]) -> Result<Vec<String>, StoreError> {
@@ -320,7 +341,7 @@ impl CollectionDir {
         } else {
             Self::folder_file(&dir)?.order
         };
-        let children = Self::children(&dir, parent.is_empty(), &listed)?;
+        let (children, _) = Self::children(&dir, parent.is_empty(), &listed)?;
 
         Ok(children.into_iter().map(|(name, _)| name).collect())
     }
@@ -328,7 +349,7 @@ impl CollectionDir {
     fn folder_file(dir: &Path) -> Result<FolderFile, StoreError> {
         let path = dir.join(FOLDER_FILE);
 
-        match read_optional(&path)? {
+        match read_regular(&path)? {
             Some(text) => parse(&path, &text),
             None => Ok(FolderFile {
                 name: dir_name(dir),
@@ -362,8 +383,8 @@ impl CollectionDir {
         order: &[String],
         issues: &mut Vec<LoadIssue>,
     ) -> Vec<Item> {
-        let children = match Self::children(dir, top, order) {
-            Ok(children) => children,
+        let (children, refused) = match Self::children(dir, top, order) {
+            Ok(found) => found,
             Err(err) => {
                 issues.push(issue(dir, &err));
 
@@ -371,6 +392,12 @@ impl CollectionDir {
             }
         };
         let mut items = Vec::new();
+
+        for name in refused {
+            let path = dir.join(name);
+
+            issues.push(issue(&path, &not_plain(&path)));
+        }
 
         for (name, kind) in children {
             let path = dir.join(&name);
@@ -389,7 +416,7 @@ impl CollectionDir {
 
     fn load_folder(dir: &Path, slug: &str, issues: &mut Vec<LoadIssue>) -> Folder {
         let path = dir.join(FOLDER_FILE);
-        let file = match read_optional(&path)
+        let file = match read_regular(&path)
             .and_then(|text| text.map(|t| parse::<FolderFile>(&path, &t)).transpose())
         {
             Ok(file) => file.unwrap_or_default(),
@@ -420,8 +447,10 @@ impl CollectionDir {
     fn environment_files(&self) -> Result<EnvironmentFiles, StoreError> {
         let dir = self.environments_dir();
 
-        if !dir.is_dir() {
-            return Ok(Vec::new());
+        match node(&dir) {
+            Node::Missing => return Ok(Vec::new()),
+            Node::Dir => {}
+            Node::File | Node::Other => return Err(not_plain(&dir)),
         }
 
         let mut files = Vec::new();
@@ -430,11 +459,16 @@ impl CollectionDir {
             let path = entry.map_err(|e| StoreError::io(&dir, e))?.path();
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or(".");
 
-            if name.starts_with('.') || !name.ends_with(EXTENSION) || !path.is_file() {
+            if name.starts_with('.') || !name.ends_with(EXTENSION) {
                 continue;
             }
 
-            let content = read_file::<EnvironmentFile>(&path);
+            // a link is listed as a problem rather than skipped silently
+            let content = match node(&path) {
+                Node::File => read_file::<EnvironmentFile>(&path),
+                Node::Dir => continue,
+                Node::Other | Node::Missing => Err(not_plain(&path)),
+            };
 
             files.push((path, content));
         }
@@ -458,7 +492,7 @@ impl CollectionDir {
         for (path, content) in files {
             let environment = content.and_then(|file| {
                 let id = file.env_id().map_err(|e| StoreError::parse(&path, e))?;
-                let variables =
+                let read =
                     variables_from_file(file.variables).map_err(|e| StoreError::parse(&path, e))?;
 
                 if environments.iter().any(|e| e.id == id) {
@@ -468,16 +502,25 @@ impl CollectionDir {
                     ));
                 }
 
-                Ok(Environment {
-                    id,
-                    slug: stem(&path),
-                    name: file.name,
-                    variables,
-                })
+                Ok((
+                    Environment {
+                        id,
+                        slug: stem(&path),
+                        name: file.name,
+                        variables: read.variables,
+                    },
+                    read.warnings,
+                ))
             });
 
             match environment {
-                Ok(environment) => environments.push(environment),
+                Ok((environment, warnings)) => {
+                    issues.extend(warnings.into_iter().map(|message| LoadIssue {
+                        path: path.clone(),
+                        message,
+                    }));
+                    environments.push(environment);
+                }
                 Err(err) => issues.push(issue(&path, &err)),
             }
         }
@@ -544,13 +587,20 @@ fn load_request(path: &Path, name: &str) -> Result<SavedRequest, StoreError> {
 impl CollectionStore for CollectionDir {
     fn load(&self) -> Result<Loaded, StoreError> {
         let path = self.root.join(COLLECTION_FILE);
-        let file: CollectionFile = match read_optional(&path)? {
+        let file: CollectionFile = match read_regular(&path)? {
             Some(text) => parse(&path, &text)?,
             None => return Err(StoreError::NotFound(path.display().to_string())),
         };
-        let variables =
-            variables_from_file(file.variables).map_err(|e| StoreError::parse(&path, e))?;
-        let mut issues = Vec::new();
+        let read = variables_from_file(file.variables).map_err(|e| StoreError::parse(&path, e))?;
+        let variables = read.variables;
+        let mut issues: Vec<LoadIssue> = read
+            .warnings
+            .into_iter()
+            .map(|message| LoadIssue {
+                path: path.clone(),
+                message,
+            })
+            .collect();
         let items = Self::load_items(&self.root, true, &file.order, &mut issues);
         let environments = self.load_environments(&mut issues);
 

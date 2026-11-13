@@ -94,7 +94,8 @@ The scope is optional and names the area touched, for example `core`, `tui`, `cl
 | Windows | `windows-native-keyring-store` | none (*unconfirmed*) |
 | Linux and other Unix | `zbus-secret-service-keyring-store` | `crypto-rust` (keeps OpenSSL out; *unconfirmed*) |
 
-- The adapter (`secrets/keychain.rs`) creates the store for the current platform and registers it with `keyring-core` (*unconfirmed*: not exercised yet). If that fails (for example Linux without Secret Service), the error goes to the backend probe, which suggests the encrypted file instead.
+- The adapter (`secrets/keychain.rs`) creates the store for the current platform and registers it with `keyring-core`. If that fails (for example Linux without Secret Service), the error goes to the backend probe, which suggests the encrypted file instead. Every decision about keychain results (missing entry, too long, no access) lives outside the adapter, in `secrets/mod.rs`, where it is tested.
+- The adapter is checked by hand, because it writes to the real keychain of whoever runs it: `cargo test -p curst-core --test keychain -- --ignored`. macOS may show an access prompt the first time, and again after each rebuild of an unsigned binary. CI leaves the adapter out of the coverage figure with `--ignore-filename-regex 'secrets/keychain\.rs'`.
 - **Windows size limit**: `CRED_MAX_CREDENTIAL_BLOB_SIZE` is 2560 bytes. `set_password` stores UTF-16, which halves the limit to 1280 UTF-16 units, so the adapter stores UTF-8 bytes with `set_secret`, giving 2560 bytes. The store returns `Error::TooLong` beyond that. curst reports the limit and never truncates.
 
 ### YAML: `serde-saphyr` 2.x

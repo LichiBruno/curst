@@ -9,7 +9,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
-use crate::app::{AuthKind, BodyField, BodyKind, Focus, RequestTab, State, display};
+use crate::app::{AuthKind, BodyField, BodyKind, Focus, Popup, RequestTab, State, display};
 
 const WIDE: u16 = 110;
 
@@ -24,7 +24,7 @@ fn sidebar_width(width: u16) -> u16 {
 
 pub(crate) fn view(state: &State, frame: &mut Frame) {
     let [body, footer] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(2)]).areas(frame.area());
     let [side, main] = Layout::horizontal([
         Constraint::Length(sidebar_width(body.width)),
         Constraint::Fill(1),
@@ -116,40 +116,69 @@ fn url_bar(state: &State, frame: &mut Frame, area: Rect) {
     frame.render_widget(&state.url, inner);
 }
 
+/// two lines: a message and the keys for the focused pane, then the keys
+/// that work everywhere, always in the same place
 fn draw_footer(state: &State, frame: &mut Frame, area: Rect) {
-    let mut spans: Vec<Span<'static>> = Vec::new();
+    let keys = |spans: &mut Vec<Span<'static>>, hints: Vec<(&'static str, &'static str)>| {
+        for (key, label) in hints {
+            spans.push(Span::styled(format!(" {key} "), Style::default().bold()));
+            spans.push(Span::styled(
+                format!("{label} "),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    };
+    let mut here: Vec<Span<'static>> = Vec::new();
 
     if let Some(notice) = &state.notice {
-        spans.push(Span::styled(
+        here.push(Span::styled(
             format!(" {notice} "),
             Style::default().fg(Color::Yellow),
         ));
-        spans.push(Span::raw(" "));
+        here.push(Span::raw(" "));
     }
 
-    for (key, label) in hints(state) {
-        spans.push(Span::styled(format!(" {key} "), Style::default().bold()));
-        spans.push(Span::styled(
-            format!("{label} "),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
+    keys(&mut here, hints(state));
 
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    let mut everywhere = Vec::new();
+
+    keys(&mut everywhere, global_hints(state));
+
+    let [top, bottom] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+
+    frame.render_widget(Paragraph::new(Line::from(here)), top);
+    frame.render_widget(Paragraph::new(Line::from(everywhere)), bottom);
 }
 
-/// the keys that work where the focus is, so they can be shown in the footer
+/// the keys that work whatever has the focus; with a pop-up open, the
+/// keys that finish it, and quitting
+pub(crate) fn global_hints(state: &State) -> Vec<(&'static str, &'static str)> {
+    match &state.popup {
+        Some(Popup::Variables(editor)) if !editor.editing() => {
+            return vec![("Ctrl+S", "save"), ("Esc", "close"), ("Ctrl+C", "quit")];
+        }
+        Some(_) => return vec![("Ctrl+C", "quit")],
+        None => {}
+    }
+
+    vec![
+        ("Ctrl+R", "send"),
+        ("Ctrl+S", "save"),
+        ("Ctrl+E", "environments"),
+        ("Ctrl+O", "settings"),
+        ("Ctrl+C", "quit"),
+    ]
+}
+
+/// the keys that work where the focus is; the ones that work everywhere
+/// are in [`global_hints`]
 pub(crate) fn hints(state: &State) -> Vec<(&'static str, &'static str)> {
     if let Some(popup) = &state.popup {
         return popup::hints(popup);
     }
 
     let mut hints = Vec::new();
-
-    // the most urgent key comes first, before the footer runs out of room
-    if state.is_dirty() {
-        hints.push(("Ctrl+S", "save"));
-    }
 
     match state.focus {
         Focus::Sidebar => hints.extend([
@@ -199,6 +228,10 @@ pub(crate) fn hints(state: &State) -> Vec<(&'static str, &'static str)> {
             if matches!(state.request_tab, RequestTab::Body | RequestTab::Auth) {
                 hints.push(("t", "type"));
             }
+
+            if request::credential_warning(state).is_some() {
+                hints.push(("m", "make it a secret"));
+            }
         }
         Focus::Response => {
             hints.extend([("←→", "tab"), ("↑↓", "scroll")]);
@@ -213,17 +246,7 @@ pub(crate) fn hints(state: &State) -> Vec<(&'static str, &'static str)> {
 
     if state.in_flight.is_some() {
         hints.push(("Esc", "cancel"));
-    } else if state.focus != Focus::Url
-        && !(state.focus == Focus::Request && state.request_typing())
-    {
-        hints.push(("Ctrl+R", "send"));
     }
-
-    if !state.collections.is_empty() {
-        hints.push(("Ctrl+E", "env"));
-    }
-
-    hints.push(("Ctrl+C", "quit"));
 
     hints
 }

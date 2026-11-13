@@ -42,10 +42,10 @@ fn lock_path(path: &Path) -> PathBuf {
 
 /// runs `f` while holding the lock for `path`, which other curst processes
 /// wait for; the lock file is left in place for the next writer
-pub(crate) fn with_lock<T>(
+pub(crate) fn with_lock<T, E: From<StoreError>>(
     path: &Path,
-    f: impl FnOnce() -> Result<T, StoreError>,
-) -> Result<T, StoreError> {
+    f: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
     let lock = lock_path(path);
 
     if let Some(dir) = lock.parent() {
@@ -63,6 +63,53 @@ pub(crate) fn with_lock<T>(
 
     // the lock is released when the file closes, also on an early return
     f()
+}
+
+/// what is at a path, looked at without following a symbolic link
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Node {
+    File,
+    Dir,
+
+    /// a symbolic link, a pipe or a device: never read, since a shared
+    /// folder could use one to point outside itself, loop, or hang
+    Other,
+    Missing,
+}
+
+pub(crate) fn node(path: &Path) -> Node {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => Node::File,
+        Ok(meta) if meta.is_dir() => Node::Dir,
+        Ok(_) => Node::Other,
+        Err(_) => Node::Missing,
+    }
+}
+
+/// the text of a regular file, `None` when nothing is there, and an error
+/// for a link or anything else that is not a plain file
+pub(crate) fn read_regular(path: &Path) -> Result<Option<String>, StoreError> {
+    match node(path) {
+        Node::Missing => Ok(None),
+        Node::File => read_optional(path),
+        Node::Dir | Node::Other => Err(not_plain(path)),
+    }
+}
+
+pub(crate) fn not_plain(path: &Path) -> StoreError {
+    StoreError::Invalid(format!(
+        "{} is not a plain file or folder; links are not followed",
+        path.display()
+    ))
+}
+
+/// the file's bytes, or `None` when it does not exist
+pub(crate) fn read_bytes(path: &Path) -> Result<Option<Vec<u8>>, StoreError> {
+    match fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(StoreError::io(path, e)),
+    }
 }
 
 /// the file's text, or `None` when it does not exist
@@ -107,7 +154,7 @@ mod tests {
 
         assert_eq!(lock_path(&path), dir.path().join("registry.toml.lock"));
 
-        let inside = with_lock(&path, || {
+        let inside = with_lock::<_, StoreError>(&path, || {
             let other = File::open(lock_path(&path)).unwrap();
 
             Ok(other.try_lock().is_err())
@@ -121,9 +168,30 @@ mod tests {
     #[test]
     fn errors_inside_the_lock_pass_through() {
         let dir = tempfile::tempdir().unwrap();
-        let result: Result<(), _> = with_lock(&dir.path().join("x"), || Err(StoreError::NoHome));
+        let result: Result<(), StoreError> =
+            with_lock(&dir.path().join("x"), || Err(StoreError::NoHome));
 
         assert!(matches!(result, Err(StoreError::NoHome)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_are_never_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.toml");
+        let link = dir.path().join("link.toml");
+
+        fs::write(&target, "x").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert_eq!(node(&target), Node::File);
+        assert_eq!(node(&link), Node::Other);
+        assert_eq!(node(dir.path()), Node::Dir);
+        assert_eq!(node(&dir.path().join("none")), Node::Missing);
+        assert_eq!(read_regular(&target).unwrap().as_deref(), Some("x"));
+        assert_eq!(read_regular(&dir.path().join("none")).unwrap(), None);
+        assert!(matches!(read_regular(&link), Err(StoreError::Invalid(_))));
+        assert!(read_regular(dir.path()).is_err());
     }
 
     #[test]
@@ -136,6 +204,9 @@ mod tests {
         fs::write(&path, "x").unwrap();
 
         assert_eq!(read_optional(&path).unwrap().as_deref(), Some("x"));
+        assert_eq!(read_bytes(&path).unwrap(), Some(b"x".to_vec()));
+        assert_eq!(read_bytes(&dir.path().join("none")).unwrap(), None);
+        assert!(read_bytes(dir.path()).is_err());
         assert!(read_optional(dir.path()).is_err());
     }
 }

@@ -92,6 +92,19 @@ impl Paths {
     pub fn globals_file(&self) -> PathBuf {
         self.data_dir.join("globals.toml")
     }
+
+    /// the key of every secret in use and the hosts each is approved for,
+    /// never a value
+    #[must_use]
+    pub fn secrets_index_file(&self) -> PathBuf {
+        self.data_dir.join("secrets-index.toml")
+    }
+
+    /// the secrets themselves, when the encrypted file is the backend
+    #[must_use]
+    pub fn secrets_file(&self) -> PathBuf {
+        self.data_dir.join("secrets.age")
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +149,14 @@ mod tests {
         assert_eq!(
             paths.globals_file(),
             PathBuf::from("/home/u/.local/share/curst/globals.toml")
+        );
+        assert_eq!(
+            paths.secrets_index_file(),
+            PathBuf::from("/home/u/.local/share/curst/secrets-index.toml")
+        );
+        assert_eq!(
+            paths.secrets_file(),
+            PathBuf::from("/home/u/.local/share/curst/secrets.age")
         );
     }
 

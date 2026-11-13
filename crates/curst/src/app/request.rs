@@ -1,12 +1,19 @@
 //! editing the request: the URL, the request tabs and the response pane's
 //! scrolling
 
-use curst_core::model::{Item, Request};
+use curst_core::model::{Auth, Item, Request, Variable};
+use curst_core::secrets::detect::{self, Place};
+use curst_core::secrets::{Secret, SecretKey};
+use curst_core::vars::VarName;
 use ratatui::crossterm::event::KeyEvent;
 
 use super::editor::{AuthEditor, BodyEditor, Column, Table, show_cursor, text_of};
+use super::popup::{Popup, Purpose};
 use super::workspace::NodeKey;
-use super::{Action, AuthKind, BodyField, BodyKind, Focus, OpenRequest, PAN, RequestTab, State};
+use super::{
+    Action, AuthKind, BodyField, BodyKind, Change, Command, Focus, OpenRequest, PAN, RequestTab,
+    SecretChange, State,
+};
 
 impl State {
     /// the table shown by the request pane, if the current tab has one
@@ -246,4 +253,226 @@ pub(super) fn type_key(state: &mut State, key: KeyEvent) {
         },
         Focus::Sidebar | Focus::Method | Focus::Response => {}
     }
+}
+
+/// hands the body to the user's editor, as typed, templates unresolved
+pub(super) fn edit_body(state: &mut State) -> Vec<Command> {
+    let extension = match state.body.kind {
+        BodyKind::Json => "json",
+        BodyKind::Text => "txt",
+        BodyKind::None | BodyKind::Form => {
+            state.notice = Some("choose a JSON or text body first, press t".into());
+
+            return Vec::new();
+        }
+    };
+
+    state.stop_editing();
+
+    vec![Command::EditBody {
+        text: super::editor::text_of(&state.body.text),
+        extension,
+    }]
+}
+
+/// the flagged value at the selected place, with a name to suggest for it
+fn flagged(state: &State) -> Option<(Place, String)> {
+    let row = |table: &Table, header: bool| {
+        let row = table.rows.get(table.selected)?;
+
+        detect::check_pair(&row.name, &row.value, header).map(|_| row.name.clone())
+    };
+
+    match state.request_tab {
+        RequestTab::Params => {
+            row(&state.params, false).map(|n| (Place::Param(state.params.selected), n))
+        }
+        RequestTab::Headers => {
+            row(&state.headers, true).map(|n| (Place::Header(state.headers.selected), n))
+        }
+        RequestTab::Body if state.body.kind == BodyKind::Form => {
+            row(&state.body.form, false).map(|n| (Place::FormField(state.body.form.selected), n))
+        }
+        RequestTab::Body => None,
+        RequestTab::Auth => {
+            let request = Request {
+                auth: state.auth.auth(),
+                ..Request::default()
+            };
+
+            detect::detect(&request).first().map(|f| match f.place {
+                Place::Password => (Place::Password, "password".to_owned()),
+                _ => (Place::Token, "token".to_owned()),
+            })
+        }
+    }
+}
+
+/// a variable name made from a header or parameter name
+fn suggest(name: &str) -> String {
+    let name: String = name
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let name = name.trim_matches('_');
+
+    if name.is_empty() {
+        "secret".to_owned()
+    } else {
+        name.to_owned()
+    }
+}
+
+/// asks for a name for the flagged value at the selected place
+pub(super) fn make_secret(state: &mut State) {
+    let Some((place, hint)) = flagged(state) else {
+        state.notice = Some("only a value marked ⚠ can be made a secret here".into());
+
+        return;
+    };
+
+    state.popup = Some(Popup::prompt(Purpose::MakeSecret(place), &suggest(&hint)));
+}
+
+fn value_at(state: &State, place: Place) -> Option<String> {
+    let cell = |table: &Table, index: usize| table.rows.get(index).map(|r| r.value.clone());
+
+    match place {
+        Place::Param(index) => cell(&state.params, index),
+        Place::Header(index) => cell(&state.headers, index),
+        Place::FormField(index) => cell(&state.body.form, index),
+        Place::Password => match state.auth.auth() {
+            Auth::Basic { password, .. } => Some(password),
+            _ => None,
+        },
+        Place::Token => match state.auth.auth() {
+            Auth::Bearer { token } => Some(token),
+            _ => None,
+        },
+        Place::UrlUserInfo | Place::UrlQuery(_) => None,
+    }
+}
+
+fn put_at(state: &mut State, place: Place, text: String) {
+    let set = |table: &mut Table, index: usize| {
+        if let Some(row) = table.rows.get_mut(index) {
+            row.value.clone_from(&text);
+        }
+    };
+
+    match place {
+        Place::Param(index) => set(&mut state.params, index),
+        Place::Header(index) => set(&mut state.headers, index),
+        Place::FormField(index) => set(&mut state.body.form, index),
+        Place::Password => {
+            if let Auth::Basic { username, .. } = state.auth.auth() {
+                state.auth = AuthEditor::from_auth(&Auth::Basic {
+                    username,
+                    password: text,
+                });
+            }
+        }
+        Place::Token => state.auth = AuthEditor::from_auth(&Auth::Bearer { token: text }),
+        Place::UrlUserInfo | Place::UrlQuery(_) => {}
+    }
+}
+
+fn upsert(variables: &mut Vec<Variable>, variable: Variable) {
+    match variables.iter_mut().find(|v| v.name == variable.name) {
+        Some(slot) => *slot = variable,
+        None => variables.push(variable),
+    }
+}
+
+/// stores the value at `place` as the secret `name`, in the active
+/// environment, the collection, or the globals when there is no
+/// collection, and puts `{{name}}` in its place
+pub(super) fn turn_into_secret(state: &mut State, place: Place, name: &VarName) -> Vec<Command> {
+    let Some(value) = value_at(state, place) else {
+        state.notice = Some("that value is gone".into());
+
+        return Vec::new();
+    };
+
+    let workspace = state.current_workspace();
+
+    if workspace.is_some_and(|w| !w.trusted) {
+        state.notice = Some("trust this collection before keeping secrets for it".into());
+
+        return Vec::new();
+    }
+
+    // an auth scheme stays in the field: `Bearer abc` becomes
+    // `Bearer {{token}}`, and only `abc` is the secret
+    let (scheme, secret) = ["Bearer ", "Basic ", "bearer ", "basic "]
+        .iter()
+        .find_map(|scheme| value.strip_prefix(scheme).map(|rest| (*scheme, rest)))
+        .filter(|_| matches!(place, Place::Header(_)))
+        .unwrap_or(("", value.as_str()));
+    let secret = Secret::new(secret);
+    let (key, file) = secret_home(state, Variable::secret(name.clone()));
+
+    put_at(state, place, format!("{scheme}{{{{{name}}}}}"));
+    state.notice = Some(if state.open.is_some() {
+        format!(
+            "{{{{{name}}}}} holds it now; the plain value stays in the saved request until you press Ctrl+S"
+        )
+    } else {
+        format!("{{{{{name}}}}} holds it now")
+    });
+
+    super::send::change_secrets(state, vec![SecretChange::Set(key, secret)], vec![file])
+}
+
+/// where a new secret variable goes: the active environment, otherwise the
+/// collection, otherwise the globals; with the file write that records it
+fn secret_home(state: &State, variable: Variable) -> (SecretKey, Command) {
+    let name = variable.name.clone();
+    let Some(workspace) = state.current_workspace() else {
+        let mut globals = state.globals.clone();
+
+        upsert(&mut globals, variable);
+
+        return (SecretKey::Global { name }, Command::SaveGlobals(globals));
+    };
+
+    let environment = workspace
+        .active_environment
+        .as_ref()
+        .and_then(|id| workspace.collection.environment(id));
+
+    if let Some(environment) = environment {
+        let mut environment = environment.clone();
+
+        upsert(&mut environment.variables, variable);
+
+        return (
+            SecretKey::Environment {
+                collection: workspace.id.clone(),
+                environment: environment.id.clone(),
+                name,
+            },
+            Command::Store {
+                collection: workspace.id.clone(),
+                change: Change::SaveEnvironment(environment),
+            },
+        );
+    }
+
+    let mut variables = workspace.collection.variables.clone();
+
+    upsert(&mut variables, variable);
+
+    (
+        SecretKey::Collection {
+            collection: workspace.id.clone(),
+            name,
+        },
+        Command::Store {
+            collection: workspace.id.clone(),
+            change: Change::SaveVariables(variables),
+        },
+    )
 }

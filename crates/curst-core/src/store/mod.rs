@@ -7,11 +7,12 @@
 
 mod collection;
 mod format;
-mod fs;
+pub(crate) mod fs;
 mod ids;
 mod library;
 mod paths;
 mod registry;
+mod settings;
 mod slug;
 
 use std::io;
@@ -21,6 +22,9 @@ pub use collection::{CollectionDir, CollectionStore, LoadIssue, Loaded};
 pub use library::Library;
 pub use paths::Paths;
 pub use registry::{Entry, Registry};
+pub use settings::{Backend, Settings};
+
+pub(crate) use format::to_toml as format_toml;
 
 /// why a store operation failed
 #[derive(Debug, thiserror::Error)]

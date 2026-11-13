@@ -2,17 +2,19 @@ mod editor;
 mod keys;
 mod popup;
 mod request;
+mod send;
 mod sidebar;
 mod view_model;
 mod workspace;
 
 use std::cell::Cell;
-use std::fmt::Write;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use curst_core::http::{HttpError, Response};
 use curst_core::model::{EnvId, Environment, LocalId, Method, Request, Variable};
-use curst_core::vars::{Resolution, Scopes, resolve_request};
+use curst_core::secrets::{Approval, Secret, SecretKey, SecretScope};
+use curst_core::store::Backend;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui_textarea::TextArea;
 
@@ -110,6 +112,62 @@ pub(crate) enum Outcome {
     Error(String),
 }
 
+/// what the secret store needs before it can be used
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Locked {
+    /// a choice between the keychain and the encrypted file
+    Backend,
+
+    /// the passphrase of the encrypted file; `new` when the file does not
+    /// exist yet, so the passphrase is asked twice
+    Passphrase { new: bool, error: Option<String> },
+
+    /// the store cannot be opened
+    Failed(String),
+}
+
+/// work held back until the secret store is open or an origin approved
+#[derive(Debug)]
+pub(crate) struct Waiting {
+    pub(crate) id: u64,
+    pub(crate) then: Then,
+}
+
+#[derive(Debug)]
+pub(crate) enum Then {
+    /// a request, as typed, its templates unresolved
+    Send(Request),
+
+    /// secret changes, and the file writes that follow them once they
+    /// succeed
+    Save {
+        changes: Vec<SecretChange>,
+        files: Vec<Command>,
+    },
+
+    /// moving every secret to another backend
+    Migrate {
+        to: Backend,
+        passphrase: Option<Secret>,
+    },
+
+    /// a secret turning back into a plain variable: the editor waits, out
+    /// of sight, for the value to come from the store
+    Reveal {
+        editor: Box<popup::VariablesEditor>,
+        key: SecretKey,
+    },
+}
+
+/// one change to the secret store
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SecretChange {
+    Set(SecretKey, Secret),
+    Rename(SecretKey, SecretKey),
+    Delete(SecretKey),
+    DeleteScope(SecretScope),
+}
+
 /// the saved request the editor holds
 #[derive(Debug)]
 pub(crate) struct OpenRequest {
@@ -152,6 +210,21 @@ pub(crate) struct State {
     pub(crate) sidebar: Sidebar,
     pub(crate) open: Option<OpenRequest>,
     pub(crate) popup: Option<Popup>,
+
+    /// collections whose folder has gone, offered when a new folder is
+    /// trusted, so it can take over their secrets
+    pub(crate) orphans: Vec<(LocalId, PathBuf)>,
+
+    /// secret values fetched this session; `None` for a secret with no
+    /// value in the store
+    pub(crate) secret_values: HashMap<SecretKey, Option<Secret>>,
+    pub(crate) waiting: Option<Waiting>,
+
+    /// the last request sent, as typed, for following a stopped redirect
+    pub(crate) last_sent: Option<Request>,
+
+    /// where secrets are kept, `None` until the user picks
+    pub(crate) backend: Option<Backend>,
     next_id: u64,
 }
 
@@ -180,6 +253,11 @@ impl Default for State {
             sidebar: Sidebar::default(),
             open: None,
             popup: None,
+            orphans: Vec::new(),
+            secret_values: HashMap::new(),
+            waiting: None,
+            last_sent: None,
+            backend: None,
             next_id: 0,
         }
     }
@@ -269,6 +347,12 @@ pub(crate) enum Action {
     Paste,
     MoveUp,
     MoveDown,
+    Trust,
+
+    /// trust a new folder and give it the secrets of orphan number n
+    Reattach(usize),
+    Follow,
+    Choose(Backend),
     Environments,
     EditVariables,
     NewEnvironment,
@@ -285,7 +369,44 @@ pub(crate) enum Action {
         collections: Vec<Workspace>,
         globals: Vec<Variable>,
         problems: Vec<String>,
+        orphans: Vec<(LocalId, PathBuf)>,
     },
+    Trusted {
+        previous: LocalId,
+        result: Result<Box<Workspace>, String>,
+    },
+    SecretsLoaded {
+        id: u64,
+        values: Vec<(SecretKey, Option<Secret>)>,
+    },
+    SecretsLocked {
+        id: Option<u64>,
+        locked: Locked,
+    },
+    Unlocked,
+    BackendChosen(Result<Backend, String>),
+    NeedsApproval {
+        id: u64,
+        approval: Box<Approval>,
+    },
+    Approved {
+        id: u64,
+        result: Result<(), String>,
+    },
+    SecretsChanged {
+        id: u64,
+        result: Result<(), String>,
+    },
+    MakeSecret,
+    Settings,
+    Migrate,
+    Migrated {
+        id: u64,
+        result: Result<(Backend, usize), String>,
+    },
+    BackendKnown(Option<Backend>),
+    EditBody,
+    BodyEdited(Result<String, String>),
     Stored {
         collection: LocalId,
         result: Result<Box<Stored>, String>,
@@ -377,6 +498,37 @@ pub(crate) enum Command {
     Send {
         id: u64,
         request: Request,
+
+        /// the secrets the request carries; the runtime checks they are
+        /// approved for its origin, and keeps redirects within approved ones
+        secrets: Vec<SecretKey>,
+    },
+    LoadSecrets {
+        id: u64,
+        keys: Vec<SecretKey>,
+    },
+    Unlock(Secret),
+    ChooseBackend(Backend),
+    Approve {
+        id: u64,
+        keys: Vec<SecretKey>,
+        origin: String,
+    },
+    ChangeSecrets {
+        id: u64,
+        changes: Vec<SecretChange>,
+    },
+    Migrate {
+        id: u64,
+        to: Backend,
+        passphrase: Option<Secret>,
+    },
+
+    /// opens the body in the user's editor; the runtime does it, since the
+    /// terminal has to be handed over
+    EditBody {
+        text: String,
+        extension: &'static str,
     },
     Cancel,
     SaveBody(PathBuf),
@@ -386,6 +538,10 @@ pub(crate) enum Command {
     },
     CreateCollection(String),
     SaveGlobals(Vec<Variable>),
+    Trust {
+        collection: LocalId,
+        reattach: Option<LocalId>,
+    },
     SetActiveEnvironment {
         collection: LocalId,
         environment: Option<EnvId>,
@@ -400,14 +556,7 @@ const PAN: usize = 8;
 const NO_COLLECTION: &str = "create a collection first: press c in the sidebar";
 
 pub(crate) fn update(state: &mut State, action: Action) -> Vec<Command> {
-    let background = matches!(
-        action,
-        Action::Responded { .. }
-            | Action::Loaded { .. }
-            | Action::Stored { .. }
-            | Action::CollectionAdded(_)
-            | Action::GlobalsSaved(_)
-    );
+    let background = reported(&action);
 
     if !background {
         state.notice = None;
@@ -424,17 +573,19 @@ pub(crate) fn update(state: &mut State, action: Action) -> Vec<Command> {
 }
 
 fn apply(state: &mut State, action: Action) -> Vec<Command> {
+    if reported(&action) {
+        return report(state, action);
+    }
+
     match action {
         Action::Quit => quit(state),
-        Action::Send => return send(state),
+        Action::Send => return send::send(state),
+        Action::Follow => return send::follow(state),
+        Action::MakeSecret => request::make_secret(state),
+        Action::Settings => state.popup = Some(Popup::Settings),
+        Action::EditBody => return request::edit_body(state),
         Action::Save => return save(state),
-        Action::Cancel => {
-            if state.in_flight.take().is_some() {
-                state.notice = Some("request cancelled".into());
-
-                return vec![Command::Cancel];
-            }
-        }
+        Action::Cancel => return cancel(state),
         Action::FocusNext | Action::FocusPrevious => {
             state.stop_editing();
             state.focus = step(
@@ -496,21 +647,11 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         | Action::Cut
         | Action::Paste
         | Action::MoveUp
-        | Action::MoveDown => return sidebar::apply(state, &action),
+        | Action::MoveDown
+        | Action::Trust => return sidebar::apply(state, &action),
         Action::Environments => open_environments(state),
-        Action::Responded { .. }
-        | Action::Saved(_)
-        | Action::Loaded { .. }
-        | Action::Stored { .. }
-        | Action::CollectionAdded(_)
-        | Action::GlobalsSaved(_)
-        | Action::Notice(_) => report(state, action),
-        Action::EditVariables
-        | Action::NewEnvironment
-        | Action::RenameEnvironment
-        | Action::DeleteEnvironment
-        | Action::ClosePopup
-        | Action::ConfirmPopup => {}
+        // reports went to `report`, and these only mean something in a pop-up
+        _ => {}
     }
 
     Vec::new()
@@ -518,10 +659,32 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
 
 /// applies what the runtime reports back: responses, saved files and
 /// store changes
-fn report(state: &mut State, action: Action) {
+fn report(state: &mut State, action: Action) -> Vec<Command> {
     match action {
+        Action::SecretsLoaded { id, values } => return send::loaded(state, id, values),
+        Action::Unlocked => return send::unlocked(state),
+        Action::BackendChosen(result) => return send::backend_chosen(state, result),
+        Action::Approved { id, result } => return send::approved(state, id, result),
+        Action::SecretsChanged { id, result } => return send::changed(state, id, result),
+        Action::Migrated { id, result } => send::migrated(state, id, result),
+        Action::BackendKnown(backend) => state.backend = backend,
+        Action::BodyEdited(result) => match result {
+            Ok(text) => state.body.text = editor::body_text(&text),
+            Err(message) => state.notice = Some(message),
+        },
+        Action::SecretsLocked { id, locked } => send::locked(state, id, locked),
+        Action::NeedsApproval { id, approval } => send::needs_approval(state, id, *approval),
         Action::Responded { id, result } => {
             if state.in_flight == Some(id) {
+                if let Ok(view) = result.as_ref()
+                    && let Some(stopped) = &view.response.stopped
+                {
+                    state.notice = Some(format!(
+                        "the redirect to {} was not followed, since it would carry secrets there; press f in the response to follow it",
+                        display(&stopped.url)
+                    ));
+                }
+
                 state.in_flight = None;
                 state.reset_scroll();
                 state.outcome = Some(match *result {
@@ -535,9 +698,17 @@ fn report(state: &mut State, action: Action) {
             collections,
             globals,
             problems,
-        } => loaded(state, collections, globals, &problems),
+            orphans,
+        } => {
+            state.orphans = orphans;
+            loaded(state, collections, globals, &problems);
+        }
+        Action::Trusted { previous, result } => match result {
+            Ok(workspace) => trusted(state, &previous, *workspace),
+            Err(message) => state.notice = Some(message),
+        },
         Action::Stored { collection, result } => match result {
-            Ok(stored) => stored_change(state, &collection, *stored),
+            Ok(stored) => return stored_change(state, &collection, *stored),
             Err(message) => state.notice = Some(message),
         },
         Action::CollectionAdded(result) => match result {
@@ -557,6 +728,48 @@ fn report(state: &mut State, action: Action) {
         Action::Notice(message) => state.notice = Some(message),
         _ => {}
     }
+
+    Vec::new()
+}
+
+/// stops a request waiting for its secrets, or one in flight
+/// whether `action` is something the runtime reports back, rather than a
+/// key the user pressed
+fn reported(action: &Action) -> bool {
+    matches!(
+        action,
+        Action::Responded { .. }
+            | Action::Loaded { .. }
+            | Action::Trusted { .. }
+            | Action::SecretsLoaded { .. }
+            | Action::SecretsLocked { .. }
+            | Action::Unlocked
+            | Action::BackendChosen(_)
+            | Action::NeedsApproval { .. }
+            | Action::Approved { .. }
+            | Action::SecretsChanged { .. }
+            | Action::Migrated { .. }
+            | Action::BackendKnown(_)
+            | Action::BodyEdited(_)
+            | Action::Stored { .. }
+            | Action::CollectionAdded(_)
+            | Action::GlobalsSaved(_)
+            | Action::Saved(_)
+            | Action::Notice(_)
+    )
+}
+
+fn cancel(state: &mut State) -> Vec<Command> {
+    if state.waiting.is_some() {
+        send::give_back(state);
+        state.notice = Some("cancelled".into());
+    } else if state.in_flight.take().is_some() {
+        state.notice = Some("request cancelled".into());
+
+        return vec![Command::Cancel];
+    }
+
+    Vec::new()
 }
 
 fn quit(state: &mut State) {
@@ -580,75 +793,6 @@ fn quit(state: &mut State) {
     } else {
         state.should_quit = true;
     }
-}
-
-fn send(state: &mut State) -> Vec<Command> {
-    state.stop_editing();
-
-    let request = state.request();
-
-    if request.url.is_empty() {
-        state.notice = Some("type a URL first".into());
-        state.focus = Focus::Url;
-
-        return Vec::new();
-    }
-
-    let workspace = state.current_workspace();
-    let scopes = Scopes {
-        environment: workspace.map_or(&[], Workspace::environment_variables),
-        collection: workspace.map_or(&[], |w| w.collection.variables.as_slice()),
-        global: &state.globals,
-    };
-    let (resolved, resolution) = resolve_request(&request, &scopes);
-
-    if !resolution.is_complete() {
-        state.notice = Some(not_sent(workspace, &resolution));
-
-        return Vec::new();
-    }
-
-    let mut commands = Vec::new();
-
-    if state.in_flight.is_some() {
-        commands.push(Command::Cancel);
-    }
-
-    state.next_id += 1;
-    state.in_flight = Some(state.next_id);
-
-    commands.push(Command::Send {
-        id: state.next_id,
-        request: resolved,
-    });
-
-    commands
-}
-
-/// why a request was not sent, naming every variable that blocks it
-fn not_sent(workspace: Option<&Workspace>, resolution: &Resolution) -> String {
-    let mut message = String::from("not sent:");
-
-    if !resolution.missing.is_empty() {
-        let names: Vec<String> = resolution
-            .missing
-            .iter()
-            .map(|n| format!("{{{{{n}}}}}"))
-            .collect();
-        let place = workspace
-            .and_then(Workspace::environment_name)
-            .map_or_else(String::new, |env| format!(" in {env}"));
-
-        let _ = write!(message, " {} not defined{place}", names.join(", "));
-    }
-
-    if !resolution.cyclic.is_empty() {
-        let names: Vec<String> = resolution.cyclic.iter().map(ToString::to_string).collect();
-
-        let _ = write!(message, " {} refer to themselves", names.join(", "));
-    }
-
-    message
 }
 
 fn save(state: &mut State) -> Vec<Command> {
@@ -733,21 +877,114 @@ fn loaded(
     }
 
     if state.sidebar.selected.is_none() {
-        state.sidebar.selected = collections.first().map(|w| NodeKey::root(w.id.clone()));
+        let first = collections
+            .iter()
+            .find(|w| w.trusted)
+            .or_else(|| collections.first());
+
+        state.sidebar.selected = first.map(|w| NodeKey::root(w.id.clone()));
     }
+
+    let untrusted = collections
+        .iter()
+        .find(|w| !w.trusted)
+        .map(|w| w.id.clone());
 
     state.collections = collections;
     state.globals = globals;
 
+    if let Some(collection) = untrusted {
+        state.popup = Some(Popup::Trust { collection });
+    }
+
     if let Some(first) = problems.first() {
         state.notice = Some(match problems.len() {
-            1 => format!("skipped {first}"),
-            n => format!("skipped {first} and {} more", n - 1),
+            1 => first.clone(),
+            n => format!("{first} (and {} more)", n - 1),
         });
     }
 }
 
-fn stored_change(state: &mut State, collection: &LocalId, stored: Stored) {
+/// a collection now trusted, perhaps under the id of the collection whose
+/// secrets it took over
+fn trusted(state: &mut State, previous: &LocalId, workspace: Workspace) {
+    let from = NodeKey::root(previous.clone());
+    let to = NodeKey::root(workspace.id.clone());
+
+    state.notice = Some(format!("{} is trusted", workspace.collection.name));
+    state.orphans.retain(|(id, _)| *id != workspace.id);
+    state
+        .collections
+        .retain(|w| w.id != *previous && w.id != workspace.id);
+    state.collections.push(workspace);
+    state.sidebar.rebase(&from, &to);
+
+    if let Some(open) = &mut state.open {
+        open.key = open.key.rebased(&from, &to);
+    }
+}
+
+/// the secrets that go with what a change removed: a whole collection, or
+/// environments; asked of the store only when they had secret variables
+fn removed_secrets(before: Option<&Workspace>, after: Option<&Workspace>) -> Vec<SecretChange> {
+    let Some(before) = before else {
+        return Vec::new();
+    };
+
+    let has_secrets = |variables: &[Variable]| variables.iter().any(|v| v.secret);
+
+    match after {
+        None => {
+            let any = has_secrets(&before.collection.variables)
+                || before
+                    .collection
+                    .environments
+                    .iter()
+                    .any(|e| has_secrets(&e.variables));
+
+            if any {
+                vec![SecretChange::DeleteScope(SecretScope::Collection(
+                    before.id.clone(),
+                ))]
+            } else {
+                Vec::new()
+            }
+        }
+        Some(after) => before
+            .collection
+            .environments
+            .iter()
+            .filter(|e| after.collection.environment(&e.id).is_none() && has_secrets(&e.variables))
+            .map(|e| {
+                SecretChange::DeleteScope(SecretScope::Environment(before.id.clone(), e.id.clone()))
+            })
+            .collect(),
+    }
+}
+
+/// how many secret variables a collection, or one of its environments,
+/// holds, for a delete confirmation
+pub(crate) fn secret_count(workspace: &Workspace, environment: Option<&EnvId>) -> usize {
+    let count = |variables: &[Variable]| variables.iter().filter(|v| v.secret).count();
+
+    match environment {
+        Some(id) => workspace
+            .collection
+            .environment(id)
+            .map_or(0, |e| count(&e.variables)),
+        None => {
+            count(&workspace.collection.variables)
+                + workspace
+                    .collection
+                    .environments
+                    .iter()
+                    .map(|e| count(&e.variables))
+                    .sum::<usize>()
+        }
+    }
+}
+
+fn stored_change(state: &mut State, collection: &LocalId, stored: Stored) -> Vec<Command> {
     let Stored {
         workspace,
         moved,
@@ -755,6 +992,7 @@ fn stored_change(state: &mut State, collection: &LocalId, stored: Stored) {
         saved,
         problems,
     } = stored;
+    let doomed = removed_secrets(state.workspace(collection), workspace.as_ref());
 
     if let Some(workspace) = workspace {
         match state.workspace_mut(collection) {
@@ -806,8 +1044,10 @@ fn stored_change(state: &mut State, collection: &LocalId, stored: Stored) {
     }
 
     if let Some(first) = problems.first() {
-        state.notice = Some(format!("skipped {first}"));
+        state.notice = Some(first.clone());
     }
+
+    send::change_secrets(state, doomed, Vec::new())
 }
 
 /// drops keys inside `gone`; an open request stays in the editor, unsaved

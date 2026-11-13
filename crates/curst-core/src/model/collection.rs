@@ -16,15 +16,31 @@ pub struct Variable {
 
     /// whether resolution uses it
     pub enabled: bool,
+
+    /// whether the value lives in the secret store; `value` is then empty
+    /// and never written to a file
+    pub secret: bool,
 }
 
 impl Variable {
-    /// an enabled variable
+    /// an enabled variable that is not secret
     pub fn new(name: VarName, value: impl Into<String>) -> Self {
         Self {
             name,
             value: value.into(),
             enabled: true,
+            secret: false,
+        }
+    }
+
+    /// an enabled secret variable, its value kept elsewhere
+    #[must_use]
+    pub fn secret(name: VarName) -> Self {
+        Self {
+            name,
+            value: String::new(),
+            enabled: true,
+            secret: true,
         }
     }
 }

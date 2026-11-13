@@ -58,5 +58,5 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-llvm-cov
-      - run: cargo llvm-cov --workspace --locked --summary-only | tee -a "$GITHUB_STEP_SUMMARY"
-      - run: cargo llvm-cov -p curst-core --locked --summary-only --fail-under-lines 85
+      - run: cargo llvm-cov --workspace --locked --summary-only --ignore-filename-regex 'secrets/keychain\.rs' | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: cargo llvm-cov -p curst-core --locked --summary-only --ignore-filename-regex 'secrets/keychain\.rs' --fail-under-lines 85

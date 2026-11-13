@@ -1,4 +1,5 @@
-use curst_core::model::{Auth, Body, KeyValue};
+use curst_core::model::{Auth, Body, KeyValue, Variable};
+use curst_core::secrets::Secret;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::style::{Modifier, Style};
 use ratatui_textarea::TextArea;
@@ -8,6 +9,16 @@ pub(crate) fn single_line(text: &str, placeholder: &str) -> TextArea<'static> {
     area.set_placeholder_text(placeholder);
     area.set_cursor_line_style(Style::default());
     area.move_cursor(ratatui_textarea::CursorMove::End);
+
+    area
+}
+
+/// a one-line field that shows `•` for every character, for a passphrase
+/// or a secret value
+pub(crate) fn masked(placeholder: &str) -> TextArea<'static> {
+    let mut area = single_line("", placeholder);
+
+    area.set_mask_char('•');
 
     area
 }
@@ -43,6 +54,16 @@ pub(crate) struct Row {
     pub(crate) name: String,
     pub(crate) value: String,
     pub(crate) enabled: bool,
+
+    /// a secret variable, whose value is not kept in the row
+    pub(crate) secret: bool,
+
+    /// the name the variable had when the table was filled, so a renamed
+    /// secret can be moved rather than lost
+    pub(crate) loaded_name: Option<String>,
+
+    /// a new value typed for a secret, stored when the table is saved
+    pub(crate) pending: Option<Secret>,
 }
 
 /// rows of name and value pairs, edited one cell at a time
@@ -62,6 +83,27 @@ impl Table {
                     name: p.name.clone(),
                     value: p.value.clone(),
                     enabled: p.enabled,
+                    secret: false,
+                    loaded_name: None,
+                    pending: None,
+                })
+                .collect(),
+            selected: 0,
+            editing: None,
+        }
+    }
+
+    pub(crate) fn from_variables(variables: &[Variable]) -> Self {
+        Self {
+            rows: variables
+                .iter()
+                .map(|v| Row {
+                    name: v.name.as_str().to_owned(),
+                    value: v.value.clone(),
+                    enabled: v.enabled,
+                    secret: v.secret,
+                    loaded_name: Some(v.name.as_str().to_owned()),
+                    pending: None,
                 })
                 .collect(),
             selected: 0,
@@ -96,6 +138,9 @@ impl Table {
             name: String::new(),
             value: String::new(),
             enabled: true,
+            secret: false,
+            loaded_name: None,
+            pending: None,
         });
         self.selected = self.rows.len() - 1;
         self.edit(Column::Name);
@@ -118,6 +163,13 @@ impl Table {
         let Some(row) = self.rows.get(self.selected) else {
             return;
         };
+
+        // a secret's value is typed blind, and never shown back
+        if column == Column::Value && row.secret {
+            self.editing = Some((column, masked("new value, or Enter to keep it")));
+
+            return;
+        }
 
         let (text, placeholder) = match column {
             Column::Name => (&row.name, "name"),
@@ -152,11 +204,43 @@ impl Table {
 
         match column {
             Column::Name => row.name = text,
+            Column::Value if row.secret => {
+                if !text.is_empty() {
+                    row.pending = Some(Secret::new(text));
+                }
+            }
             Column::Value => row.value = text,
         }
 
         if row.name.trim().is_empty() && row.value.is_empty() {
             self.delete_selected();
+        }
+    }
+
+    /// makes the selected row a secret; a value it had becomes the secret's
+    /// value, and leaves the row
+    pub(crate) fn make_secret(&mut self) {
+        self.commit();
+
+        if let Some(row) = self.rows.get_mut(self.selected)
+            && !row.secret
+        {
+            row.secret = true;
+
+            if !row.value.is_empty() {
+                row.pending = Some(Secret::new(std::mem::take(&mut row.value)));
+            }
+        }
+    }
+
+    /// turns the selected secret row back into a plain one holding `value`
+    pub(crate) fn make_plain(&mut self, value: String) {
+        self.commit();
+
+        if let Some(row) = self.rows.get_mut(self.selected) {
+            row.secret = false;
+            row.pending = None;
+            row.value = value;
         }
     }
 
@@ -198,7 +282,7 @@ impl BodyKind {
 
 /// a multi-line body field holding `text` exactly, a trailing newline
 /// included
-fn body_text(text: &str) -> TextArea<'static> {
+pub(crate) fn body_text(text: &str) -> TextArea<'static> {
     let mut area = TextArea::new(text.split('\n').map(ToOwned::to_owned).collect());
 
     area.set_placeholder_text("press Enter to write the body");
