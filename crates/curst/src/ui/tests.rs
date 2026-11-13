@@ -31,6 +31,27 @@ fn empty_screen() {
 }
 
 #[test]
+fn the_global_keys_are_always_listed_but_a_popup_takes_them() {
+    let mut state = State::default();
+
+    assert_eq!(
+        global_hints(&state),
+        [
+            ("Ctrl+R", "send"),
+            ("Ctrl+S", "save"),
+            ("Ctrl+E", "environments"),
+            ("Ctrl+O", "settings"),
+            ("Ctrl+C", "quit"),
+        ]
+    );
+    assert!(!hints(&state).iter().any(|(key, _)| key.starts_with("Ctrl")));
+
+    update(&mut state, Action::Settings);
+
+    assert_eq!(global_hints(&state), [("Ctrl+C", "quit")]);
+}
+
+#[test]
 fn json_response_side_by_side() {
     let (mut state, id) = sent_state("http://localhost/pets");
 
@@ -58,9 +79,9 @@ fn timing_tab() {
     state.response_tab = ResponseTab::Timing;
 
     insta::assert_snapshot!(render(&state, 80, 22));
-    // 22 rows: URL bar 3, footer 1, request pane 8, response pane 10 with
+    // 22 rows: URL bar 3, footer 2, request pane 8, response pane 9 with
     // its two borders
-    assert_eq!(state.response_height.get(), 8);
+    assert_eq!(state.response_height.get(), 7);
 }
 
 #[test]
@@ -100,10 +121,7 @@ fn editing_a_header_row() {
     update(&mut state, Action::NextCell);
 
     insta::assert_snapshot!(render(&state, 80, 12));
-    assert_eq!(
-        hints(&state),
-        [("Enter", "done"), ("Tab", "next field"), ("Ctrl+C", "quit")]
-    );
+    assert_eq!(hints(&state), [("Enter", "done"), ("Tab", "next field")]);
 }
 
 #[test]
@@ -142,10 +160,7 @@ fn text_body_with_its_content_type() {
     update(&mut state, Action::EditContentType);
 
     insta::assert_snapshot!(render(&state, 80, 12));
-    assert_eq!(
-        hints(&state),
-        [("Enter", "done"), ("Tab", "next field"), ("Ctrl+C", "quit")]
-    );
+    assert_eq!(hints(&state), [("Enter", "done"), ("Tab", "next field")]);
 
     update(&mut state, Action::StopEdit);
 
@@ -211,6 +226,7 @@ mod collections {
                 collections: vec![workspace],
                 globals: vec![],
                 problems: vec![],
+                orphans: vec![],
             },
         );
         state.focus = Focus::Sidebar;
@@ -236,7 +252,7 @@ mod collections {
         state.sidebar.cut = Some(key(&["users", "list"]));
 
         insta::assert_snapshot!(render(&state, 100, 12));
-        assert!(hints(&state).contains(&("Ctrl+S", "save")));
+        assert!(global_hints(&state).contains(&("Ctrl+S", "save")));
     }
 
     #[test]
@@ -277,5 +293,62 @@ mod collections {
         assert!(!screen.contains('\u{1b}'));
         assert!(!screen.contains('\u{7}'));
         assert!(screen.contains("evil␛]0;owned␇"));
+    }
+}
+
+mod trust {
+    use std::path::PathBuf;
+
+    use curst_core::model::{KeyValue, LocalId};
+
+    use super::*;
+    use crate::app::{Focus, Table, sample};
+
+    #[test]
+    fn the_trust_prompt_names_the_folder_and_the_choices() {
+        let mut state = State::default();
+        let mut shared = sample();
+
+        shared.id = LocalId::new("c2").unwrap();
+        shared.trusted = false;
+        shared.root = PathBuf::from("/repo/.curst");
+        shared.collection.name = "Shared".into();
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![shared],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![(
+                    LocalId::new("old").unwrap(),
+                    PathBuf::from("/old/repo/.curst"),
+                )],
+            },
+        );
+
+        insta::assert_snapshot!(render(&state, 100, 18));
+    }
+
+    #[test]
+    fn a_credential_typed_in_a_header_is_flagged() {
+        let mut state = State::default();
+
+        state.focus = Focus::Request;
+        state.request_tab = RequestTab::Headers;
+        state.headers = Table::from_pairs(&[
+            KeyValue::new("Accept", "*/*"),
+            KeyValue::new("Authorization", "Bearer abc123"),
+        ]);
+
+        assert!(!render(&state, 80, 14).contains('⚠'));
+
+        state.headers.selected = 1;
+
+        insta::assert_snapshot!(render(&state, 80, 14));
+        assert!(hints(&state).contains(&("m", "make it a secret")));
+
+        state.headers.rows[1].value = "Bearer {{token}}".into();
+
+        assert!(!render(&state, 80, 14).contains('⚠'));
     }
 }

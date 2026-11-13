@@ -1,5 +1,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use curst_core::store::Backend;
+
 use super::{Action, Focus, Popup, RequestTab, State};
 
 pub(crate) fn action_for(state: &State, key: KeyEvent) -> Option<Action> {
@@ -22,6 +24,7 @@ pub(crate) fn action_for(state: &State, key: KeyEvent) -> Option<Action> {
         KeyCode::Char('r') if ctrl => return Some(Action::Send),
         KeyCode::Char('s') if ctrl => return Some(Action::Save),
         KeyCode::Char('e') if ctrl => return Some(Action::Environments),
+        KeyCode::Char('o') if ctrl => return Some(Action::Settings),
         _ => {}
     }
 
@@ -49,6 +52,8 @@ pub(crate) fn action_for(state: &State, key: KeyEvent) -> Option<Action> {
             KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteRow),
             KeyCode::Char(' ') => Some(Action::ToggleRow),
             KeyCode::Char('t') => Some(Action::CycleKind),
+            KeyCode::Char('m') => Some(Action::MakeSecret),
+            KeyCode::Char('E') => Some(Action::EditBody),
             _ => None,
         }),
         Focus::Response => pan(key).or_else(|| common(state, key)).or(match key.code {
@@ -57,6 +62,7 @@ pub(crate) fn action_for(state: &State, key: KeyEvent) -> Option<Action> {
             KeyCode::Home | KeyCode::Char('g') => Some(Action::Top),
             KeyCode::End | KeyCode::Char('G') => Some(Action::Bottom),
             KeyCode::Char('s') => Some(Action::OpenSave),
+            KeyCode::Char('f') => Some(Action::Follow),
             _ => None,
         }),
     }
@@ -84,6 +90,7 @@ fn sidebar_key(key: KeyEvent) -> Option<Action> {
         KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteItem),
         KeyCode::Char('x') => Some(Action::Cut),
         KeyCode::Char('p') => Some(Action::Paste),
+        KeyCode::Char('T') => Some(Action::Trust),
         _ => None,
     }
 }
@@ -92,11 +99,33 @@ fn popup_key(popup: &Popup, key: KeyEvent) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
     match popup {
-        Popup::Prompt { .. } => Some(match key.code {
+        Popup::Prompt { .. } | Popup::Passphrase { .. } => Some(match key.code {
             KeyCode::Esc => Action::ClosePopup,
             KeyCode::Enter => Action::ConfirmPopup,
             _ => Action::Type(key),
         }),
+        Popup::Trust { .. } => match key.code {
+            KeyCode::Char('y' | 'Y') | KeyCode::Enter => Some(Action::ConfirmPopup),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(Action::ClosePopup),
+            KeyCode::Char(c @ '1'..='9') => Some(Action::Reattach(usize::from(c as u8 - b'1'))),
+            _ => None,
+        },
+        Popup::ChooseBackend => match key.code {
+            KeyCode::Char('k') => Some(Action::Choose(Backend::Keychain)),
+            KeyCode::Char('f') => Some(Action::Choose(Backend::EncryptedFile)),
+            KeyCode::Esc => Some(Action::ClosePopup),
+            _ => None,
+        },
+        Popup::Settings => match key.code {
+            KeyCode::Char('m') => Some(Action::Migrate),
+            KeyCode::Esc | KeyCode::Char('q') => Some(Action::ClosePopup),
+            _ => None,
+        },
+        Popup::Approve(_) => match key.code {
+            KeyCode::Char('y' | 'Y') => Some(Action::ConfirmPopup),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(Action::ClosePopup),
+            _ => None,
+        },
         Popup::Confirm { .. } => match key.code {
             KeyCode::Char('y' | 'Y') | KeyCode::Enter => Some(Action::ConfirmPopup),
             KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(Action::ClosePopup),
@@ -131,6 +160,7 @@ fn popup_key(popup: &Popup, key: KeyEvent) -> Option<Action> {
             KeyCode::Char('a') => Some(Action::AddRow),
             KeyCode::Char('d') | KeyCode::Delete => Some(Action::DeleteRow),
             KeyCode::Char(' ') => Some(Action::ToggleRow),
+            KeyCode::Char('s') => Some(Action::MakeSecret),
             _ => None,
         },
     }

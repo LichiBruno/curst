@@ -62,12 +62,30 @@ pub(crate) fn apply(state: &mut State, action: &Action) -> Vec<Command> {
             }
         }
         Action::DeleteItem => {
-            if let Some(row) = selected_row(state) {
+            let unmanaged = selected_row(state)
+                .filter(|r| r.kind == RowKind::Collection)
+                .and_then(|r| {
+                    state
+                        .workspace(&r.key.collection)
+                        .filter(|w| !w.managed)
+                        .map(|w| w.root.display().to_string())
+                });
+
+            if let Some(root) = unmanaged {
+                state.notice = Some(format!(
+                    "curst does not delete {root}; remove that folder yourself"
+                ));
+            } else if let Some(row) = selected_row(state) {
                 let message = match row.kind {
                     RowKind::Collection => {
+                        let secrets = state
+                            .workspace(&row.key.collection)
+                            .map_or(0, |w| super::secret_count(w, None));
+
                         format!(
-                            "Delete the collection {} and every request in it?",
-                            row.name
+                            "Delete the collection {} and every request in it{}?",
+                            row.name,
+                            super::popup::secrets_too(secrets)
                         )
                     }
                     RowKind::Folder => {
@@ -87,6 +105,15 @@ pub(crate) fn apply(state: &mut State, action: &Action) -> Vec<Command> {
             _ => state.notice = Some("select a folder or request to move".into()),
         },
         Action::Paste => return paste(state),
+        Action::Trust => match selected_row(state) {
+            Some(row) if !row.trusted => {
+                state.popup = Some(Popup::Trust {
+                    collection: row.key.collection,
+                });
+            }
+            Some(_) => state.notice = Some("this collection is already trusted".into()),
+            None => {}
+        },
         Action::MoveUp | Action::MoveDown => {
             return reorder(state, matches!(action, Action::MoveUp));
         }

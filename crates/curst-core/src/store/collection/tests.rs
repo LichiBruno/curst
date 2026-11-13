@@ -507,3 +507,111 @@ fn broken_and_duplicate_environments_are_reported() {
     assert_eq!(loaded.collection.environments.len(), 1);
     assert_eq!(loaded.collection.environments[0].id, dev.id);
 }
+
+#[test]
+fn secret_values_written_by_hand_are_reported() {
+    let (_dir, store) = new_collection();
+
+    fs::write(
+        store.root().join(COLLECTION_FILE),
+        "name = \"Pets\"\n\n[[variables]]\nname = \"key\"\nvalue = \"oops\"\nsecret = true\n",
+    )
+    .unwrap();
+    fs::create_dir(store.root().join(ENVIRONMENTS)).unwrap();
+    fs::write(
+        store.root().join("environments/dev.toml"),
+        "id = \"e1\"\nname = \"Dev\"\n\n[[variables]]\nname = \"token\"\nvalue = \"oops\"\nsecret = true\n",
+    )
+    .unwrap();
+
+    let loaded = store.load().unwrap();
+    let mut files: Vec<_> = loaded
+        .issues
+        .iter()
+        .map(|i| i.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+
+    files.sort();
+
+    assert_eq!(files, ["collection.toml", "dev.toml"]);
+    assert!(
+        loaded
+            .issues
+            .iter()
+            .all(|i| i.message.contains("is a secret"))
+    );
+    assert_eq!(loaded.collection.variables[0].value, "");
+    assert_eq!(loaded.collection.environments[0].variables[0].value, "");
+}
+
+#[cfg(unix)]
+#[test]
+fn links_are_reported_and_never_followed() {
+    use std::os::unix::fs::symlink;
+
+    let (dir, store) = new_collection();
+    let outside = dir.path().join("outside.toml");
+
+    fs::write(&outside, "name = \"Outside\"\nurl = \"leak\"").unwrap();
+    store.create_request(&[], "Real", &get("r")).unwrap();
+    store.create_folder(&[], "Sub").unwrap();
+
+    // a loop back to the parent, a file outside the collection, and a
+    // linked environment file
+    symlink(store.root(), store.root().join("sub/loop")).unwrap();
+    symlink(&outside, store.root().join("stolen.toml")).unwrap();
+    fs::create_dir(store.root().join(ENVIRONMENTS)).unwrap();
+    symlink(&outside, store.root().join("environments/env.toml")).unwrap();
+
+    let loaded = store.load().unwrap();
+    let mut refused: Vec<_> = loaded
+        .issues
+        .iter()
+        .map(|i| i.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+
+    refused.sort();
+
+    assert_eq!(refused, ["env.toml", "stolen.toml"]);
+    assert!(
+        loaded
+            .issues
+            .iter()
+            .all(|i| i.message.contains("links are not followed"))
+    );
+
+    // the folder loads, without the loop inside it
+    let names: Vec<_> = loaded.collection.items.iter().map(Item::slug).collect();
+
+    assert_eq!(names, ["real", "sub"]);
+
+    let Some(Item::Folder(sub)) = loaded.collection.item(&path(&["sub"])) else {
+        panic!("no folder");
+    };
+
+    assert_eq!(sub.items, Vec::new());
+
+    // a linked folder is not a place to write to either
+    symlink(dir.path(), store.root().join("away")).unwrap();
+
+    assert!(matches!(
+        store.create_request(&path(&["away"]), "x", &get("x")),
+        Err(StoreError::NotFound(_))
+    ));
+    assert!(matches!(
+        store.delete(&path(&["stolen"])),
+        Err(StoreError::NotFound(_))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_linked_collection_root_is_not_a_collection() {
+    let (dir, store) = new_collection();
+    let link = dir.path().join("linked");
+
+    std::os::unix::fs::symlink(store.root(), &link).unwrap();
+
+    assert!(store.exists());
+    assert!(!CollectionDir::open(&link).exists());
+}

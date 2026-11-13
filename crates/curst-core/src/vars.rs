@@ -50,14 +50,47 @@ impl fmt::Display for VarName {
     }
 }
 
+/// the scope a variable was found in
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Origin {
+    /// the active environment
+    Environment,
+
+    /// the collection
+    Collection,
+
+    /// the global variables
+    Global,
+}
+
+/// what a lookup found for a name
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Found<'a> {
+    /// the value, or `None` for a secret whose value is not available
+    pub value: Option<&'a str>,
+
+    /// the scope that defines the variable
+    pub origin: Origin,
+
+    /// whether the variable is a secret
+    pub secret: bool,
+}
+
 /// where variable values come from
 pub trait Lookup {
-    /// the value of `name`, or `None` when no scope defines it
-    fn value(&self, name: &VarName) -> Option<&str>;
+    /// the variable called `name`, or `None` when no scope defines it
+    fn find(&self, name: &VarName) -> Option<Found<'_>>;
+}
+
+/// the values of secret variables, fetched from the secret store by the
+/// caller before resolving
+pub trait SecretValues {
+    /// the value of the secret `name` defined in `origin`, if available
+    fn secret(&self, origin: Origin, name: &VarName) -> Option<&str>;
 }
 
 /// the three scopes, searched in order: environment, collection, global
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct Scopes<'a> {
     /// the active environment's variables
     pub environment: &'a [Variable],
@@ -67,15 +100,36 @@ pub struct Scopes<'a> {
 
     /// variables shared by every collection
     pub global: &'a [Variable],
+
+    /// the values of secret variables; without it every secret is
+    /// unavailable
+    pub secrets: Option<&'a dyn SecretValues>,
 }
 
 impl Lookup for Scopes<'_> {
-    fn value(&self, name: &VarName) -> Option<&str> {
-        [self.environment, self.collection, self.global]
-            .into_iter()
-            .flatten()
-            .find(|v| v.enabled && v.name == *name)
-            .map(|v| v.value.as_str())
+    fn find(&self, name: &VarName) -> Option<Found<'_>> {
+        let scopes = [
+            (Origin::Environment, self.environment),
+            (Origin::Collection, self.collection),
+            (Origin::Global, self.global),
+        ];
+        let (origin, variable) = scopes.into_iter().find_map(|(origin, variables)| {
+            variables
+                .iter()
+                .find(|v| v.enabled && v.name == *name)
+                .map(|v| (origin, v))
+        })?;
+        let value = if variable.secret {
+            self.secrets.and_then(|s| s.secret(origin, name))
+        } else {
+            Some(variable.value.as_str())
+        };
+
+        Some(Found {
+            value,
+            origin,
+            secret: variable.secret,
+        })
     }
 }
 
@@ -85,8 +139,14 @@ pub struct Resolution {
     /// every variable that was replaced, nested ones included
     pub used: BTreeSet<VarName>,
 
+    /// the secrets among them, with the scope each came from
+    pub secrets: BTreeSet<(Origin, VarName)>,
+
     /// variables no scope defines, left as written
     pub missing: BTreeSet<VarName>,
+
+    /// secrets whose value is not available, left as written
+    pub unavailable: BTreeSet<(Origin, VarName)>,
 
     /// variables whose value leads back to themselves, left as written
     pub cyclic: BTreeSet<VarName>,
@@ -96,7 +156,7 @@ impl Resolution {
     /// whether every variable was replaced
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.missing.is_empty() && self.cyclic.is_empty()
+        self.missing.is_empty() && self.unavailable.is_empty() && self.cyclic.is_empty()
     }
 }
 
@@ -165,8 +225,15 @@ fn expand(
             continue;
         }
 
-        let Some(value) = lookup.value(&name) else {
+        let Some(found) = lookup.find(&name) else {
             out.missing.insert(name);
+            result.push_str(written);
+
+            continue;
+        };
+
+        let Some(value) = found.value else {
+            out.unavailable.insert((found.origin, name));
             result.push_str(written);
 
             continue;
@@ -183,6 +250,11 @@ fn expand(
             result.push_str(written);
         } else {
             result.push_str(&expanded);
+
+            if found.secret {
+                out.secrets.insert((found.origin, name.clone()));
+            }
+
             out.used.insert(name);
         }
     }
@@ -345,6 +417,7 @@ mod tests {
             environment: &environment,
             collection: &collection,
             global: &global,
+            secrets: None,
         };
         let mut out = Resolution::default();
 
@@ -419,6 +492,61 @@ mod tests {
         request.body = Body::None;
 
         assert_eq!(resolve_request(&request, &scopes).0.body, Body::None);
+    }
+
+    struct Vault(Vec<(Origin, &'static str, &'static str)>);
+
+    impl SecretValues for Vault {
+        fn secret(&self, origin: Origin, name: &VarName) -> Option<&str> {
+            self.0
+                .iter()
+                .find(|(o, n, _)| *o == origin && *n == name.as_str())
+                .map(|(_, _, v)| *v)
+        }
+    }
+
+    #[test]
+    fn secrets_come_from_their_own_source_and_are_reported() {
+        let environment = [Variable::secret(name("token"))];
+        let collection = [
+            var("auth", "Bearer {{token}}"),
+            Variable::secret(name("key")),
+        ];
+        let vault = Vault(vec![(Origin::Environment, "token", "t0k")]);
+        let scopes = Scopes {
+            environment: &environment,
+            collection: &collection,
+            secrets: Some(&vault),
+            ..Scopes::default()
+        };
+        let mut out = Resolution::default();
+
+        assert_eq!(
+            resolve("{{auth}} {{key}}", &scopes, &mut out),
+            "Bearer t0k {{key}}"
+        );
+        assert_eq!(
+            out.secrets,
+            BTreeSet::from([(Origin::Environment, name("token"))])
+        );
+        assert_eq!(
+            out.unavailable,
+            BTreeSet::from([(Origin::Collection, name("key"))])
+        );
+        assert!(!out.is_complete());
+
+        // without a source every secret is unavailable, never empty
+        let mut out = Resolution::default();
+        let locked = Scopes {
+            environment: &environment,
+            ..Scopes::default()
+        };
+
+        assert_eq!(resolve("x{{token}}", &locked, &mut out), "x{{token}}");
+        assert_eq!(
+            out.unavailable,
+            BTreeSet::from([(Origin::Environment, name("token"))])
+        );
     }
 
     #[test]

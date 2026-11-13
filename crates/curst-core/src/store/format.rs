@@ -175,42 +175,80 @@ impl RequestFile {
     }
 }
 
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct VariableFile {
     name: String,
 
-    #[serde(default)]
-    value: String,
+    /// absent for a secret, whose value lives in the secret store
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
 
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     enabled: bool,
+
+    #[serde(default, skip_serializing_if = "is_false")]
+    secret: bool,
 }
 
+/// the variables as written to a file; a secret's value is never included,
+/// whatever the variable holds in memory
 pub(crate) fn variables_to_file(variables: &[Variable]) -> Vec<VariableFile> {
     variables
         .iter()
         .map(|v| VariableFile {
             name: v.name.as_str().to_owned(),
-            value: v.value.clone(),
+            value: (!v.secret).then(|| v.value.clone()),
             enabled: v.enabled,
+            secret: v.secret,
         })
         .collect()
 }
 
-pub(crate) fn variables_from_file(variables: Vec<VariableFile>) -> Result<Vec<Variable>, String> {
-    variables
-        .into_iter()
-        .map(|v| {
-            let name = VarName::new(&v.name)
-                .ok_or_else(|| format!("invalid variable name {:?}", v.name))?;
+/// variables read from a file, and a warning for each secret whose value
+/// was written into it by hand
+pub(crate) struct ReadVariables {
+    pub(crate) variables: Vec<Variable>,
+    pub(crate) warnings: Vec<String>,
+}
 
-            Ok(Variable {
-                name,
-                value: v.value,
-                enabled: v.enabled,
-            })
-        })
-        .collect()
+pub(crate) fn variables_from_file(variables: Vec<VariableFile>) -> Result<ReadVariables, String> {
+    let mut read = ReadVariables {
+        variables: Vec::new(),
+        warnings: Vec::new(),
+    };
+
+    for v in variables {
+        let name =
+            VarName::new(&v.name).ok_or_else(|| format!("invalid variable name {:?}", v.name))?;
+
+        // the written value is never used, and the next save leaves it out
+        if v.secret && v.value.is_some() {
+            read.warnings.push(format!(
+                "{name} is a secret, but its value is written in the file: that value is \
+                 not used; remove it and set the secret in curst"
+            ));
+        }
+
+        let value = if v.secret {
+            String::new()
+        } else {
+            v.value.unwrap_or_default()
+        };
+
+        read.variables.push(Variable {
+            name,
+            value,
+            enabled: v.enabled,
+            secret: v.secret,
+        });
+    }
+
+    Ok(read)
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -320,10 +358,66 @@ mod tests {
     }
 
     #[test]
+    fn a_secret_value_never_reaches_the_file() {
+        let mut token = Variable::secret(VarName::new("token").unwrap());
+
+        token.value = "s3cr3t".into();
+
+        let file = EnvironmentFile {
+            id: "e1".into(),
+            name: "Dev".into(),
+            variables: variables_to_file(&[
+                Variable::new(VarName::new("host").unwrap(), "h"),
+                token,
+            ]),
+        };
+        let text = to_toml(&file);
+
+        assert_eq!(
+            text,
+            "id = \"e1\"\nname = \"Dev\"\n\n[[variables]]\nname = \"host\"\nvalue = \"h\"\n\n[[variables]]\nname = \"token\"\nsecret = true\n"
+        );
+
+        let collection = to_toml(&CollectionFile {
+            name: "c".into(),
+            order: vec![],
+            variables: file.variables,
+        });
+        let globals = to_toml(&GlobalsFile {
+            variables: variables_to_file(&[Variable {
+                value: "s3cr3t".into(),
+                ..Variable::secret(VarName::new("g").unwrap())
+            }]),
+        });
+
+        assert!(!collection.contains("s3cr3t"));
+        assert!(!globals.contains("s3cr3t"));
+        assert!(globals.contains("secret = true"));
+    }
+
+    #[test]
+    fn a_hand_written_value_beside_secret_is_ignored() {
+        let file: GlobalsFile =
+            toml::from_str("[[variables]]\nname = \"t\"\nvalue = \"oops\"\nsecret = true\n")
+                .unwrap();
+        let read = variables_from_file(file.variables).unwrap();
+
+        assert_eq!(
+            read.variables,
+            [Variable::secret(VarName::new("t").unwrap())]
+        );
+        assert_eq!(read.warnings.len(), 1);
+        assert!(read.warnings[0].starts_with("t is a secret, but its value is written"));
+    }
+
+    #[test]
     fn variables_and_environment_ids_are_checked() {
         let vars = vec![Variable::new(VarName::new("a").unwrap(), "1")];
 
-        assert_eq!(variables_from_file(variables_to_file(&vars)).unwrap(), vars);
+        let read = variables_from_file(variables_to_file(&vars)).unwrap();
+
+        assert_eq!(read.variables, vars);
+        assert_eq!(read.warnings, Vec::<String>::new());
 
         let bad: GlobalsFile = toml::from_str("[[variables]]\nname = \"a b\"").unwrap();
 

@@ -112,6 +112,13 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
 
             spans.push(Span::styled(display(&row.name), style));
 
+            if row.kind == RowKind::Collection && !row.trusted {
+                spans.push(Span::styled(
+                    " untrusted",
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+
             Line::from(spans)
         })
         .collect();

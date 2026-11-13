@@ -5,13 +5,15 @@
 
 use std::path::PathBuf;
 
-use curst_core::model::{EnvId, Environment, KeyValue, LocalId, Request, Variable};
+use curst_core::model::{EnvId, Environment, LocalId, Request, Variable};
+use curst_core::secrets::detect::Place;
+use curst_core::secrets::{Approval, Secret, SecretKey};
 use curst_core::vars::VarName;
 use ratatui_textarea::TextArea;
 
-use super::editor::{Column, Table, single_line, text_of};
+use super::editor::{Column, Row, Table, masked, single_line, text_of};
 use super::workspace::NodeKey;
-use super::{Action, Change, Command, State, step};
+use super::{Action, Change, Command, SecretChange, State, step};
 
 /// what a text prompt is for
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +26,9 @@ pub(crate) enum Purpose {
     Rename(NodeKey),
     NewEnvironment(LocalId),
     RenameEnvironment(LocalId, EnvId),
+
+    /// the name of a new secret for the value at a place in the request
+    MakeSecret(Place),
 }
 
 impl Purpose {
@@ -37,6 +42,7 @@ impl Purpose {
             Self::Rename(_) => "Rename",
             Self::NewEnvironment(_) => "New environment",
             Self::RenameEnvironment(..) => "Rename environment",
+            Self::MakeSecret(_) => "Name of the new secret",
         }
     }
 }
@@ -89,18 +95,7 @@ pub(crate) struct VariablesEditor {
     pub(crate) environment: Option<Environment>,
     pub(crate) tab: VarTab,
     pub(crate) tables: [Table; 3],
-    baseline: [Vec<KeyValue>; 3],
-}
-
-fn pairs_of(variables: &[Variable]) -> Vec<KeyValue> {
-    variables
-        .iter()
-        .map(|v| KeyValue {
-            name: v.name.as_str().to_owned(),
-            value: v.value.clone(),
-            enabled: v.enabled,
-        })
-        .collect()
+    baseline: [Vec<Row>; 3],
 }
 
 impl VariablesEditor {
@@ -110,14 +105,12 @@ impl VariablesEditor {
         collection_vars: &[Variable],
         globals: &[Variable],
     ) -> Self {
-        let baseline = [
-            environment
-                .as_ref()
-                .map_or_else(Vec::new, |e| pairs_of(&e.variables)),
-            pairs_of(collection_vars),
-            pairs_of(globals),
+        let tables = [
+            Table::from_variables(environment.as_ref().map_or(&[], |e| e.variables.as_slice())),
+            Table::from_variables(collection_vars),
+            Table::from_variables(globals),
         ];
-        let tables = baseline.clone().map(|pairs| Table::from_pairs(&pairs));
+        let baseline = tables.each_ref().map(|t| t.rows.clone());
         let tab = if environment.is_some() {
             VarTab::Environment
         } else {
@@ -146,7 +139,7 @@ impl VariablesEditor {
         &self.tables[self.tab.index()]
     }
 
-    fn table_mut(&mut self) -> &mut Table {
+    pub(crate) fn table_mut(&mut self) -> &mut Table {
         &mut self.tables[self.tab.index()]
     }
 
@@ -155,24 +148,84 @@ impl VariablesEditor {
     }
 
     fn changed(&self, tab: VarTab) -> bool {
-        self.tables[tab.index()].pairs() != self.baseline[tab.index()]
+        self.tables[tab.index()].rows != self.baseline[tab.index()]
     }
 
     pub(crate) fn is_changed(&self) -> bool {
         VarTab::ALL.into_iter().any(|t| self.changed(t))
     }
 
+    pub(crate) fn key(&self, tab: VarTab, name: VarName) -> Option<SecretKey> {
+        match tab {
+            VarTab::Environment => Some(SecretKey::Environment {
+                collection: self.collection.clone(),
+                environment: self.environment.as_ref()?.id.clone(),
+                name,
+            }),
+            VarTab::Collection => Some(SecretKey::Collection {
+                collection: self.collection.clone(),
+                name,
+            }),
+            VarTab::Globals => Some(SecretKey::Global { name }),
+        }
+    }
+
+    /// what saving a tab does to the secret store: a renamed secret moves,
+    /// with the hosts it was approved for; a removed one is deleted; a new
+    /// value is stored; names are checked before this is called
+    fn secret_changes(&self, tab: VarTab) -> Vec<SecretChange> {
+        let rows = &self.tables[tab.index()].rows;
+        let before = &self.baseline[tab.index()];
+        let key = |name: &str| VarName::new(name.trim()).and_then(|n| self.key(tab, n));
+        let mut changes = Vec::new();
+
+        for row in rows.iter().filter(|r| r.secret) {
+            let Some(new) = key(&row.name) else {
+                continue;
+            };
+
+            let was_secret = |old: &String| {
+                before
+                    .iter()
+                    .any(|b| b.secret && b.loaded_name.as_ref() == Some(old))
+            };
+
+            if let Some(old) = row.loaded_name.as_ref().filter(|old| was_secret(old))
+                && let Some(old) = key(old)
+                && old != new
+            {
+                changes.push(SecretChange::Rename(old, new.clone()));
+            }
+
+            if let Some(value) = &row.pending {
+                changes.push(SecretChange::Set(new, value.clone()));
+            }
+        }
+
+        for gone in before.iter().filter(|b| b.secret) {
+            let kept = rows
+                .iter()
+                .any(|r| r.secret && r.loaded_name == gone.loaded_name);
+
+            if !kept && let Some(old) = key(&gone.name) {
+                changes.push(SecretChange::Delete(old));
+            }
+        }
+
+        changes
+    }
+
     /// the variables of a tab, or the row and reason of the first bad one
     fn variables(&self, tab: VarTab) -> Result<Vec<Variable>, (usize, String)> {
         let mut variables: Vec<Variable> = Vec::new();
 
-        for (row, pair) in self.tables[tab.index()].pairs().into_iter().enumerate() {
-            let Some(name) = VarName::new(&pair.name) else {
+        for (row, pair) in self.tables[tab.index()].rows.iter().enumerate() {
+            let Some(name) = VarName::new(pair.name.trim()) else {
                 return Err((
                     row,
                     format!(
                         "{:?} is not a valid name: use letters, digits, _ - and .",
-                        pair.name
+                        pair.name.trim()
                     ),
                 ));
             };
@@ -183,8 +236,13 @@ impl VariablesEditor {
 
             variables.push(Variable {
                 name,
-                value: pair.value,
+                value: if pair.secret {
+                    String::new()
+                } else {
+                    pair.value.clone()
+                },
                 enabled: pair.enabled,
+                secret: pair.secret,
             });
         }
 
@@ -209,6 +267,33 @@ pub(crate) enum Popup {
         selected: usize,
     },
     Variables(Box<VariablesEditor>),
+
+    /// whether to trust a collection that came from elsewhere, such as a
+    /// `.curst/` folder in a repository
+    Trust {
+        collection: LocalId,
+    },
+
+    /// where secrets are kept, asked the first time one is needed
+    ChooseBackend,
+
+    /// the passphrase of the encrypted file; a new file asks twice, `first`
+    /// holding the first entry
+    Passphrase {
+        new: bool,
+
+        /// the passphrase of a file secrets are about to move into
+        migrate: bool,
+        first: Option<Secret>,
+        input: Box<TextArea<'static>>,
+        error: Option<String>,
+    },
+
+    /// whether secrets may go to an origin they were not sent to before
+    Approve(Approval),
+
+    /// where secrets are kept, and moving them
+    Settings,
 }
 
 impl Popup {
@@ -222,6 +307,16 @@ impl Popup {
         Self::Prompt {
             purpose,
             input: Box::new(single_line(text, placeholder)),
+        }
+    }
+
+    pub(crate) fn passphrase(new: bool, error: Option<String>) -> Self {
+        Self::Passphrase {
+            new,
+            migrate: false,
+            first: None,
+            input: Box::new(masked("passphrase")),
+            error,
         }
     }
 
@@ -280,6 +375,19 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
             selected,
         } => return environments(state, collection, selected, action),
         Popup::Variables(editor) => return variables(state, editor, action),
+        Popup::Trust { collection } => return trust(state, collection, action),
+        popup @ (Popup::ChooseBackend | Popup::Passphrase { .. } | Popup::Approve(_)) => {
+            return secret_popup(state, popup, action);
+        }
+        Popup::Settings => match action {
+            Action::Migrate => return Ok(super::send::migrate(state)),
+            Action::ClosePopup => {}
+            other => {
+                state.popup = Some(Popup::Settings);
+
+                return Err(other);
+            }
+        },
     }
 
     Ok(Vec::new())
@@ -350,16 +458,26 @@ fn confirm_prompt(
             collection,
             change: Change::RenameEnvironment { id, name: text },
         }],
+        Purpose::MakeSecret(place) => {
+            let Some(name) = VarName::new(&text) else {
+                state.notice = Some(format!(
+                    "{text:?} is not a valid name: use letters, digits, _ - and ."
+                ));
+                state.popup = Some(Popup::Prompt {
+                    purpose: Purpose::MakeSecret(place),
+                    input,
+                });
+
+                return Vec::new();
+            };
+
+            super::request::turn_into_secret(state, place, &name)
+        }
     }
 }
 
 fn run_pending(state: &mut State, pending: Pending) -> Vec<Command> {
     match pending {
-        Pending::Open(key) => {
-            state.load_request(&key);
-
-            Vec::new()
-        }
         Pending::Delete(key) => {
             let change = if key.path.is_empty() {
                 Change::DeleteCollection
@@ -378,6 +496,11 @@ fn run_pending(state: &mut State, pending: Pending) -> Vec<Command> {
             collection,
             change: Change::DeleteEnvironment(id),
         }],
+        Pending::Open(key) => {
+            state.load_request(&key);
+
+            Vec::new()
+        }
         Pending::Quit(_) => {
             state.should_quit = true;
 
@@ -385,6 +508,177 @@ fn run_pending(state: &mut State, pending: Pending) -> Vec<Command> {
         }
         Pending::CloseVariables(_) => Vec::new(),
     }
+}
+
+/// the pop-ups that unlock or approve secrets
+fn secret_popup(state: &mut State, popup: Popup, action: Action) -> Result<Vec<Command>, Action> {
+    match popup {
+        Popup::ChooseBackend => match action {
+            Action::Choose(backend) => return Ok(vec![Command::ChooseBackend(backend)]),
+            Action::ClosePopup => locked_out(state),
+            other => {
+                state.popup = Some(Popup::ChooseBackend);
+
+                return Err(other);
+            }
+        },
+        Popup::Passphrase {
+            new,
+            migrate,
+            first,
+            mut input,
+            error,
+        } => match action {
+            Action::Type(key) => {
+                input.input(key);
+                state.popup = Some(Popup::Passphrase {
+                    new,
+                    migrate,
+                    first,
+                    input,
+                    error,
+                });
+            }
+            Action::ConfirmPopup => {
+                let typed = Secret::new(text_of(&input));
+
+                return Ok(super::send::passphrase(state, (new, migrate), first, typed));
+            }
+            Action::ClosePopup => locked_out(state),
+            other => {
+                state.popup = Some(Popup::Passphrase {
+                    new,
+                    migrate,
+                    first,
+                    input,
+                    error,
+                });
+
+                return Err(other);
+            }
+        },
+        Popup::Approve(approval) => match action {
+            Action::ConfirmPopup => {
+                let Some(id) = state.waiting.as_ref().map(|w| w.id) else {
+                    return Ok(Vec::new());
+                };
+
+                return Ok(vec![Command::Approve {
+                    id,
+                    keys: approval.keys,
+                    origin: approval.origin,
+                }]);
+            }
+            Action::ClosePopup => {
+                state.waiting = None;
+                state.notice = Some("not sent".into());
+            }
+            other => {
+                state.popup = Some(Popup::Approve(approval));
+
+                return Err(other);
+            }
+        },
+        _ => {}
+    }
+
+    Ok(Vec::new())
+}
+
+/// the end of a delete question that says how many secrets go too
+pub(crate) fn secrets_too(count: usize) -> String {
+    match count {
+        0 => String::new(),
+        1 => ", and 1 secret".into(),
+        n => format!(", and {n} secrets"),
+    }
+}
+
+/// the user left a secret prompt: the request waiting for it is dropped
+fn locked_out(state: &mut State) {
+    state.notice = Some("secrets stay locked, so nothing was done".into());
+    super::send::give_back(state);
+}
+
+/// `s` in the variable editor: a plain variable becomes a secret, and a
+/// secret becomes plain again, its value fetched from the store if needed
+fn toggle_secret(state: &mut State, mut editor: Box<VariablesEditor>) -> Vec<Command> {
+    let tab = editor.tab;
+    let table = editor.table_mut();
+
+    table.commit();
+
+    let Some(row) = table.rows.get(table.selected).cloned() else {
+        state.popup = Some(Popup::Variables(editor));
+
+        return Vec::new();
+    };
+
+    if !row.secret {
+        table.make_secret();
+        state.popup = Some(Popup::Variables(editor));
+
+        return Vec::new();
+    }
+
+    // a value typed in this editor is still at hand
+    if let Some(value) = row.pending {
+        table.make_plain(value.expose().to_owned());
+        state.popup = Some(Popup::Variables(editor));
+
+        return Vec::new();
+    }
+
+    let key = row
+        .loaded_name
+        .as_deref()
+        .and_then(VarName::new)
+        .and_then(|name| editor.key(tab, name));
+
+    if let Some(key) = key {
+        return super::send::reveal(state, editor, key);
+    }
+
+    editor.table_mut().make_plain(String::new());
+    state.popup = Some(Popup::Variables(editor));
+
+    Vec::new()
+}
+
+fn trust(state: &mut State, collection: LocalId, action: Action) -> Result<Vec<Command>, Action> {
+    let reattach = match action {
+        Action::ConfirmPopup => None,
+        Action::Reattach(index) => {
+            let Some((id, _)) = state.orphans.get(index) else {
+                state.popup = Some(Popup::Trust { collection });
+
+                return Ok(Vec::new());
+            };
+
+            Some(id.clone())
+        }
+        Action::ClosePopup => {
+            let name = state
+                .workspace(&collection)
+                .map_or_else(String::new, |w| w.collection.name.clone());
+
+            state.notice = Some(format!(
+                "{name} is not trusted: you can look around, but nothing is sent; press T on it to decide again"
+            ));
+
+            return Ok(Vec::new());
+        }
+        other => {
+            state.popup = Some(Popup::Trust { collection });
+
+            return Err(other);
+        }
+    };
+
+    Ok(vec![Command::Trust {
+        collection,
+        reattach,
+    }])
 }
 
 fn environments(
@@ -438,8 +732,9 @@ fn environments(
             if let Some(environment) = chosen {
                 state.popup = Some(Popup::confirm(
                     format!(
-                        "Delete the environment {} and its variables?",
-                        environment.name
+                        "Delete the environment {} and its variables{}?",
+                        environment.name,
+                        secrets_too(super::secret_count(workspace, Some(&environment.id)))
                     ),
                     Pending::DeleteEnvironment(collection, environment.id),
                 ));
@@ -497,6 +792,7 @@ fn variables(
         Action::AddRow => editor.table_mut().add_row(),
         Action::DeleteRow => editor.table_mut().delete_selected(),
         Action::ToggleRow => editor.table_mut().toggle_selected(),
+        Action::MakeSecret => return Ok(toggle_secret(state, editor)),
         Action::Edit => {
             let table = editor.table_mut();
 
@@ -537,6 +833,7 @@ fn save_variables(state: &mut State, mut editor: Box<VariablesEditor>) -> Vec<Co
     }
 
     let mut commands = Vec::new();
+    let mut changes = Vec::new();
 
     for tab in editor.tabs() {
         if !editor.changed(tab) {
@@ -556,6 +853,7 @@ fn save_variables(state: &mut State, mut editor: Box<VariablesEditor>) -> Vec<Co
         };
         let collection = editor.collection.clone();
 
+        changes.extend(editor.secret_changes(tab));
         commands.push(match tab {
             VarTab::Environment => {
                 let Some(mut environment) = editor.environment.clone() else {
@@ -577,5 +875,5 @@ fn save_variables(state: &mut State, mut editor: Box<VariablesEditor>) -> Vec<Co
         });
     }
 
-    commands
+    super::send::change_secrets(state, changes, commands)
 }

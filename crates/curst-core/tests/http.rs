@@ -4,16 +4,18 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use curst_core::http::{Cancel, Config, CurlExecutor, HttpError, HttpExecutor, Response};
+use curst_core::http::{
+    Cancel, Config, CurlExecutor, HttpError, HttpExecutor, RedirectRule, Response,
+};
 use curst_core::model::{Auth, Body, KeyValue, Method, Request};
 use httpmock::MockServer;
 
 fn send(request: &Request) -> Result<Response, HttpError> {
-    CurlExecutor::default().execute(request, &Cancel::new())
+    CurlExecutor::default().execute(request, &Cancel::new(), &RedirectRule::Any)
 }
 
 fn send_with(config: Config, request: &Request) -> Result<Response, HttpError> {
-    CurlExecutor::new(config).execute(request, &Cancel::new())
+    CurlExecutor::new(config).execute(request, &Cancel::new(), &RedirectRule::Any)
 }
 
 /// a plain HTTP URL on the mock server, which answers HTTP and HTTPS on the
@@ -305,7 +307,7 @@ fn cancel_stops_a_request_in_flight() {
 
     let started = Instant::now();
     let err = CurlExecutor::default()
-        .execute(&get(http(&server, "/slow")), &cancel)
+        .execute(&get(http(&server, "/slow")), &cancel, &RedirectRule::Any)
         .unwrap_err();
     canceller.join().unwrap();
 
@@ -657,4 +659,109 @@ fn a_missing_ca_file_is_a_tls_error() {
 
     assert!(matches!(err, HttpError::Tls(_)), "{err:?}");
     assert!(err.to_string().contains("trusted certificates"), "{err}");
+}
+
+fn within(urls: &[&str]) -> RedirectRule {
+    RedirectRule::Within(
+        urls.iter()
+            .map(|u| curst_core::url::origin(u).unwrap())
+            .collect(),
+    )
+}
+
+#[test]
+fn a_request_with_secrets_follows_redirects_within_approved_origins() {
+    let server = MockServer::start();
+    let target = http(&server, "/to");
+
+    server.mock(|when, then| {
+        when.path("/from");
+        then.status(307).header("location", "/to");
+    });
+
+    let landed = server.mock(|when, then| {
+        when.path("/to");
+        then.status(200);
+    });
+    let response = CurlExecutor::default()
+        .execute(
+            &get(http(&server, "/from")),
+            &Cancel::new(),
+            &within(&[&target]),
+        )
+        .unwrap();
+
+    landed.assert();
+    assert_eq!((response.status, response.stopped), (200, None));
+}
+
+#[test]
+fn a_redirect_to_another_origin_stops_and_says_where() {
+    let first = MockServer::start();
+    let other = MockServer::start();
+    let elsewhere = http(&other, "/landing");
+
+    for (path, status) in [("/temporary", 307), ("/see-other", 303)] {
+        first.mock(|when, then| {
+            when.path(path);
+            then.status(status).header("location", elsewhere.as_str());
+        });
+    }
+
+    let never = other.mock(|when, then| {
+        when.path("/landing");
+        then.status(200);
+    });
+    let post = |path: &str| Request {
+        method: Method::Post,
+        body: Body::Json("{}".into()),
+        ..get(http(&first, path))
+    };
+    let rule = within(&[&http(&first, "/")]);
+    let kept = CurlExecutor::default()
+        .execute(&post("/temporary"), &Cancel::new(), &rule)
+        .unwrap();
+    let dropped = CurlExecutor::default()
+        .execute(&post("/see-other"), &Cancel::new(), &rule)
+        .unwrap();
+
+    never.assert_calls(0);
+    assert_eq!(kept.status, 307);
+    assert_eq!(
+        kept.stopped,
+        Some(curst_core::http::StoppedRedirect {
+            url: elsewhere.clone(),
+            method: Method::Post,
+            keeps_body: true,
+        })
+    );
+    assert_eq!(
+        dropped.stopped.map(|s| (s.method, s.keeps_body)),
+        Some((Method::Get, false))
+    );
+}
+
+#[test]
+fn a_redirect_from_https_to_http_stops() {
+    let server = MockServer::start();
+    let plain = format!("http://localhost:{}/plain", server.port());
+
+    server.mock(|when, then| {
+        when.path("/secure");
+        then.status(307).header("location", plain.as_str());
+    });
+
+    let config = Config {
+        ca_file: Some(mock_ca()),
+        ..Config::default()
+    };
+    let response = CurlExecutor::new(config)
+        .execute(
+            &get(https(&server, "/secure")),
+            &Cancel::new(),
+            &within(&[&https(&server, "/")]),
+        )
+        .unwrap();
+
+    assert_eq!(response.stopped.map(|s| s.url), Some(plain));
 }

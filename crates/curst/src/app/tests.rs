@@ -47,12 +47,13 @@ pub(crate) fn response(body: &str) -> Response {
         },
         effective_url: "http://localhost/".into(),
         redirects: 0,
+        stopped: None,
     }
 }
 
 fn sent(commands: &[Command]) -> (u64, &curst_core::model::Request) {
     match commands.last() {
-        Some(Command::Send { id, request }) => (*id, request),
+        Some(Command::Send { id, request, .. }) => (*id, request),
         other => panic!("expected a send, got {other:?}"),
     }
 }
@@ -602,6 +603,7 @@ mod collections {
                 collections: vec![sample()],
                 globals: vec![],
                 problems: vec![],
+                orphans: vec![],
             },
         );
         state.focus = Focus::Sidebar;
@@ -646,13 +648,11 @@ mod collections {
                 collections: vec![],
                 globals: vec![],
                 problems: vec!["a.toml: bad".into(), "b.toml: bad".into()],
+                orphans: vec![],
             },
         );
 
-        assert_eq!(
-            state.notice.as_deref(),
-            Some("skipped a.toml: bad and 1 more")
-        );
+        assert_eq!(state.notice.as_deref(), Some("a.toml: bad (and 1 more)"));
     }
 
     #[test]
@@ -859,6 +859,16 @@ mod collections {
         assert_eq!(
             state.notice.as_deref(),
             Some("not sent: {{also}}, {{gone}} not defined in Dev")
+        );
+
+        state.globals = vec![Variable::secret(VarName::new("gone").unwrap())];
+
+        assert_eq!(press(&mut state, KeyCode::Enter), Vec::new());
+        assert_eq!(
+            state.notice.as_deref(),
+            Some(
+                "not sent: {{also}}, {{path}} not defined in Dev; {{gone}} secret with no value yet; set it in the variable editor"
+            )
         );
 
         state.globals = vec![var("gone", "{{also}}"), var("also", "{{gone}}")];
@@ -1248,6 +1258,47 @@ mod collections {
     }
 
     #[test]
+    fn a_secret_variable_stays_secret_when_another_row_is_saved() {
+        let mut state = with_collection();
+
+        state.collections[0].collection.variables = vec![
+            Variable::secret(VarName::new("token").unwrap()),
+            Variable::new(VarName::new("host").unwrap(), "h"),
+        ];
+        press_key(&mut state, ctrl('e'));
+        press(&mut state, KeyCode::Char('v'));
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Tab);
+        type_text(&mut state, "2");
+        press(&mut state, KeyCode::Enter);
+
+        // the secret's value is typed blind, and Enter on nothing keeps it
+        press(&mut state, KeyCode::Up);
+        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Tab);
+
+        let Some(Popup::Variables(editor)) = &state.popup else {
+            panic!("no editor");
+        };
+
+        assert!(editor.editing());
+
+        press(&mut state, KeyCode::Enter);
+
+        assert_eq!(
+            press_key(&mut state, ctrl('s')),
+            [Command::Store {
+                collection: LocalId::new("c1").unwrap(),
+                change: Change::SaveVariables(vec![
+                    Variable::secret(VarName::new("token").unwrap()),
+                    Variable::new(VarName::new("host").unwrap(), "h2"),
+                ]),
+            }]
+        );
+    }
+
+    #[test]
     fn ctrl_s_saves_while_a_variable_is_being_typed() {
         let mut state = with_collection();
 
@@ -1343,5 +1394,1202 @@ mod collections {
         update(&mut state, Action::CollectionAdded(Err("nope".into())));
 
         assert_eq!(state.notice.as_deref(), Some("nope"));
+    }
+}
+
+mod trust {
+    use std::path::PathBuf;
+
+    use curst_core::model::Variable;
+    use curst_core::vars::VarName;
+
+    use super::*;
+    use crate::app::workspace::tests::sample;
+
+    fn id(text: &str) -> LocalId {
+        LocalId::new(text).unwrap()
+    }
+
+    /// a trusted collection `c1` and an untrusted `.curst/` folder `c2`
+    fn with_untrusted() -> State {
+        let mut state = State::default();
+        let mut shared = sample();
+
+        shared.id = id("c2");
+        shared.trusted = false;
+        shared.managed = false;
+        shared.root = PathBuf::from("/repo/.curst");
+        shared.collection.name = "Shared".into();
+        shared.collection.variables = vec![Variable::new(VarName::new("host").unwrap(), "evil")];
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![sample(), shared],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![(id("old"), PathBuf::from("/gone"))],
+            },
+        );
+
+        state
+    }
+
+    fn key(collection: &str, path: &[&str]) -> NodeKey {
+        NodeKey {
+            collection: id(collection),
+            path: path.iter().map(|p| (*p).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn an_untrusted_folder_asks_at_startup() {
+        let mut state = with_untrusted();
+
+        assert!(
+            matches!(&state.popup, Some(Popup::Trust { collection }) if *collection == id("c2"))
+        );
+        assert_eq!(state.sidebar.selected, Some(key("c1", &[])));
+
+        press(&mut state, KeyCode::Char('n'));
+
+        assert!(state.popup.is_none());
+        assert!(
+            state
+                .notice
+                .as_deref()
+                .unwrap()
+                .starts_with("Shared is not trusted")
+        );
+    }
+
+    #[test]
+    fn its_requests_are_not_sent_and_its_variables_not_used() {
+        let mut state = with_untrusted();
+
+        press(&mut state, KeyCode::Esc);
+        state.focus = Focus::Sidebar;
+        state.sidebar.selected = Some(key("c2", &["create"]));
+        press(&mut state, KeyCode::Enter);
+        state.focus = Focus::Url;
+        type_text(&mut state, "http://h/");
+
+        assert_eq!(press(&mut state, KeyCode::Enter), Vec::new());
+        assert!(state.notice.as_deref().unwrap().contains("not trusted"));
+
+        // a new request with that collection selected gets none of its
+        // variables, and is sent as typed
+        state.open = None;
+        state.sidebar.selected = Some(key("c2", &[]));
+        state.url = editor::single_line("http://{{host}}/", "");
+
+        assert_eq!(press(&mut state, KeyCode::Enter), Vec::new());
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("not sent: {{host}} not defined")
+        );
+
+        state.url = editor::single_line("http://plain/", "");
+
+        assert_eq!(
+            sent(&press(&mut state, KeyCode::Enter)).1.url,
+            "http://plain/"
+        );
+    }
+
+    #[test]
+    fn trusting_or_taking_over_old_secrets() {
+        let mut state = with_untrusted();
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char('y')),
+            [Command::Trust {
+                collection: id("c2"),
+                reattach: None,
+            }]
+        );
+
+        // from the sidebar, picking the folder it was moved from
+        state.focus = Focus::Sidebar;
+        state.sidebar.selected = Some(key("c2", &[]));
+        press(&mut state, KeyCode::Char('T'));
+
+        assert_eq!(press(&mut state, KeyCode::Char('5')), Vec::new());
+        assert!(state.popup.is_some());
+        assert_eq!(
+            press(&mut state, KeyCode::Char('1')),
+            [Command::Trust {
+                collection: id("c2"),
+                reattach: Some(id("old")),
+            }]
+        );
+
+        state.sidebar.expanded.insert(key("c2", &["users"]));
+        state.sidebar.selected = Some(key("c2", &["users"]));
+
+        let mut taken = sample();
+
+        taken.id = id("old");
+        update(
+            &mut state,
+            Action::Trusted {
+                previous: id("c2"),
+                result: Ok(Box::new(taken)),
+            },
+        );
+
+        assert_eq!(state.sidebar.selected, Some(key("old", &["users"])));
+        assert!(state.sidebar.expanded.contains(&key("old", &["users"])));
+        assert!(state.workspace(&id("c2")).is_none());
+        assert!(state.workspace(&id("old")).is_some_and(|w| w.trusted));
+        assert_eq!(state.orphans, Vec::new());
+
+        press(&mut state, KeyCode::Char('T'));
+
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("this collection is already trusted")
+        );
+
+        update(
+            &mut state,
+            Action::Trusted {
+                previous: id("x"),
+                result: Err("nope".into()),
+            },
+        );
+
+        assert_eq!(state.notice.as_deref(), Some("nope"));
+    }
+
+    #[test]
+    fn a_folder_curst_did_not_make_is_not_offered_for_deletion() {
+        let mut state = with_untrusted();
+
+        state.popup = None;
+        state.focus = Focus::Sidebar;
+        state.sidebar.selected = Some(key("c2", &[]));
+        press(&mut state, KeyCode::Char('d'));
+
+        assert!(state.popup.is_none());
+        assert!(
+            state
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("does not delete /repo/.curst")
+        );
+    }
+}
+
+mod secrets {
+    use curst_core::http::StoppedRedirect;
+    use curst_core::model::{Body, EnvId, Variable};
+    use curst_core::secrets::{Approval, Secret, SecretKey};
+    use curst_core::store::Backend;
+    use curst_core::vars::VarName;
+
+    use super::*;
+    use crate::app::workspace::tests::sample;
+
+    fn token_key() -> SecretKey {
+        SecretKey::Environment {
+            collection: LocalId::new("c1").unwrap(),
+            environment: EnvId::new("e1").unwrap(),
+            name: VarName::new("token").unwrap(),
+        }
+    }
+
+    /// a collection whose active environment holds the secret `token`, and
+    /// a URL that uses it
+    fn with_secret() -> State {
+        let mut state = State::default();
+        let mut workspace = sample();
+
+        workspace.active_environment = EnvId::new("e1");
+        workspace.collection.environments[0].variables =
+            vec![Variable::secret(VarName::new("token").unwrap())];
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![workspace],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![],
+            },
+        );
+        type_text(&mut state, "https://api.example.com/?t={{token}}");
+
+        state
+    }
+
+    fn load_id(commands: &[Command]) -> u64 {
+        match commands {
+            [Command::LoadSecrets { id, keys }] => {
+                assert_eq!(keys, &[token_key()]);
+
+                *id
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_first_secret_asks_for_a_backend_and_a_new_passphrase_twice() {
+        let mut state = with_secret();
+        let id = load_id(&press(&mut state, KeyCode::Enter));
+
+        assert!(state.in_flight.is_none());
+
+        update(
+            &mut state,
+            Action::SecretsLocked {
+                id: Some(id),
+                locked: Locked::Backend,
+            },
+        );
+
+        assert!(matches!(state.popup, Some(Popup::ChooseBackend)));
+        assert_eq!(
+            press(&mut state, KeyCode::Char('f')),
+            [Command::ChooseBackend(Backend::EncryptedFile)]
+        );
+
+        let id = load_id(&update(
+            &mut state,
+            Action::BackendChosen(Ok(Backend::EncryptedFile)),
+        ));
+
+        update(
+            &mut state,
+            Action::SecretsLocked {
+                id: Some(id),
+                locked: Locked::Passphrase {
+                    new: true,
+                    error: None,
+                },
+            },
+        );
+
+        // empty, then two that differ, then two that match
+        assert_eq!(press(&mut state, KeyCode::Enter), Vec::new());
+        assert!(
+            matches!(&state.popup, Some(Popup::Passphrase { error: Some(e), .. }) if e.contains("empty"))
+        );
+
+        type_text(&mut state, "one");
+        press(&mut state, KeyCode::Enter);
+        type_text(&mut state, "two");
+        press(&mut state, KeyCode::Enter);
+
+        assert!(
+            matches!(&state.popup, Some(Popup::Passphrase { error: Some(e), first: None, .. }) if e.contains("did not match"))
+        );
+
+        type_text(&mut state, "pass");
+        press(&mut state, KeyCode::Enter);
+        type_text(&mut state, "pass");
+
+        assert_eq!(
+            press(&mut state, KeyCode::Enter),
+            [Command::Unlock(Secret::new("pass"))]
+        );
+
+        let id = load_id(&update(&mut state, Action::Unlocked));
+        let commands = update(
+            &mut state,
+            Action::SecretsLoaded {
+                id,
+                values: vec![(token_key(), Some(Secret::new("s3cr3t")))],
+            },
+        );
+        let [
+            Command::Send {
+                request, secrets, ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("not sent: {commands:?}");
+        };
+
+        assert_eq!(request.url, "https://api.example.com/?t=s3cr3t");
+        assert_eq!(secrets, &[token_key()]);
+
+        // the wait is over, so its message goes
+        assert_eq!(state.notice, None);
+
+        // the value is kept for the session: the next send needs no load, and
+        // only cancels the one still in flight
+        assert!(matches!(
+            press(&mut state, KeyCode::Enter).as_slice(),
+            [Command::Cancel, Command::Send { .. }]
+        ));
+    }
+
+    #[test]
+    fn a_wrong_passphrase_asks_again_and_esc_gives_up() {
+        let mut state = with_secret();
+        let id = load_id(&press(&mut state, KeyCode::Enter));
+
+        update(
+            &mut state,
+            Action::SecretsLocked {
+                id: Some(id),
+                locked: Locked::Passphrase {
+                    new: false,
+                    error: None,
+                },
+            },
+        );
+        type_text(&mut state, "nope");
+
+        assert_eq!(
+            press(&mut state, KeyCode::Enter),
+            [Command::Unlock(Secret::new("nope"))]
+        );
+
+        update(
+            &mut state,
+            Action::SecretsLocked {
+                id: None,
+                locked: Locked::Passphrase {
+                    new: false,
+                    error: Some("wrong passphrase, try again".into()),
+                },
+            },
+        );
+
+        assert!(matches!(
+            &state.popup,
+            Some(Popup::Passphrase { error: Some(_), .. })
+        ));
+
+        press(&mut state, KeyCode::Esc);
+
+        assert!(state.waiting.is_none());
+        assert!(
+            state
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("nothing was done")
+        );
+
+        // a store that cannot open drops the request with its reason
+        let id = load_id(&press(&mut state, KeyCode::Enter));
+
+        update(
+            &mut state,
+            Action::SecretsLocked {
+                id: Some(id),
+                locked: Locked::Failed("no keychain".into()),
+            },
+        );
+
+        assert!(state.popup.is_none());
+        assert!(state.waiting.is_none());
+        assert_eq!(state.notice.as_deref(), Some("no keychain"));
+    }
+
+    #[test]
+    fn stale_replies_and_cancelled_waits_are_ignored() {
+        let mut state = with_secret();
+        let id = load_id(&press(&mut state, KeyCode::Enter));
+
+        assert_eq!(
+            update(
+                &mut state,
+                Action::SecretsLoaded {
+                    id: id + 10,
+                    values: vec![],
+                },
+            ),
+            Vec::new()
+        );
+
+        update(
+            &mut state,
+            Action::SecretsLocked {
+                id: Some(id + 10),
+                locked: Locked::Backend,
+            },
+        );
+
+        assert!(state.popup.is_none());
+
+        state.focus = Focus::Response;
+        press(&mut state, KeyCode::Esc);
+
+        assert!(state.waiting.is_none());
+        assert_eq!(
+            update(
+                &mut state,
+                Action::SecretsLoaded {
+                    id,
+                    values: vec![(token_key(), Some(Secret::new("v")))],
+                },
+            ),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn a_secret_with_no_value_is_named() {
+        let mut state = with_secret();
+        let id = load_id(&press(&mut state, KeyCode::Enter));
+
+        assert_eq!(
+            update(
+                &mut state,
+                Action::SecretsLoaded {
+                    id,
+                    values: vec![(token_key(), None)],
+                },
+            ),
+            Vec::new()
+        );
+        assert!(
+            state
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("{{token}} secret with no value yet")
+        );
+    }
+
+    #[test]
+    fn a_new_origin_asks_before_anything_is_sent() {
+        let mut state = with_secret();
+
+        state
+            .secret_values
+            .insert(token_key(), Some(Secret::new("v")));
+
+        let commands = press(&mut state, KeyCode::Enter);
+        let (id, _) = sent(&commands);
+        let approval = Approval {
+            origin: "https://api.example.com:443".into(),
+            keys: vec![token_key()],
+        };
+
+        update(
+            &mut state,
+            Action::NeedsApproval {
+                id,
+                approval: Box::new(approval.clone()),
+            },
+        );
+
+        assert!(state.in_flight.is_none());
+        assert!(matches!(&state.popup, Some(Popup::Approve(a)) if *a == approval));
+        assert_eq!(
+            press(&mut state, KeyCode::Char('y')),
+            [Command::Approve {
+                id,
+                keys: vec![token_key()],
+                origin: approval.origin.clone(),
+            }]
+        );
+        assert!(matches!(
+            update(&mut state, Action::Approved { id, result: Ok(()) }).as_slice(),
+            [Command::Send { .. }]
+        ));
+
+        // saying no sends nothing
+        let commands = press(&mut state, KeyCode::Enter);
+        let (id, _) = sent(&commands);
+
+        update(
+            &mut state,
+            Action::NeedsApproval {
+                id,
+                approval: Box::new(approval),
+            },
+        );
+
+        assert_eq!(press(&mut state, KeyCode::Char('n')), Vec::new());
+        assert!(state.waiting.is_none());
+        assert_eq!(
+            update(&mut state, Action::Approved { id, result: Ok(()) }),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn a_stopped_redirect_is_followed_on_request() {
+        let mut state = with_secret();
+
+        state
+            .secret_values
+            .insert(token_key(), Some(Secret::new("v")));
+        state.method = Method::Post;
+        state.body = BodyEditor::from_body(&Body::Json("{}".into()));
+
+        let commands = press(&mut state, KeyCode::Enter);
+        let (id, _) = sent(&commands);
+        let mut stopped = response("{}");
+
+        stopped.status = 307;
+        stopped.stopped = Some(StoppedRedirect {
+            url: "https://other.example.com/next".into(),
+            method: Method::Post,
+            keeps_body: true,
+        });
+        update(&mut state, Action::responded(id, Ok(stopped)));
+
+        assert!(state.notice.as_deref().unwrap().contains("press f"));
+
+        state.focus = Focus::Response;
+
+        let commands = press(&mut state, KeyCode::Char('f'));
+        let (_, request) = sent(&commands);
+
+        assert_eq!(request.url, "https://other.example.com/next");
+        assert_eq!(request.method, Method::Post);
+        assert_eq!(request.body, Body::Json("{}".into()));
+
+        let id = state.in_flight.unwrap();
+
+        update(&mut state, Action::responded(id, Ok(response("{}"))));
+
+        assert_eq!(press(&mut state, KeyCode::Char('f')), Vec::new());
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("there is no redirect to follow")
+        );
+    }
+}
+
+mod secret_variables {
+    use curst_core::model::{EnvId, KeyValue, Variable};
+    use curst_core::secrets::{Secret, SecretKey, SecretScope};
+    use curst_core::vars::VarName;
+
+    use super::*;
+    use crate::app::workspace::tests::sample;
+
+    fn name(text: &str) -> VarName {
+        VarName::new(text).unwrap()
+    }
+
+    fn collection_key(text: &str) -> SecretKey {
+        SecretKey::Collection {
+            collection: LocalId::new("c1").unwrap(),
+            name: name(text),
+        }
+    }
+
+    fn with_variables(variables: Vec<Variable>) -> State {
+        let mut state = State::default();
+        let mut workspace = sample();
+
+        workspace.collection.variables = variables;
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![workspace],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![],
+            },
+        );
+
+        state
+    }
+
+    fn open_editor(state: &mut State) {
+        press_key(state, ctrl('e'));
+        press(state, KeyCode::Char('v'));
+    }
+
+    fn changes(commands: &[Command]) -> (u64, Vec<SecretChange>) {
+        match commands {
+            [Command::ChangeSecrets { id, changes }] => (*id, changes.clone()),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn marking_a_variable_secret_stores_its_value_before_the_file() {
+        let mut state = with_variables(vec![Variable::new(name("key"), "abc")]);
+
+        open_editor(&mut state);
+        press(&mut state, KeyCode::Char('s'));
+
+        let (id, changes) = changes(&press_key(&mut state, ctrl('s')));
+
+        assert_eq!(
+            changes,
+            [SecretChange::Set(collection_key("key"), Secret::new("abc"))]
+        );
+
+        // the file is written only once the store took the value
+        assert_eq!(
+            update(&mut state, Action::SecretsChanged { id, result: Ok(()) },),
+            [Command::Store {
+                collection: LocalId::new("c1").unwrap(),
+                change: Change::SaveVariables(vec![Variable::secret(name("key"))]),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_failed_store_writes_no_file() {
+        let mut state = with_variables(vec![Variable::new(name("key"), "abc")]);
+
+        open_editor(&mut state);
+        press(&mut state, KeyCode::Char('s'));
+
+        let (id, _) = changes(&press_key(&mut state, ctrl('s')));
+
+        assert_eq!(
+            update(
+                &mut state,
+                Action::SecretsChanged {
+                    id,
+                    result: Err("locked".into()),
+                },
+            ),
+            Vec::new()
+        );
+        assert_eq!(state.notice.as_deref(), Some("nothing was saved: locked"));
+    }
+
+    #[test]
+    fn renaming_retyping_and_removing_secrets() {
+        let mut state = with_variables(vec![
+            Variable::secret(name("old")),
+            Variable::secret(name("gone")),
+        ]);
+
+        open_editor(&mut state);
+
+        // rename the first and give it a new value, blind
+        press(&mut state, KeyCode::Enter);
+
+        for _ in 0.."old".len() {
+            press(&mut state, KeyCode::Backspace);
+        }
+
+        type_text(&mut state, "new");
+        press(&mut state, KeyCode::Tab);
+        type_text(&mut state, "v2");
+        press(&mut state, KeyCode::Enter);
+
+        // and remove the second
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Char('d'));
+
+        let (_, changes) = changes(&press_key(&mut state, ctrl('s')));
+
+        assert_eq!(
+            changes,
+            [
+                SecretChange::Rename(collection_key("old"), collection_key("new")),
+                SecretChange::Set(collection_key("new"), Secret::new("v2")),
+                SecretChange::Delete(collection_key("gone")),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_flagged_header_becomes_a_secret() {
+        let mut state = with_variables(vec![]);
+
+        state.focus = Focus::Request;
+        state.request_tab = RequestTab::Headers;
+        state.headers = Table::from_pairs(&[KeyValue::new("Authorization", "Bearer abc123")]);
+
+        press(&mut state, KeyCode::Char('m'));
+
+        let Some(Popup::Prompt { input, .. }) = &state.popup else {
+            panic!("no prompt");
+        };
+
+        assert_eq!(editor::text_of(input), "authorization");
+
+        press(&mut state, KeyCode::Backspace);
+        press(&mut state, KeyCode::Char('!'));
+
+        // a name that is not valid asks again
+        assert_eq!(press(&mut state, KeyCode::Enter), Vec::new());
+        assert!(state.popup.is_some());
+
+        press(&mut state, KeyCode::Backspace);
+        press(&mut state, KeyCode::Char('n'));
+
+        let (id, changes) = changes(&press(&mut state, KeyCode::Enter));
+
+        assert_eq!(
+            changes,
+            [SecretChange::Set(
+                collection_key("authorization"),
+                Secret::new("abc123")
+            )]
+        );
+        assert_eq!(state.headers.rows[0].value, "Bearer {{authorization}}");
+
+        let files = update(&mut state, Action::SecretsChanged { id, result: Ok(()) });
+
+        assert_eq!(
+            files,
+            [Command::Store {
+                collection: LocalId::new("c1").unwrap(),
+                change: Change::SaveVariables(vec![Variable::secret(name("authorization"))]),
+            }]
+        );
+
+        // a value that is not flagged is left alone
+        state.headers = Table::from_pairs(&[KeyValue::new("Accept", "*/*")]);
+
+        assert_eq!(press(&mut state, KeyCode::Char('m')), Vec::new());
+        assert!(state.popup.is_none());
+    }
+
+    #[test]
+    fn without_a_collection_it_becomes_a_global_secret() {
+        let mut state = State {
+            focus: Focus::Request,
+            request_tab: RequestTab::Auth,
+            auth: AuthEditor::from_auth(&curst_core::model::Auth::Bearer {
+                token: "ghp_0123456789abcdefghij0123456789abcdef".into(),
+            }),
+            ..State::default()
+        };
+
+        press(&mut state, KeyCode::Char('m'));
+
+        let (_, changes) = changes(&press(&mut state, KeyCode::Enter));
+
+        assert!(matches!(
+            changes.as_slice(),
+            [SecretChange::Set(SecretKey::Global { .. }, _)]
+        ));
+        assert_eq!(
+            state.auth.auth(),
+            curst_core::model::Auth::Bearer {
+                token: "{{token}}".into()
+            }
+        );
+    }
+
+    #[test]
+    fn an_untrusted_collection_gets_no_secret() {
+        let mut state = with_variables(vec![]);
+
+        state.collections[0].trusted = false;
+        state.popup = None;
+        state.focus = Focus::Request;
+        state.request_tab = RequestTab::Headers;
+        state.headers = Table::from_pairs(&[KeyValue::new("X-Api-Key", "abc")]);
+        press(&mut state, KeyCode::Char('m'));
+
+        assert_eq!(press(&mut state, KeyCode::Enter), Vec::new());
+        assert_eq!(state.headers.rows[0].value, "abc");
+        assert!(state.notice.as_deref().unwrap().contains("trust"));
+    }
+
+    #[test]
+    fn deleting_takes_the_secrets_along_and_says_how_many() {
+        let mut state = with_variables(vec![Variable::secret(name("key"))]);
+
+        state.collections[0].collection.environments[0].variables =
+            vec![Variable::secret(name("token"))];
+        state.focus = Focus::Sidebar;
+        press(&mut state, KeyCode::Char('d'));
+
+        let Some(Popup::Confirm { message, .. }) = &state.popup else {
+            panic!("no question");
+        };
+
+        assert!(message.ends_with("and 2 secrets?"), "{message}");
+
+        press(&mut state, KeyCode::Char('y'));
+
+        let commands = update(
+            &mut state,
+            Action::Stored {
+                collection: LocalId::new("c1").unwrap(),
+                result: Ok(Box::default()),
+            },
+        );
+
+        assert_eq!(
+            changes(&commands).1,
+            [SecretChange::DeleteScope(SecretScope::Collection(
+                LocalId::new("c1").unwrap()
+            ))]
+        );
+    }
+
+    #[test]
+    fn deleting_an_environment_takes_its_secrets() {
+        let mut state = with_variables(vec![]);
+
+        state.collections[0].collection.environments[0].variables =
+            vec![Variable::secret(name("token"))];
+
+        let mut after = state.collections[0].clone();
+
+        after.collection.environments.clear();
+
+        let commands = update(
+            &mut state,
+            Action::Stored {
+                collection: LocalId::new("c1").unwrap(),
+                result: Ok(Box::new(Stored {
+                    workspace: Some(after),
+                    ..Stored::default()
+                })),
+            },
+        );
+
+        assert_eq!(
+            changes(&commands).1,
+            [SecretChange::DeleteScope(SecretScope::Environment(
+                LocalId::new("c1").unwrap(),
+                EnvId::new("e1").unwrap()
+            ))]
+        );
+    }
+}
+
+mod settings_and_editor {
+    use curst_core::model::Body;
+    use curst_core::secrets::Secret;
+    use curst_core::store::Backend;
+
+    use super::*;
+
+    fn ctrl_o(state: &mut State) {
+        press_key(state, ctrl('o'));
+    }
+
+    #[test]
+    fn with_no_backend_settings_offers_the_choice() {
+        let mut state = State::default();
+
+        ctrl_o(&mut state);
+
+        assert!(matches!(state.popup, Some(Popup::Settings)));
+
+        press(&mut state, KeyCode::Char('m'));
+
+        assert!(matches!(state.popup, Some(Popup::ChooseBackend)));
+        assert_eq!(
+            press(&mut state, KeyCode::Char('k')),
+            [Command::ChooseBackend(Backend::Keychain)]
+        );
+
+        update(&mut state, Action::BackendChosen(Ok(Backend::Keychain)));
+
+        assert_eq!(state.backend, Some(Backend::Keychain));
+    }
+
+    #[test]
+    fn moving_from_the_keychain_asks_for_a_new_passphrase_twice() {
+        let mut state = State::default();
+
+        update(&mut state, Action::BackendKnown(Some(Backend::Keychain)));
+        ctrl_o(&mut state);
+        press(&mut state, KeyCode::Char('m'));
+        type_text(&mut state, "pw");
+        press(&mut state, KeyCode::Enter);
+        type_text(&mut state, "pw");
+
+        let commands = press(&mut state, KeyCode::Enter);
+        let [Command::Migrate { id, to, passphrase }] = commands.as_slice() else {
+            panic!("no move: {commands:?}");
+        };
+
+        assert_eq!(
+            (*to, passphrase.clone()),
+            (Backend::EncryptedFile, Some(Secret::new("pw")))
+        );
+
+        let id = *id;
+
+        update(
+            &mut state,
+            Action::Migrated {
+                id,
+                result: Ok((Backend::EncryptedFile, 3)),
+            },
+        );
+
+        assert_eq!(state.backend, Some(Backend::EncryptedFile));
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("3 secrets moved to the encrypted file")
+        );
+    }
+
+    #[test]
+    fn moving_to_the_keychain_waits_for_the_file_to_open() {
+        let mut state = State::default();
+
+        update(
+            &mut state,
+            Action::BackendKnown(Some(Backend::EncryptedFile)),
+        );
+        ctrl_o(&mut state);
+
+        let commands = press(&mut state, KeyCode::Char('m'));
+        let [
+            Command::Migrate {
+                id,
+                to: Backend::Keychain,
+                passphrase: None,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("no move: {commands:?}");
+        };
+
+        update(
+            &mut state,
+            Action::SecretsLocked {
+                id: Some(*id),
+                locked: Locked::Passphrase {
+                    new: false,
+                    error: None,
+                },
+            },
+        );
+        type_text(&mut state, "pw");
+
+        assert_eq!(
+            press(&mut state, KeyCode::Enter),
+            [Command::Unlock(Secret::new("pw"))]
+        );
+
+        // once open, the move starts again by itself
+        let commands = update(&mut state, Action::Unlocked);
+
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::Migrate {
+                to: Backend::Keychain,
+                ..
+            }]
+        ));
+
+        let [Command::Migrate { id, .. }] = commands.as_slice() else {
+            unreachable!()
+        };
+
+        update(
+            &mut state,
+            Action::Migrated {
+                id: *id,
+                result: Err("the keychain cannot be used here".into()),
+            },
+        );
+
+        assert_eq!(state.backend, Some(Backend::EncryptedFile));
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("the keychain cannot be used here")
+        );
+    }
+
+    #[test]
+    fn the_body_goes_to_the_editor_as_typed() {
+        let mut state = State {
+            focus: Focus::Request,
+            request_tab: RequestTab::Body,
+            ..State::default()
+        };
+
+        press(&mut state, KeyCode::Char('E'));
+
+        assert!(state.notice.as_deref().unwrap().contains("JSON or text"));
+
+        state.body = BodyEditor::from_body(&Body::Json("{\"t\": \"{{token}}\"}".into()));
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char('E')),
+            [Command::EditBody {
+                text: "{\"t\": \"{{token}}\"}".into(),
+                extension: "json",
+            }]
+        );
+
+        update(&mut state, Action::BodyEdited(Ok("{\n}\n".into())));
+
+        assert_eq!(state.request().body, Body::Json("{\n}\n".into()));
+
+        update(&mut state, Action::BodyEdited(Err("vi failed".into())));
+
+        assert_eq!(state.request().body, Body::Json("{\n}\n".into()));
+        assert_eq!(state.notice.as_deref(), Some("vi failed"));
+    }
+}
+
+mod plain_again {
+    use curst_core::model::Variable;
+    use curst_core::secrets::{Secret, SecretKey};
+    use curst_core::vars::VarName;
+
+    use super::*;
+    use crate::app::workspace::tests::sample;
+
+    fn key() -> SecretKey {
+        SecretKey::Collection {
+            collection: LocalId::new("c1").unwrap(),
+            name: VarName::new("token").unwrap(),
+        }
+    }
+
+    fn editing_a_secret() -> State {
+        let mut state = State::default();
+        let mut workspace = sample();
+
+        workspace.collection.variables = vec![Variable::secret(VarName::new("token").unwrap())];
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![workspace],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![],
+            },
+        );
+        press_key(&mut state, ctrl('e'));
+        press(&mut state, KeyCode::Char('v'));
+
+        state
+    }
+
+    fn row(state: &State) -> (bool, String) {
+        let Some(Popup::Variables(editor)) = &state.popup else {
+            panic!("no editor");
+        };
+
+        let row = &editor.table().rows[0];
+
+        (row.secret, row.value.clone())
+    }
+
+    #[test]
+    fn a_secret_seen_this_session_turns_plain_at_once() {
+        let mut state = editing_a_secret();
+
+        state.secret_values.insert(key(), Some(Secret::new("t0k")));
+
+        assert_eq!(press(&mut state, KeyCode::Char('s')), Vec::new());
+        assert_eq!(row(&state), (false, "t0k".into()));
+
+        // saving deletes the secret first, then writes the plain value
+        let commands = press_key(&mut state, ctrl('s'));
+        let [Command::ChangeSecrets { id, changes }] = commands.as_slice() else {
+            panic!("unexpected {commands:?}");
+        };
+
+        assert_eq!(changes, &[SecretChange::Delete(key())]);
+        assert_eq!(
+            update(
+                &mut state,
+                Action::SecretsChanged {
+                    id: *id,
+                    result: Ok(()),
+                },
+            ),
+            [Command::Store {
+                collection: LocalId::new("c1").unwrap(),
+                change: Change::SaveVariables(vec![Variable::new(
+                    VarName::new("token").unwrap(),
+                    "t0k"
+                )]),
+            }]
+        );
+    }
+
+    #[test]
+    fn otherwise_the_value_is_fetched_and_the_editor_comes_back() {
+        let mut state = editing_a_secret();
+        let commands = press(&mut state, KeyCode::Char('s'));
+        let [Command::LoadSecrets { id, keys }] = commands.as_slice() else {
+            panic!("unexpected {commands:?}");
+        };
+
+        assert_eq!(keys, &[key()]);
+        assert!(state.popup.is_none());
+
+        update(
+            &mut state,
+            Action::SecretsLoaded {
+                id: *id,
+                values: vec![(key(), Some(Secret::new("t0k")))],
+            },
+        );
+
+        assert_eq!(row(&state), (false, "t0k".into()));
+        assert!(global_hints_listed(&state));
+    }
+
+    #[test]
+    fn cancelling_the_passphrase_gives_the_editor_back_unchanged() {
+        let mut state = editing_a_secret();
+        let commands = press(&mut state, KeyCode::Char('s'));
+        let [Command::LoadSecrets { id, .. }] = commands.as_slice() else {
+            panic!("unexpected {commands:?}");
+        };
+
+        update(
+            &mut state,
+            Action::SecretsLocked {
+                id: Some(*id),
+                locked: Locked::Passphrase {
+                    new: false,
+                    error: None,
+                },
+            },
+        );
+        press(&mut state, KeyCode::Esc);
+
+        assert_eq!(row(&state), (true, String::new()));
+
+        // a store that cannot open gives it back too
+        let commands = press(&mut state, KeyCode::Char('s'));
+        let [Command::LoadSecrets { id, .. }] = commands.as_slice() else {
+            panic!("unexpected {commands:?}");
+        };
+
+        update(
+            &mut state,
+            Action::SecretsLocked {
+                id: Some(*id),
+                locked: Locked::Failed("no keychain".into()),
+            },
+        );
+
+        assert_eq!(row(&state), (true, String::new()));
+        assert_eq!(state.notice.as_deref(), Some("no keychain"));
+    }
+
+    #[test]
+    fn undoing_a_secret_made_in_this_editor_keeps_the_typed_value() {
+        let mut state = editing_a_secret();
+
+        press(&mut state, KeyCode::Char('a'));
+        type_text(&mut state, "plain");
+        press(&mut state, KeyCode::Tab);
+        type_text(&mut state, "v");
+        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Char('s'));
+        press(&mut state, KeyCode::Char('s'));
+
+        let Some(Popup::Variables(editor)) = &state.popup else {
+            panic!("no editor");
+        };
+
+        let row = &editor.table().rows[1];
+
+        assert_eq!((row.secret, row.value.as_str()), (false, "v"));
+    }
+
+    fn global_hints_listed(state: &State) -> bool {
+        crate::ui::hints(state).contains(&("s", "secret"))
+            && crate::ui::global_hints(state).contains(&("Esc", "close"))
     }
 }

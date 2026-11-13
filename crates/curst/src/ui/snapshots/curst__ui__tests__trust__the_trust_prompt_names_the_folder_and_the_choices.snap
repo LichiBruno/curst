@@ -1,0 +1,22 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 100, 18)"
+---
+"┌ Collections ───────────────┐┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│▾ Shared untrusted          ││   GET   │┃ https://example.com/api, then Enter to send             ┃"
+"│  ▸ Users                   │└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"│  POST CREA┏ Trust this folder? ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓───────────┐"
+"│           ┃/repo/.curst                                                              ┃           │"
+"│           ┃calls itself Shared                                                       ┃           │"
+"│           ┃                                                                          ┃           │"
+"│           ┃Requests from this folder are not sent and no secret is used              ┃           │"
+"│           ┃until you trust it. Trust it only if you trust where it came from.        ┃───────────┘"
+"│           ┃                                                                          ┃───────────┐"
+"│           ┃ y trust it as a new collection    n not now, only look                   ┃           │"
+"│           ┃                                                                          ┃           │"
+"│           ┃or, if it was moved from one of these folders, keep its old secrets:      ┃           │"
+"│           ┃ 1 /old/repo/.curst                                                       ┃           │"
+"│           ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛           │"
+"└────────────────────────────┘└────────────────────────────────────────────────────────────────────┘"
+" y trust  n not now  1-9 moved from                                                                 "
+" Ctrl+C quit                                                                                        "

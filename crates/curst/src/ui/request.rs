@@ -4,6 +4,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
+use curst_core::model::Request;
+use curst_core::secrets::detect;
+
 use super::{pane, tab_titles};
 use crate::app::{AuthKind, BodyField, BodyKind, Column, Focus, RequestTab, State, Table};
 
@@ -17,9 +20,21 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
     ));
 
     let block = pane(Line::from(title), focused);
-    let inner = block.inner(area);
+    let mut inner = block.inner(area);
 
     frame.render_widget(block, area);
+
+    // only when the pane keeps room for the field the warning is about
+    if let Some(warning) = credential_warning(state).filter(|_| inner.height > 2) {
+        let [content, line] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(inner);
+
+        frame.render_widget(
+            Paragraph::new(Span::styled(warning, Style::default().fg(Color::Yellow))),
+            line,
+        );
+        inner = content;
+    }
 
     match state.request_tab {
         RequestTab::Params => table(
@@ -39,6 +54,33 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
         RequestTab::Body => body(state, focused, frame, inner),
         RequestTab::Auth => auth(state, focused, frame, inner),
     }
+}
+
+/// a warning when the selected row, or the auth, holds what looks like a
+/// credential typed in plain text
+pub(super) fn credential_warning(state: &State) -> Option<String> {
+    let row = |table: &Table, header: bool| {
+        table
+            .rows
+            .get(table.selected)
+            .and_then(|r| detect::check_pair(&r.name, &r.value, header))
+    };
+    let reason = match state.request_tab {
+        RequestTab::Params => row(&state.params, false),
+        RequestTab::Headers => row(&state.headers, true),
+        RequestTab::Body if state.body.kind == BodyKind::Form => row(&state.body.form, false),
+        RequestTab::Body => None,
+        RequestTab::Auth => {
+            let request = Request {
+                auth: state.auth.auth(),
+                ..Request::default()
+            };
+
+            detect::detect(&request).first().map(|f| f.reason)
+        }
+    }?;
+
+    Some(format!("⚠ {}, saved as plain text", reason.describe()))
 }
 
 fn kind_line(label: &str, value: &str) -> Paragraph<'static> {
@@ -189,9 +231,15 @@ pub(super) fn table(table: &Table, focused: bool, empty: &str, frame: &mut Frame
             .filter(|_| index == table.selected)
             .map(|(column, area)| (*column, area));
 
+        let value = if row.secret {
+            "•••••• secret".to_owned()
+        } else {
+            row.value.clone()
+        };
+
         for (column, cell, text) in [
             (Column::Name, name_area, &row.name),
-            (Column::Value, value_area, &row.value),
+            (Column::Value, value_area, &value),
         ] {
             match editing {
                 Some((edited, area)) if edited == column => frame.render_widget(area, cell),
