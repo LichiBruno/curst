@@ -2151,7 +2151,7 @@ mod secret_variables {
             focus: Focus::Request,
             request_tab: RequestTab::Auth,
             auth: AuthEditor::from_auth(&curst_core::model::Auth::Bearer {
-                token: "ghp_0123456789abcdefghij0123456789abcdef".into(),
+                token: format!("ghp_{}", "x0".repeat(18)),
             }),
             ..State::default()
         };

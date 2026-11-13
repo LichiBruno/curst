@@ -108,7 +108,7 @@ mod tests {
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\necho \"$1\" > '{seen}'\nstat -f %Lp \"$1\" >> '{seen}' 2>/dev/null || stat -c %a \"$1\" >> '{seen}'\ncat \"$1\" >> '{seen}'\necho '  \"b\": 2' >> \"$1\"\n",
+                "#!/bin/sh\necho \"$1\" > '{seen}'\nls -l \"$1\" | cut -c1-10 >> '{seen}'\ncat \"$1\" >> '{seen}'\necho '  \"b\": 2' >> \"$1\"\n",
                 seen = seen.display()
             ),
         )
@@ -123,7 +123,9 @@ mod tests {
 
         assert_eq!(edited, "{\n  \"a\": \"{{token}}\",\n  \"b\": 2\n");
         assert!(path.ends_with("body.json"));
-        assert_eq!(lines.next(), Some("600"));
+        // owner read and write, nothing for anyone else, as `ls -l` shows it
+        // on macOS and Linux alike
+        assert_eq!(lines.next(), Some("-rw-------"));
         assert!(seen.contains("{{token}}"));
         assert!(!std::path::Path::new(path).exists());
 

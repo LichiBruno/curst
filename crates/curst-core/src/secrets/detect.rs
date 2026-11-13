@@ -309,7 +309,22 @@ mod tests {
     use super::*;
     use crate::model::KeyValue;
 
-    const JWT: &str = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+    /// a made-up token with the shape of a JWT, put together at run time so
+    /// that no secret scanner mistakes this file for a leak
+    fn jwt() -> String {
+        // {"alg":"none"}, {"test":true}, and a fake signature
+        [
+            "eyJhbGciOiJub25lIn0",
+            "eyJ0ZXN0Ijp0cnVlfQ",
+            "ZmFrZS1zaWduYXR1cmU",
+        ]
+        .join(".")
+    }
+
+    /// a made-up token with a vendor prefix, put together at run time
+    fn fake_token(prefix: &str) -> String {
+        format!("{prefix}{}", "x0".repeat(18))
+    }
 
     #[test]
     fn credential_headers_and_names() {
@@ -384,14 +399,14 @@ mod tests {
 
     #[test]
     fn credentials_recognised_by_their_shape() {
-        assert_eq!(check_pair("X-Anything", JWT, true), Some(Reason::Jwt));
+        assert_eq!(check_pair("X-Anything", &jwt(), true), Some(Reason::Jwt));
         assert_eq!(check_value("Bearer abc.def"), Some(Reason::Bearer));
         assert_eq!(
-            check_value("ghp_0123456789abcdefghij0123456789abcdef"),
+            check_value(&fake_token("ghp_")),
             Some(Reason::KnownPrefix("ghp_"))
         );
         assert_eq!(
-            check_value("key=AKIAIOSFODNN7EXAMPLE;x"),
+            check_value(&format!("key={};x", fake_token("AKIA"))),
             Some(Reason::KnownPrefix("AKIA"))
         );
         assert_eq!(check_value("ghp_short"), None);
@@ -423,7 +438,7 @@ mod tests {
             params: vec![KeyValue::new("q", "x"), KeyValue::new("token", "t")],
             headers: vec![KeyValue::new("Accept", "*/*"), off],
             body: Body::Form(vec![KeyValue::new("password", "p")]),
-            auth: Auth::Bearer { token: JWT.into() },
+            auth: Auth::Bearer { token: jwt() },
             ..Request::default()
         };
         let places: Vec<(Place, Reason)> = detect(&request)
