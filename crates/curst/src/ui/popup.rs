@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
     Entry, Field, Fill, Hint, Hints, Layer, PRESETS, Palette, Popup, Review, ReviewKind,
-    SpecPreview, State, Step, Target, VarTab, VariablesEditor, display,
+    SaveDialog, SpecPreview, State, Step, Target, VarTab, VariablesEditor, display,
 };
 
 /// a box of at most `width` by `height` in the middle of the screen
@@ -134,6 +134,7 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
         | Popup::SaveVariables { .. }
         | Popup::SpecPreview(_)
         | Popup::Review(_)
+        | Popup::SaveRequest(_)
         | Popup::SpecChoice { .. } => draw_import(state, popup, frame),
         Popup::Approve(approval) => approve(state, approval, frame),
         Popup::Variables(editor) => variables(state, editor, frame),
@@ -257,6 +258,7 @@ fn draw_import(state: &State, popup: &Popup, frame: &mut Frame) {
         Popup::SaveVariables { quit, .. } => save_question(state, *quit, frame),
         Popup::SpecPreview(preview) => spec_preview(state, preview, frame),
         Popup::Review(review) => refresh_review(state, review, frame),
+        Popup::SaveRequest(dialog) => save_dialog(state, dialog, frame),
         Popup::SpecChoice {
             folder,
             specs,
@@ -264,6 +266,68 @@ fn draw_import(state: &State, popup: &Popup, frame: &mut Frame) {
         } => spec_choice(state, folder, specs, *selected, frame),
         _ => {}
     }
+}
+
+/// a new request's name, and below it where it goes; Tab opens the list
+/// of every collection and folder to pick from
+fn save_dialog(state: &State, dialog: &SaveDialog, frame: &mut Frame) {
+    let theme = &state.theme;
+    let (_, place) = &dialog.places[dialog.place];
+    let height = frame.area().height.saturating_sub(4).max(6);
+    let room = usize::from(height.saturating_sub(6)).max(1);
+    let shown = if dialog.picking {
+        dialog.places.len().min(room)
+    } else {
+        0
+    };
+    let first = dialog.selected.saturating_sub(shown.saturating_sub(1));
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("in ", theme.muted),
+            Span::styled(
+                display(place),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw("  "),
+            key_span(state, Layer::SaveRequest, "tab.next"),
+            Span::styled(if dialog.picking { "done" } else { "change" }, theme.muted),
+        ]),
+    ];
+
+    for (index, (_, label)) in dialog.places.iter().enumerate().skip(first).take(shown) {
+        let style = if index == dialog.selected {
+            theme.selected
+        } else {
+            Style::default()
+        };
+
+        lines.push(Line::from(Span::styled(
+            format!(" {}", display(label)),
+            style,
+        )));
+    }
+
+    let rows = u16::try_from(lines.len() + 2).unwrap_or(height).min(height);
+    let area = centered(frame, 70, rows);
+    let inner = area.inner(Margin::new(1, 1));
+    let input = Rect { height: 1, ..inner };
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+    line_region(state, inner, 2, Target::Run("tab.next".into()));
+
+    for index in first..dialog.places.len().min(first + shown) {
+        line_region(state, inner, 3 + index - first, Target::Item(index));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).block(pane(theme, Line::from(" Save request "), true)),
+        area,
+    );
+    state.region(input, Target::Text(Field::Popup));
+    frame.render_widget(&*field(theme, &dialog.input, None), input);
 }
 
 /// the specs a folder holds, to pick the one to import
@@ -1067,6 +1131,18 @@ fn import_hints(hints: &mut Hints, popup: &Popup) {
                 .one("confirm", "read it")
                 .one("close", "cancel");
         }
+        Popup::SaveRequest(dialog) if dialog.picking => {
+            hints
+                .pair("up", "down", "choose")
+                .one("confirm", "pick")
+                .one("close", "back");
+        }
+        Popup::SaveRequest(_) => {
+            hints
+                .one("confirm", "save")
+                .one("tab.next", "where")
+                .one("close", "cancel");
+        }
         Popup::SpecPreview(_) => {
             hints
                 .one("confirm", "import")
@@ -1165,6 +1241,7 @@ pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
         | Popup::Review(_)
         | Popup::Fill(_)
         | Popup::SpecChoice { .. }
+        | Popup::SaveRequest(_)
         | Popup::SpecPreview(_) => import_hints(&mut hints, popup),
     }
 

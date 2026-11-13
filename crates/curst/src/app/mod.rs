@@ -7,6 +7,7 @@ mod popup;
 mod preferences;
 mod refresh;
 mod request;
+mod save;
 mod send;
 mod sidebar;
 mod spec;
@@ -37,6 +38,7 @@ pub(crate) use palette::{Entry, Palette};
 pub(crate) use popup::{Pending, Popup, Purpose, VarTab, VariablesEditor};
 pub(crate) use preferences::{AUTOMATIC_SIDEBAR, PRESETS, Step, known_themes};
 pub(crate) use refresh::{Kind as ReviewKind, Review};
+pub(crate) use save::SaveDialog;
 pub(crate) use spec::{Found as SpecFound, Preview as SpecPreview, is_url};
 pub(crate) use view_model::{ResponseView, display, skip_columns};
 pub(crate) use workspace::{NodeKey, RowKind, Sidebar, Workspace, rows};
@@ -1284,14 +1286,9 @@ fn save(state: &mut State) -> Vec<Command> {
         }];
     }
 
-    match sidebar::target_folder(state) {
-        Some(parent) => {
-            let name = suggested_name(state);
+    let name = suggested_name(state);
 
-            state.popup = Some(Popup::prompt(Purpose::SaveAs(parent), &name));
-        }
-        None => state.notice = Some(no_collection(state)),
-    }
+    save::open(state, &name);
 
     Vec::new()
 }

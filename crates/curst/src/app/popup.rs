@@ -19,7 +19,6 @@ use super::{Action, Change, Command, Layer, SecretChange, State, step};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Purpose {
     SaveBody,
-    SaveAs(NodeKey),
     NewRequest(NodeKey),
     NewFolder(NodeKey),
     NewCollection,
@@ -42,7 +41,6 @@ impl Purpose {
     pub(crate) fn title(&self) -> &'static str {
         match self {
             Self::SaveBody => "Save body to file",
-            Self::SaveAs(_) => "Save request as",
             Self::NewRequest(_) => "New request",
             Self::NewFolder(_) => "New folder",
             Self::NewCollection => "New collection",
@@ -336,6 +334,9 @@ pub(crate) enum Popup {
     /// what a refresh found, to choose what to take
     Review(Box<super::refresh::Review>),
 
+    /// a new request's name and where it is saved
+    SaveRequest(Box<super::save::SaveDialog>),
+
     /// the specs a folder holds, to choose one
     SpecChoice {
         folder: String,
@@ -465,6 +466,7 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
             selected,
         } => return super::spec::choice_key(state, folder, specs, selected, action),
         Popup::Palette(palette) => return super::palette::apply(state, palette, action),
+        Popup::SaveRequest(dialog) => return super::save::apply(state, dialog, action),
         Popup::Welcome { step, then } => {
             return super::preferences::welcome_key(state, step, then, action);
         }
@@ -511,15 +513,6 @@ fn confirm_prompt(
 
             vec![Command::SaveBody(PathBuf::from(text))]
         }
-        Purpose::SaveAs(parent) => vec![store(
-            &parent,
-            Change::CreateRequest {
-                parent: parent.path.clone(),
-                name: text,
-                request: state.request(),
-                open: true,
-            },
-        )],
         Purpose::NewRequest(parent) => vec![store(
             &parent,
             Change::CreateRequest {
@@ -785,6 +778,10 @@ fn paste(popup: &mut Popup, text: &str) {
         }
         Popup::Fill(fill) => {
             fill.input.insert_str(text);
+        }
+        Popup::SaveRequest(dialog) => {
+            dialog.input.insert_str(text);
+            dialog.picking = false;
         }
         Popup::Variables(editor) => {
             if let Some((_, area)) = &mut editor.table_mut().editing {
