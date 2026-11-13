@@ -361,3 +361,20 @@ proptest! {
         let _ = parse(&command);
     }
 }
+
+#[test]
+fn urls_and_basic_values_are_built_for_sources() {
+    assert_eq!(
+        url_with_params(
+            "https://h/spec",
+            &[
+                KeyValue::new("key", "{{spec_key}}"),
+                KeyValue::new("q", "a b")
+            ]
+        ),
+        "https://h/spec?key={{spec_key}}&q=a%20b"
+    );
+
+    // YW5uOnB3 is ann:pw
+    assert_eq!(basic_value("ann", "pw"), "Basic YW5uOnB3");
+}

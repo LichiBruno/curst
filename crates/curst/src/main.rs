@@ -178,6 +178,7 @@ impl Startup {
         if known { preset } else { "standard" }.clone_into(&mut state.keys_preset);
         state.key_bindings.clone_from(&self.key_bindings);
         state.theme = self.theme.clone();
+        state.sidebar_width = self.settings.sidebar_width;
         state.themes.clone_from(&self.themes);
 
         if !state.themes.iter().any(|t| t.name == self.theme.name) {
@@ -380,39 +381,185 @@ impl Runtime {
         }
     }
 
+    /// puts `text` on the clipboard: through the terminal, and locally
+    /// through the system too, since some terminals, such as Warp and
+    /// Terminal.app, ignore OSC 52
+    fn copy(&mut self, text: String) {
+        copy_through_terminal(&text);
+
+        if over_ssh(|key| std::env::var_os(key).is_some()) {
+            return;
+        }
+
+        let results = self.results.clone();
+
+        self.workers.push(thread::spawn(move || {
+            if !copy_through_system(&text) {
+                let _ = results.send(Action::Notice(
+                    "the clipboard was not set: no clipboard tool worked, and this terminal may ignore OSC 52"
+                        .into(),
+                ));
+            }
+        }));
+    }
+
+    /// loads a collection's spec again from its source on a worker, for a
+    /// refresh
+    /// the check a spec fetch carrying `secrets` passes before it goes,
+    /// as a send's does
+    fn spec_fetch(
+        &self,
+        url: &str,
+        headers: Vec<curst_core::model::KeyValue>,
+        secrets: &[SecretKey],
+        untrusted: bool,
+    ) -> Result<SpecFetch, Stop> {
+        let index = self
+            .library
+            .as_ref()
+            .ok()
+            .map(|l| SecretIndex::new(l.paths().secrets_index_file()));
+        let request = Request {
+            url: url.to_owned(),
+            ..Request::default()
+        };
+        let rule = guard(index.as_ref(), secrets, &request, untrusted)?;
+
+        Ok(SpecFetch {
+            home: curst_core::url::origin(url),
+            headers,
+            rule,
+        })
+    }
+
+    /// loads a collection's spec again from its source on a worker, for a
+    /// refresh
+    fn load_spec(
+        &mut self,
+        id: u64,
+        collection: curst_core::model::LocalId,
+        source: curst_core::model::Source,
+        secrets: &[SecretKey],
+        untrusted: bool,
+    ) {
+        use curst_core::openapi::{self, refresh::LoadError};
+
+        let spec_fetch =
+            match self.spec_fetch(&source.location, source.headers.clone(), secrets, untrusted) {
+                Ok(spec_fetch) => spec_fetch,
+                Err(stop) => {
+                    let action = match stop {
+                        Stop::Approve(approval) => Action::SpecNeedsApproval {
+                            id,
+                            approval: Box::new(approval),
+                        },
+                        Stop::Refused(message) => Action::SpecLoaded {
+                            id,
+                            collection,
+                            result: Err(LoadError::Failed(message)),
+                        },
+                    };
+                    let _ = self.results.send(action);
+
+                    return;
+                }
+            };
+        let executor = Arc::clone(&self.executor);
+        let results = self.results.clone();
+
+        self.workers.push(thread::spawn(move || {
+            let cancel = Cancel::new();
+            let fetch = |url: &str| spec_fetch.fetch(executor.as_ref(), url, &cancel);
+            let result = openapi::refresh::load_source(&source, fetch).and_then(|(value, at)| {
+                openapi::convert(&value, at.as_deref())
+                    .map(Box::new)
+                    .map_err(|e| LoadError::Failed(e.to_string()))
+            });
+            let _ = results.send(Action::SpecLoaded {
+                id,
+                collection,
+                result,
+            });
+        }));
+    }
+
+    /// looks for the spec behind `url` on a worker, so the screen stays
+    /// live while pages are fetched
+    fn fetch_spec(
+        &mut self,
+        id: u64,
+        url: String,
+        headers: Vec<curst_core::model::KeyValue>,
+        secrets: &[SecretKey],
+        source: curst_core::model::Source,
+    ) {
+        let spec_fetch = match self.spec_fetch(&url, headers, secrets, false) {
+            Ok(spec_fetch) => spec_fetch,
+            Err(stop) => {
+                let action = match stop {
+                    Stop::Approve(approval) => Action::SpecNeedsApproval {
+                        id,
+                        approval: Box::new(approval),
+                    },
+                    Stop::Refused(message) => Action::SpecFetched {
+                        id,
+                        result: Err(message),
+                    },
+                };
+                let _ = self.results.send(action);
+
+                return;
+            }
+        };
+        let executor = Arc::clone(&self.executor);
+        let results = self.results.clone();
+
+        self.workers.push(thread::spawn(move || {
+            let result = fetch_spec(executor.as_ref(), &url, &spec_fetch, source);
+            let _ = results.send(Action::SpecFetched { id, result });
+        }));
+    }
+
+    /// sends a request on a worker, once its secrets pass the guard
+    fn send(&mut self, id: u64, request: Request, secrets: Vec<SecretKey>, state: &State) {
+        let cancel = Cancel::new();
+        let executor = Arc::clone(&self.executor);
+        let results = self.results.clone();
+        let index = self
+            .library
+            .as_ref()
+            .ok()
+            .map(|l| SecretIndex::new(l.paths().secrets_index_file()));
+        let untrusted = secrets.iter().any(|key| {
+            key.collection()
+                .is_some_and(|c| state.workspace(c).is_none_or(|w| !w.trusted))
+        });
+
+        self.cancel = Some(cancel.clone());
+        self.workers.retain(|worker| !worker.is_finished());
+        self.workers.push(thread::spawn(move || {
+            let action = match guard(index.as_ref(), &secrets, &request, untrusted) {
+                Ok(rule) => Action::responded(id, executor.execute(&request, &cancel, &rule)),
+                Err(Stop::Refused(message)) => {
+                    Action::responded(id, Err(HttpError::Transfer(message)))
+                }
+                Err(Stop::Approve(approval)) => Action::NeedsApproval {
+                    id,
+                    approval: Box::new(approval),
+                },
+            };
+
+            let _ = results.send(action);
+        }));
+    }
+
     fn execute(&mut self, command: Command, state: &State) {
         match command {
             Command::Send {
                 id,
                 request,
                 secrets,
-            } => {
-                let cancel = Cancel::new();
-                let executor = Arc::clone(&self.executor);
-                let results = self.results.clone();
-                let index = self
-                    .library
-                    .as_ref()
-                    .ok()
-                    .map(|l| SecretIndex::new(l.paths().secrets_index_file()));
-                let untrusted = secrets.iter().any(|key| {
-                    key.collection()
-                        .is_some_and(|c| state.workspace(c).is_none_or(|w| !w.trusted))
-                });
-
-                self.cancel = Some(cancel.clone());
-                self.workers.retain(|worker| !worker.is_finished());
-                self.workers.push(thread::spawn(move || {
-                    let action = match guard(index.as_ref(), &secrets, &request, untrusted) {
-                        Ok(rule) => {
-                            Action::responded(id, executor.execute(&request, &cancel, &rule))
-                        }
-                        Err(action) => action(id),
-                    };
-
-                    let _ = results.send(action);
-                }));
-            }
+            } => self.send(id, request, secrets, state),
             Command::LoadSecrets { id, keys } => self.secret_job(Job::Load { id, keys }),
             Command::Unlock(passphrase) => self.secret_job(Job::Unlock(passphrase)),
             Command::ChooseBackend(backend) => self.secret_job(Job::Choose(backend)),
@@ -423,24 +570,24 @@ impl Runtime {
                 self.secret_job(Job::Migrate { id, to, passphrase });
             }
             Command::EditBody { text, extension } => self.edit = Some((text, extension)),
-            Command::Copy(text) => {
-                copy_through_terminal(&text);
+            Command::FetchSpec {
+                id,
+                url,
+                headers,
+                secrets,
+                source,
+            } => self.fetch_spec(id, url, headers, &secrets, source),
+            Command::LoadSpec {
+                id,
+                collection,
+                source,
+                secrets,
+            } => {
+                let untrusted = state.workspace(&collection).is_none_or(|w| !w.trusted);
 
-                // locally, the system clipboard is set too: some terminals,
-                // such as Warp and Terminal.app, ignore OSC 52
-                if !over_ssh(|key| std::env::var_os(key).is_some()) {
-                    let results = self.results.clone();
-
-                    self.workers.push(thread::spawn(move || {
-                        if !copy_through_system(&text) {
-                            let _ = results.send(Action::Notice(
-                                "the clipboard was not set: no clipboard tool worked, and this terminal may ignore OSC 52"
-                                    .into(),
-                            ));
-                        }
-                    }));
-                }
+                self.load_spec(id, collection, source, &secrets, untrusted);
             }
+            Command::Copy(text) => self.copy(text),
             Command::ChangeSecrets { id, changes } => {
                 // a secret of an untrusted collection is never stored
                 let untrusted = changes.iter().any(|change| {
@@ -561,6 +708,23 @@ impl Modes {
             previous(info);
         }));
     }
+}
+
+/// the spec behind a URL, found and converted for a preview; the source
+/// kept is the URL as given, so a page that moves its spec still works
+fn fetch_spec(
+    executor: &dyn HttpExecutor,
+    url: &str,
+    spec_fetch: &SpecFetch,
+    source: curst_core::model::Source,
+) -> Result<Box<app::SpecPreview>, String> {
+    use curst_core::openapi;
+
+    let cancel = Cancel::new();
+    let (value, found_at) = openapi::discover(url, |at| spec_fetch.fetch(executor, at, &cancel))?;
+    let converted = openapi::convert(&value, Some(&found_at)).map_err(|e| e.to_string())?;
+
+    Ok(Box::new(app::SpecPreview::new(converted, source)))
 }
 
 /// `bytes` in base64, as OSC 52 carries them
@@ -713,41 +877,69 @@ fn edit_in_terminal(
     Ok(result)
 }
 
+/// why a request carrying secrets must not go yet
+enum Stop {
+    /// never, and why
+    Refused(String),
+
+    /// not before the user approves the host
+    Approve(curst_core::secrets::Approval),
+}
+
 /// the redirect rule for a request carrying `secrets`, checked just
-/// before it goes: or, when it must not go, the action that says why
+/// before it goes: or, when it must not go, why
 fn guard(
     index: Option<&SecretIndex>,
     secrets: &[SecretKey],
     request: &Request,
     untrusted: bool,
-) -> Result<RedirectRule, Box<dyn FnOnce(u64) -> Action + Send>> {
-    let refuse = |message: String| -> Box<dyn FnOnce(u64) -> Action + Send> {
-        Box::new(move |id| Action::responded(id, Err(HttpError::Transfer(message))))
-    };
-
+) -> Result<RedirectRule, Stop> {
     if secrets.is_empty() {
         return Ok(RedirectRule::Any);
     }
 
     if untrusted {
-        return Err(refuse(
+        return Err(Stop::Refused(
             "a secret of a collection you have not trusted is never sent".into(),
         ));
     }
 
     let Some(index) = index else {
-        return Err(refuse("secrets need a data folder".into()));
+        return Err(Stop::Refused("secrets need a data folder".into()));
     };
 
     match index.unapproved(secrets, &request.full_url()) {
         Ok(None) => index
             .redirect_rule(secrets)
-            .map_err(|e| refuse(e.to_string())),
-        Ok(Some(approval)) => Err(Box::new(move |id| Action::NeedsApproval {
-            id,
-            approval: Box::new(approval),
-        })),
-        Err(err) => Err(refuse(err.to_string())),
+            .map_err(|e| Stop::Refused(e.to_string())),
+        Ok(Some(approval)) => Err(Stop::Approve(approval)),
+        Err(err) => Err(Stop::Refused(err.to_string())),
+    }
+}
+
+/// how a spec is fetched: its headers go only to the origin of the URL it
+/// was given, never to the other pages discovery looks at, and follow only
+/// the redirects its secrets allow
+struct SpecFetch {
+    home: Option<curst_core::url::Origin>,
+    headers: Vec<curst_core::model::KeyValue>,
+    rule: RedirectRule,
+}
+
+impl SpecFetch {
+    fn fetch(
+        &self,
+        executor: &dyn HttpExecutor,
+        url: &str,
+        cancel: &Cancel,
+    ) -> Result<curst_core::openapi::Fetched, String> {
+        let home = self.home.is_some() && curst_core::url::origin(url) == self.home;
+
+        if home {
+            curst_core::openapi::fetch_with(executor, url, &self.headers, cancel, &self.rule)
+        } else {
+            curst_core::openapi::fetch_with(executor, url, &[], cancel, &RedirectRule::Any)
+        }
     }
 }
 
@@ -781,17 +973,11 @@ mod tests {
             }
         }
 
-        fn outcome(result: Result<RedirectRule, Box<dyn FnOnce(u64) -> Action + Send>>) -> String {
+        fn outcome(result: Result<RedirectRule, Stop>) -> String {
             match result {
                 Ok(rule) => format!("{rule:?}"),
-                Err(action) => match action(1) {
-                    Action::NeedsApproval { approval, .. } => format!("ask {}", approval.origin),
-                    Action::Responded { result, .. } => match *result {
-                        Err(err) => format!("refused: {err}"),
-                        Ok(_) => "sent".into(),
-                    },
-                    other => format!("{other:?}"),
-                },
+                Err(Stop::Approve(approval)) => format!("ask {}", approval.origin),
+                Err(Stop::Refused(message)) => format!("refused: {message}"),
             }
         }
 
@@ -927,6 +1113,134 @@ mod tests {
         } else {
             assert_eq!(tools, ["wl-copy", "xclip", "xsel"]);
         }
+    }
+
+    /// a web of fixed pages; an address it does not have answers 404, and
+    /// `/old` redirects to the page
+    struct Pages {
+        pages: Vec<(&'static str, &'static str)>,
+
+        /// every address asked for, and whether an Authorization header
+        /// went with it
+        asked: std::sync::Mutex<Vec<(String, bool)>>,
+    }
+
+    fn web(pages: Vec<(&'static str, &'static str)>) -> Pages {
+        Pages {
+            pages,
+            asked: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    impl HttpExecutor for Pages {
+        fn execute(
+            &self,
+            request: &Request,
+            _: &Cancel,
+            _: &RedirectRule,
+        ) -> Result<curst_core::http::Response, HttpError> {
+            let url = request.url.replace("/old", "/docs/");
+            let authorized = request
+                .headers
+                .iter()
+                .any(|h| h.name.eq_ignore_ascii_case("authorization"));
+            let mut response = app::tests::response("");
+
+            if let Ok(mut asked) = self.asked.lock() {
+                asked.push((url.clone(), authorized));
+            }
+
+            if let Some((_, body)) = self.pages.iter().find(|(at, _)| *at == url) {
+                response = app::tests::response(body);
+            } else {
+                response.status = 404;
+                response.status_line = "HTTP/1.1 404 Not Found".into();
+            }
+
+            response.effective_url = url;
+
+            Ok(response)
+        }
+    }
+
+    fn plain(url: &str) -> (SpecFetch, curst_core::model::Source) {
+        (
+            SpecFetch {
+                home: curst_core::url::origin(url),
+                headers: Vec::new(),
+                rule: RedirectRule::Any,
+            },
+            curst_core::model::Source {
+                location: url.to_owned(),
+                ..curst_core::model::Source::default()
+            },
+        )
+    }
+
+    #[test]
+    fn a_spec_is_found_behind_its_page_and_keeps_the_url_given() {
+        let pages = web(vec![
+            (
+                "https://h/docs/",
+                include_str!("../../curst-core/src/openapi/fixtures/swagger-ui.html"),
+            ),
+            (
+                "https://h/docs/swagger-initializer.js",
+                include_str!("../../curst-core/src/openapi/fixtures/swagger-initializer.js"),
+            ),
+            (
+                "https://h/v1/openapi.yaml",
+                include_str!("../../curst-core/src/openapi/fixtures/notes-3.1.yaml"),
+            ),
+        ]);
+        let (fetch, source) = plain("https://h/old");
+        let preview = fetch_spec(&pages, "https://h/old", &fetch, source).unwrap();
+        let base = preview.converted.bundle.environments[0]
+            .1
+            .iter()
+            .find(|v| v.name.as_str() == "base_url")
+            .unwrap();
+
+        // the URL as given is kept, so a page that moves its spec still works
+        assert_eq!(preview.source.location, "https://h/old");
+        assert_eq!(base.value, "https://h/api");
+
+        let (fetch, source) = plain("https://h/none");
+
+        assert!(fetch_spec(&web(vec![]), "https://h/none", &fetch, source).is_err());
+    }
+
+    #[test]
+    fn spec_headers_go_only_to_the_origin_they_were_given_for() {
+        let pages = web(vec![
+            (
+                "https://h/docs/",
+                "<script>SwaggerUIBundle({ url: \"https://cdn.example/spec.yaml\" })</script>",
+            ),
+            (
+                "https://cdn.example/spec.yaml",
+                include_str!("../../curst-core/src/openapi/fixtures/notes-3.1.yaml"),
+            ),
+        ]);
+        let fetch = SpecFetch {
+            home: curst_core::url::origin("https://h/docs/"),
+            headers: vec![curst_core::model::KeyValue::new(
+                "Authorization",
+                "Bearer t0k",
+            )],
+            rule: RedirectRule::Any,
+        };
+        let (_, source) = plain("https://h/docs/");
+
+        fetch_spec(&pages, "https://h/docs/", &fetch, source).unwrap();
+
+        assert_eq!(
+            *pages.asked.lock().unwrap(),
+            [
+                ("https://h/docs/".to_owned(), true),
+                ("https://cdn.example/spec.yaml".to_owned(), false),
+            ]
+        );
     }
 
     #[test]

@@ -70,10 +70,22 @@ pub(crate) enum Layer {
 
     /// values for secrets, typed blind
     Fill,
+
+    /// what a spec becomes, before it is imported
+    SpecPreview,
+
+    /// the specs of a folder, to choose one
+    SpecChoice,
+
+    /// whether to save changes before leaving them
+    SaveQuestion,
+
+    /// what a refresh found
+    Review,
 }
 
 impl Layer {
-    pub(crate) const ALL: [Self; 28] = [
+    pub(crate) const ALL: [Self; 32] = [
         Self::Always,
         Self::Global,
         Self::Panes,
@@ -102,6 +114,10 @@ impl Layer {
         Self::Palette,
         Self::Welcome,
         Self::Fill,
+        Self::SpecPreview,
+        Self::SpecChoice,
+        Self::SaveQuestion,
+        Self::Review,
     ];
 
     /// the name used in `config.toml`, as in `"sidebar.rename" = "r"`
@@ -135,6 +151,10 @@ impl Layer {
             Self::Palette => "palette",
             Self::Welcome => "welcome",
             Self::Fill => "fill-secrets",
+            Self::SpecPreview => "spec-preview",
+            Self::SpecChoice => "spec-choice",
+            Self::SaveQuestion => "save-question",
+            Self::Review => "refresh-review",
         }
     }
 
@@ -169,6 +189,10 @@ impl Layer {
             Self::Palette => "the command palette",
             Self::Welcome => "the welcome",
             Self::Fill => "the secrets to fill in",
+            Self::SpecPreview => "the preview of a spec",
+            Self::SpecChoice => "the specs of a folder",
+            Self::SaveQuestion => "the question whether to save",
+            Self::Review => "the review of a refresh",
         }
     }
 
@@ -258,8 +282,14 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         "copy-curl" => Action::CopyCurl,
         "export" => Action::ExportCollection,
         "import" => Action::ImportCollection,
+        "import-openapi" => Action::ImportSpec,
+        "discard" => Action::Discard,
+        "refresh-spec" => Action::RefreshSpec,
+        "spec-source" => Action::ChangeSource,
         "palette" => Action::Palette,
         "keys" => Action::NextKeys,
+        "narrower" => Action::SidebarNarrower,
+        "wider" => Action::SidebarWider,
         "theme" => Action::NextTheme,
         "backend.keychain" => Action::Choose(Backend::Keychain),
         "backend.file" => Action::Choose(Backend::EncryptedFile),
@@ -476,6 +506,10 @@ pub(crate) fn layers(state: &State) -> (Vec<Layer>, bool) {
             Popup::Palette(_) => (L::Palette, true),
             Popup::Welcome { .. } => (L::Welcome, false),
             Popup::Fill(_) => (L::Fill, true),
+            Popup::SpecPreview(_) => (L::SpecPreview, false),
+            Popup::SpecChoice { .. } => (L::SpecChoice, false),
+            Popup::SaveVariables { .. } => (L::SaveQuestion, false),
+            Popup::Review(_) => (L::Review, false),
         };
 
         return (vec![L::Always, layer], text);

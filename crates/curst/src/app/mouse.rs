@@ -130,7 +130,10 @@ fn scrolls(popup: &Popup) -> bool {
         | Popup::Palette(_)
         | Popup::Tabs { .. }
         | Popup::Environments { .. }
-        | Popup::Welcome { .. } => true,
+        | Popup::Welcome { .. }
+        | Popup::SpecPreview(_)
+        | Popup::SpecChoice { .. }
+        | Popup::Review(_) => true,
         Popup::Variables(editor) => !editor.editing(),
         _ => false,
     }

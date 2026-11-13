@@ -403,3 +403,61 @@ pub(crate) fn open_keys(state: &State) -> Vec<NodeKey> {
         .filter_map(|t| t.open.as_ref().map(|o| o.key.clone()))
         .collect()
 }
+
+impl State {
+    /// the saved requests open with unsaved edits, in any tab
+    pub(crate) fn unsaved_keys(&self) -> Vec<NodeKey> {
+        let mut keys: Vec<NodeKey> = self
+            .others
+            .iter()
+            .filter(|tab| tab.is_dirty())
+            .filter_map(|tab| tab.open.as_ref().map(|o| o.key.clone()))
+            .collect();
+
+        if self.is_dirty()
+            && let Some(open) = &self.open
+        {
+            keys.push(open.key.clone());
+        }
+
+        keys
+    }
+}
+
+/// shows the request saved at `key` again where a tab holds it unchanged,
+/// after it was replaced on disk; a tab with edits keeps them
+pub(crate) fn reload_if_unchanged(state: &mut State, key: &NodeKey) {
+    if state.open.as_ref().is_some_and(|o| o.key == *key) && !state.is_dirty() {
+        state.load_request(key);
+    }
+
+    let saved = state
+        .workspace(&key.collection)
+        .and_then(|w| w.collection.item(&key.path))
+        .and_then(|item| match item {
+            curst_core::model::Item::Request(saved) => Some(saved.request.clone()),
+            curst_core::model::Item::Folder(_) => None,
+        });
+    let Some(request) = saved else {
+        return;
+    };
+
+    for tab in &mut state.others {
+        let holds = tab.open.as_ref().is_some_and(|o| o.key == *key);
+
+        if !holds || tab.is_dirty() {
+            continue;
+        }
+
+        tab.method = request.method;
+        tab.url = single_line(&request.url, URL_PLACEHOLDER);
+        tab.params = Table::from_pairs(&request.params);
+        tab.headers = Table::from_pairs(&request.headers);
+        tab.body = BodyEditor::from_body(&request.body);
+        tab.auth = AuthEditor::from_auth(&request.auth);
+
+        if let Some(open) = &mut tab.open {
+            open.baseline.clone_from(&request);
+        }
+    }
+}

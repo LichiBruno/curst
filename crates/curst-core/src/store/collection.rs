@@ -9,12 +9,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::format::{
-    CollectionFile, EnvironmentFile, FolderFile, RequestFile, to_toml, variables_from_file,
-    variables_to_file,
+    CollectionFile, EnvironmentFile, FolderFile, RequestFile, SourceFile, to_toml,
+    variables_from_file, variables_to_file,
 };
 use super::fs::{Node, node, not_plain, read_regular, write_atomic};
 use super::{StoreError, ids, slug};
-use crate::model::{Collection, EnvId, Environment, Folder, Item, Request, SavedRequest, Variable};
+use crate::model::{
+    Collection, EnvId, Environment, Folder, Item, Request, SavedRequest, Source, SpecOrigin,
+    Variable,
+};
 
 const COLLECTION_FILE: &str = "collection.toml";
 const FOLDER_FILE: &str = "folder.toml";
@@ -68,6 +71,37 @@ pub trait CollectionStore: Send + Sync {
         name: &str,
         request: &Request,
     ) -> Result<String, StoreError>;
+
+    /// saves a new request made from a spec operation, recording where in
+    /// the spec it came from, and returns its slug
+    ///
+    /// # Errors
+    /// as [`CollectionStore::create_request`]
+    fn create_from_spec(
+        &self,
+        parent: &[String],
+        name: &str,
+        request: &Request,
+        spec: Option<&SpecOrigin>,
+    ) -> Result<String, StoreError>;
+
+    /// overwrites the request at `path` with what its spec says now,
+    /// keeping its name and its place
+    ///
+    /// # Errors
+    /// when there is no request at `path` or it cannot be written
+    fn replace_from_spec(
+        &self,
+        path: &[String],
+        request: &Request,
+        spec: &SpecOrigin,
+    ) -> Result<(), StoreError>;
+
+    /// records where the collection's spec is fetched again; `None` forgets
+    ///
+    /// # Errors
+    /// when `collection.toml` cannot be read or written
+    fn save_source(&self, source: Option<&Source>) -> Result<(), StoreError>;
 
     /// overwrites the request at `path`, keeping its name
     ///
@@ -215,6 +249,7 @@ impl CollectionDir {
             name: name.to_owned(),
             order: Vec::new(),
             variables: Vec::new(),
+            source: None,
         };
 
         write_atomic(&file, to_toml(&content).as_bytes())?;
@@ -567,7 +602,8 @@ fn issue(path: &Path, err: &StoreError) -> LoadIssue {
 }
 
 fn load_request(path: &Path, name: &str) -> Result<SavedRequest, StoreError> {
-    let file: RequestFile = read_file(path)?;
+    let mut file: RequestFile = read_file(path)?;
+    let spec = file.spec.take().map(SpecOrigin::from);
     let (display, request) = file
         .into_request()
         .map_err(|e| StoreError::parse(path, e))?;
@@ -581,6 +617,7 @@ fn load_request(path: &Path, name: &str) -> Result<SavedRequest, StoreError> {
         },
         slug,
         request,
+        spec,
     })
 }
 
@@ -610,6 +647,7 @@ impl CollectionStore for CollectionDir {
                 variables,
                 items,
                 environments,
+                source: file.source.map(Source::from),
             },
             issues,
         })
@@ -621,10 +659,20 @@ impl CollectionStore for CollectionDir {
         name: &str,
         request: &Request,
     ) -> Result<String, StoreError> {
+        self.create_from_spec(parent, name, request, None)
+    }
+
+    fn create_from_spec(
+        &self,
+        parent: &[String],
+        name: &str,
+        request: &Request,
+        spec: Option<&SpecOrigin>,
+    ) -> Result<String, StoreError> {
         let dir = self.folder_dir(parent)?;
         let mut order = self.order_of(parent)?;
         let slug = Self::free_slug(&dir, parent.is_empty(), name, None);
-        let content = to_toml(&RequestFile::new(name, request));
+        let content = to_toml(&RequestFile::new(name, request).with_spec(spec));
 
         write_atomic(&dir.join(entry(Kind::Request, &slug)), content.as_bytes())?;
         order.push(entry(Kind::Request, &slug));
@@ -644,9 +692,43 @@ impl CollectionStore for CollectionDir {
         }
 
         let file = item.path();
-        let name = read_file::<RequestFile>(&file).map_or_else(|_| item.slug.clone(), |f| f.name);
+        let old = read_file::<RequestFile>(&file).ok();
+        let name = old
+            .as_ref()
+            .map_or_else(|| item.slug.clone(), |f| f.name.clone());
 
-        write_atomic(&file, to_toml(&RequestFile::new(&name, request)).as_bytes())
+        // where the request came from in its spec stays with it
+        let spec = old.and_then(|f| f.spec).map(SpecOrigin::from);
+
+        write_atomic(
+            &file,
+            to_toml(&RequestFile::new(&name, request).with_spec(spec.as_ref())).as_bytes(),
+        )
+    }
+
+    fn replace_from_spec(
+        &self,
+        path: &[String],
+        request: &Request,
+        spec: &SpecOrigin,
+    ) -> Result<(), StoreError> {
+        let item = self.locate(path)?;
+        let file = item.path();
+        let old: RequestFile = read_file(&file)?;
+
+        write_atomic(
+            &file,
+            to_toml(&RequestFile::new(&old.name, request).with_spec(Some(spec))).as_bytes(),
+        )
+    }
+
+    fn save_source(&self, source: Option<&Source>) -> Result<(), StoreError> {
+        let path = self.root.join(COLLECTION_FILE);
+        let mut file: CollectionFile = read_file(&path)?;
+
+        file.source = source.map(SourceFile::from);
+
+        write_atomic(&path, to_toml(&file).as_bytes())
     }
 
     fn create_folder(&self, parent: &[String], name: &str) -> Result<String, StoreError> {

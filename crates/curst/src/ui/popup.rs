@@ -15,8 +15,8 @@ use ratatui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    Entry, Field, Fill, Hint, Hints, Layer, PRESETS, Palette, Popup, State, Step, Target, VarTab,
-    VariablesEditor, display,
+    Entry, Field, Fill, Hint, Hints, Layer, PRESETS, Palette, Popup, Review, ReviewKind,
+    SpecPreview, State, Step, Target, VarTab, VariablesEditor, display,
 };
 
 /// a box of at most `width` by `height` in the middle of the screen
@@ -130,7 +130,11 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
         Popup::Tabs { selected } => tab_list(state, *selected, frame),
         Popup::Help { scroll, here } => help(state, *scroll, here, frame),
         Popup::Palette(palette) => palette_list(state, palette, frame),
-        Popup::Fill(fill) => fill_list(state, fill, frame),
+        Popup::Fill(_)
+        | Popup::SaveVariables { .. }
+        | Popup::SpecPreview(_)
+        | Popup::Review(_)
+        | Popup::SpecChoice { .. } => draw_import(state, popup, frame),
         Popup::Approve(approval) => approve(state, approval, frame),
         Popup::Variables(editor) => variables(state, editor, frame),
     }
@@ -221,7 +225,7 @@ fn tab_list(state: &State, selected: usize, frame: &mut Frame) {
             Line::from(vec![Span::styled(text, style)])
         })
         .chain(std::iter::once(Line::from(Span::styled(
-            " • is the tab you are on",
+            " • current tab",
             dim,
         ))))
         .collect();
@@ -242,6 +246,221 @@ fn tab_list(state: &State, selected: usize, frame: &mut Frame) {
 
     frame.render_widget(
         Paragraph::new(lines).block(pane(theme, Line::from(" Tabs "), true)),
+        area,
+    );
+}
+
+/// the pop-ups that import, refresh, fill in and save
+fn draw_import(state: &State, popup: &Popup, frame: &mut Frame) {
+    match popup {
+        Popup::Fill(fill) => fill_list(state, fill, frame),
+        Popup::SaveVariables { quit, .. } => save_question(state, *quit, frame),
+        Popup::SpecPreview(preview) => spec_preview(state, preview, frame),
+        Popup::Review(review) => refresh_review(state, review, frame),
+        Popup::SpecChoice {
+            folder,
+            specs,
+            selected,
+        } => spec_choice(state, folder, specs, *selected, frame),
+        _ => {}
+    }
+}
+
+/// the specs a folder holds, to pick the one to import
+fn spec_choice(state: &State, folder: &str, specs: &[String], selected: usize, frame: &mut Frame) {
+    let theme = &state.theme;
+    let height = frame.area().height.saturating_sub(4).clamp(6, 20);
+    let shown = usize::from(height.saturating_sub(4));
+    let first = selected.saturating_sub(shown.saturating_sub(1));
+    let mut lines = vec![
+        Line::from(format!("{} specs are in {}:", specs.len(), display(folder))),
+        Line::from(""),
+    ];
+
+    for (index, spec) in specs.iter().enumerate().skip(first).take(shown) {
+        let style = if index == selected {
+            theme.selected
+        } else {
+            Style::default()
+        };
+
+        lines.push(Line::from(Span::styled(
+            format!(" {}", display(spec)),
+            style,
+        )));
+    }
+
+    let rows = u16::try_from(lines.len() + 2).unwrap_or(height).min(height);
+    let area = centered(frame, 80, rows);
+    let inner = area.inner(Margin::new(1, 1));
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+
+    for index in first..specs.len().min(first + shown) {
+        line_region(state, inner, 2 + index - first, Target::Item(index));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).block(pane(theme, Line::from(" Which spec? "), true)),
+        area,
+    );
+}
+
+/// what a refresh found: each endpoint, ticked when it is taken, and the
+/// selected one's diff, what is there now against what the spec says
+fn refresh_review(state: &State, review: &Review, frame: &mut Frame) {
+    use curst_core::openapi::refresh::{DiffLine, diff, request_lines};
+
+    let theme = &state.theme;
+    let height = frame.area().height.saturating_sub(4).max(10);
+    let area = centered(frame, 110, height);
+    let block = pane(theme, Line::from(" Refresh from the spec "), true);
+    let inner = block.inner(area);
+    let listed = u16::try_from(review.lines.len())
+        .unwrap_or(u16::MAX)
+        .min(inner.height / 2)
+        .max(1);
+    let [list_area, _, detail_area] = Layout::vertical([
+        Constraint::Length(listed),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(inner);
+    let shown = usize::from(listed);
+    let first = review.selected.saturating_sub(shown.saturating_sub(1));
+    let list: Vec<Line> = (first..review.lines.len().min(first + shown))
+        .map(|index| {
+            let mark = if review.chosen[index] { "[x]" } else { "[ ]" };
+            let style = if index == review.selected {
+                theme.selected
+            } else if review.held[index] {
+                theme.muted
+            } else {
+                Style::default()
+            };
+
+            Line::from(Span::styled(
+                format!(" {mark} {}", display(&review.label(index))),
+                style,
+            ))
+        })
+        .collect();
+
+    // the selected entry: its diff, what it adds, or what deleting does
+    let detail: Vec<Line> = match review.lines.get(review.selected) {
+        Some((ReviewKind::Changed, i)) => {
+            let changed = &review.plan.changed[*i];
+
+            diff(
+                &request_lines(&changed.current),
+                &request_lines(&changed.new),
+            )
+            .into_iter()
+            .map(|line| match line {
+                DiffLine::Same(text) => Line::from(format!("  {}", display(&text))),
+                DiffLine::Removed(text) => {
+                    Line::from(Span::styled(format!("- {}", display(&text)), theme.error))
+                }
+                DiffLine::Added(text) => {
+                    Line::from(Span::styled(format!("+ {}", display(&text)), theme.success))
+                }
+            })
+            .collect()
+        }
+        Some((ReviewKind::Added, i)) => request_lines(&review.plan.added[*i].request)
+            .into_iter()
+            .map(|text| Line::from(Span::styled(format!("+ {}", display(&text)), theme.success)))
+            .collect(),
+        Some((ReviewKind::Removed, _)) => vec![Line::from(Span::styled(
+            "the spec no longer has this endpoint: taking it deletes the request",
+            theme.muted,
+        ))],
+        None => Vec::new(),
+    };
+    let scroll = u16::try_from(review.scroll).unwrap_or(u16::MAX);
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+
+    for index in first..review.lines.len().min(first + shown) {
+        line_region(state, list_area, index - first, Target::Item(index));
+    }
+
+    frame.render_widget(block, area);
+    frame.render_widget(Paragraph::new(list), list_area);
+    frame.render_widget(Paragraph::new(detail).scroll((scroll, 0)), detail_area);
+}
+
+/// what a spec becomes, before anything is written
+fn spec_preview(state: &State, preview: &SpecPreview, frame: &mut Frame) {
+    let theme = &state.theme;
+    let height = frame.area().height.saturating_sub(4).clamp(6, 24);
+    let width = usize::from(frame.area().width.min(90).saturating_sub(2)).max(10);
+    let shown = usize::from(height.saturating_sub(2));
+
+    // every line wrapped to the pop-up, so a long warning is read whole
+    let mut rows: Vec<Line> = Vec::new();
+
+    for (index, text) in preview.lines().iter().enumerate() {
+        let style = if index == 0 {
+            Style::default().add_modifier(Modifier::BOLD)
+        } else if text.starts_with("  ") {
+            theme.muted
+        } else {
+            Style::default()
+        };
+
+        rows.extend(
+            super::wrap(&display(text), width)
+                .into_iter()
+                .map(|row| Line::from(Span::styled(row, style))),
+        );
+    }
+
+    preview.last_scroll.set(rows.len().saturating_sub(shown));
+
+    let first = preview.scroll.min(preview.last_scroll.get());
+    let lines: Vec<Line> = rows.into_iter().skip(first).take(shown).collect();
+    let rows = u16::try_from(lines.len() + 2).unwrap_or(height).min(height);
+    let area = centered(frame, 90, rows);
+    let title = format!(" Import {} ", display(&preview.converted.bundle.name));
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(pane(theme, Line::from(title), true)),
+        area,
+    );
+}
+
+/// whether to save the variables before leaving them, each answer a button
+fn save_question(state: &State, quit: bool, frame: &mut Frame) {
+    let theme = &state.theme;
+    let question = if quit {
+        "The variables have changes. Save them before quitting?"
+    } else {
+        "The variables have changes. Save them?"
+    };
+    let answers = Line::from(vec![
+        key_span(state, Layer::SaveQuestion, "confirm"),
+        Span::raw("save   "),
+        key_span(state, Layer::SaveQuestion, "discard"),
+        Span::raw("don't save   "),
+        key_span(state, Layer::SaveQuestion, "close"),
+        Span::raw("keep editing"),
+    ]);
+    let lines = vec![Line::from(question), Line::from(""), answers.clone()];
+    let area = centered(frame, 64, 5);
+    let inner = area.inner(Margin::new(1, 1));
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+    button(state, inner, 2, &answers, 0, "confirm");
+    button(state, inner, 2, &answers, 2, "discard");
+    button(state, inner, 2, &answers, 4, "close");
+    frame.render_widget(
+        Paragraph::new(lines).block(pane(theme, Line::from(" Unsaved variables "), true)),
         area,
     );
 }
@@ -481,9 +700,22 @@ fn settings(state: &State, frame: &mut Frame) {
             Span::styled(what, theme.muted),
         ])
     };
+    let width = state.sidebar_width.map_or_else(
+        || format!("{} columns", crate::app::AUTOMATIC_SIDEBAR),
+        |w| format!("{w} columns"),
+    );
+    let sidebar = Line::from(vec![
+        Span::raw(format!("{:<9}", "Sidebar")),
+        Span::styled(format!("{width:<16}"), bold),
+        key_span(state, Layer::Settings, "narrower"),
+        Span::styled("narrower  ", theme.muted),
+        key_span(state, Layer::Settings, "wider"),
+        Span::styled("wider", theme.muted),
+    ]);
     let lines = vec![
         row("Keys", state.keys_preset.clone(), "keys", "next preset"),
         row("Theme", state.theme.name.clone(), "theme", "next theme"),
+        sidebar.clone(),
         Line::from(""),
         Line::from(vec![
             Span::raw(format!("{:<9}", "Secrets")),
@@ -496,11 +728,7 @@ fn settings(state: &State, frame: &mut Frame) {
         ]),
         Line::from(""),
         Line::from(Span::styled(
-            "Changes are saved to config.toml at once. Moving secrets copies each one,",
-            theme.muted,
-        )),
-        Line::from(Span::styled(
-            "checks the copy, then deletes the old one.",
+            "Changes are saved to config.toml at once.",
             theme.muted,
         )),
     ];
@@ -510,10 +738,13 @@ fn settings(state: &State, frame: &mut Frame) {
     frame.render_widget(Clear, area);
     state.region(area, Target::Popup);
 
-    // each setting's line changes it
-    for (row, name) in [(0, "keys"), (1, "theme"), (4, "migrate")] {
+    // each setting's line changes it; the sidebar's keys are buttons
+    for (row, name) in [(0, "keys"), (1, "theme"), (5, "migrate")] {
         line_region(state, inner, row, Target::Run(name.to_owned()));
     }
+
+    button(state, inner, 2, &sidebar, 2, "narrower");
+    button(state, inner, 2, &sidebar, 4, "wider");
 
     frame.render_widget(
         Paragraph::new(lines).block(pane(theme, Line::from(" Settings "), true)),
@@ -807,6 +1038,45 @@ fn trust(state: &State, collection: &LocalId, frame: &mut Frame) {
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
+/// the keys of the pop-ups that import, fill in and save
+fn import_hints(hints: &mut Hints, popup: &Popup) {
+    match popup {
+        Popup::Review(_) => {
+            hints
+                .pair("up", "down", "choose")
+                .one("row.toggle", "take or leave")
+                .pair("page-up", "page-down", "scroll the diff")
+                .one("confirm", "apply")
+                .one("close", "cancel");
+        }
+        Popup::SaveVariables { .. } => {
+            hints
+                .one("confirm", "save")
+                .one("discard", "don't save")
+                .one("close", "keep editing");
+        }
+        Popup::Fill(_) => {
+            hints
+                .one("confirm", "keep and go on")
+                .pair("up", "down", "move")
+                .one("close", "done");
+        }
+        Popup::SpecChoice { .. } => {
+            hints
+                .pair("up", "down", "choose")
+                .one("confirm", "read it")
+                .one("close", "cancel");
+        }
+        Popup::SpecPreview(_) => {
+            hints
+                .one("confirm", "import")
+                .pair("up", "down", "scroll")
+                .one("close", "cancel");
+        }
+        _ => {}
+    }
+}
+
 pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
     let mut hints = Hints::here(state);
 
@@ -837,6 +1107,7 @@ pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
             hints
                 .one("keys", "keys")
                 .one("theme", "theme")
+                .pair("narrower", "wider", "sidebar")
                 .one("migrate", "move secrets")
                 .one("close", "close");
         }
@@ -870,12 +1141,6 @@ pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
         Popup::Help { .. } => {
             hints.pair("up", "down", "scroll").one("close", "close");
         }
-        Popup::Fill(_) => {
-            hints
-                .one("confirm", "keep and go on")
-                .pair("up", "down", "move")
-                .one("close", "done");
-        }
         Popup::Palette(_) => {
             hints
                 .pair("up", "down", "choose")
@@ -896,6 +1161,11 @@ pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
                 .one("make-secret", "secret")
                 .one("row.delete", "delete");
         }
+        Popup::SaveVariables { .. }
+        | Popup::Review(_)
+        | Popup::Fill(_)
+        | Popup::SpecChoice { .. }
+        | Popup::SpecPreview(_) => import_hints(&mut hints, popup),
     }
 
     hints.finish()

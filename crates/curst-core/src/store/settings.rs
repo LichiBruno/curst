@@ -7,6 +7,7 @@
 //! ```toml
 //! theme = "dark"
 //! mouse = true
+//! sidebar_width = 30
 //!
 //! [keys]
 //! preset = "standard"
@@ -61,6 +62,10 @@ pub struct Settings {
     /// whether clicks and the wheel work; on by default
     pub mouse: Option<bool>,
 
+    /// how many columns the collections sidebar takes at most; `None`
+    /// sizes it to the terminal
+    pub sidebar_width: Option<u16>,
+
     /// the keymap preset, such as `standard` or `vim`
     pub keys_preset: Option<String>,
 
@@ -76,7 +81,10 @@ pub struct Settings {
 }
 
 /// the known top-level keys and sections
-const KNOWN: [&str; 5] = ["theme", "mouse", "keys", "http", "secrets"];
+const KNOWN: [&str; 6] = ["theme", "mouse", "sidebar_width", "keys", "http", "secrets"];
+
+/// the narrowest and widest the sidebar can be set to
+pub const SIDEBAR_WIDTHS: std::ops::RangeInclusive<u16> = 16..=60;
 
 fn read_document(path: &Path) -> Result<DocumentMut, StoreError> {
     match read_regular(path)? {
@@ -155,6 +163,20 @@ impl Settings {
 
         settings.theme = string(root.get("theme"), "theme", &mut warnings);
         settings.mouse = flag(root.get("mouse"), "mouse", &mut warnings);
+        settings.sidebar_width =
+            number(root.get("sidebar_width"), "sidebar_width", 0, &mut warnings).and_then(|n| {
+                let width = u16::try_from(n).ok().filter(|w| SIDEBAR_WIDTHS.contains(w));
+
+                if width.is_none() {
+                    warnings.push(format!(
+                        "sidebar_width must be from {} to {}",
+                        SIDEBAR_WIDTHS.start(),
+                        SIDEBAR_WIDTHS.end()
+                    ));
+                }
+
+                width
+            });
 
         let section = |name: &str| root.get(name).and_then(Item::as_table_like);
 
@@ -267,6 +289,14 @@ impl Settings {
         Self::set(path, &["theme"], Some(theme.into()))
     }
 
+    /// records how wide the sidebar is at most
+    ///
+    /// # Errors
+    /// when the file cannot be read, parsed or written
+    pub fn set_sidebar_width(path: &Path, width: u16) -> Result<(), StoreError> {
+        Self::set(path, &["sidebar_width"], Some(i64::from(width).into()))
+    }
+
     /// records the keymap preset
     ///
     /// # Errors
@@ -298,6 +328,7 @@ mod tests {
             &path,
             r#"theme = "light"
 mouse = false
+sidebar_width = 40
 
 [keys]
 preset = "vim"
@@ -325,6 +356,7 @@ backend = "encrypted-file"
                 secrets_backend: Some(Backend::EncryptedFile),
                 theme: Some("light".into()),
                 mouse: Some(false),
+                sidebar_width: Some(40),
                 keys_preset: Some("vim".into()),
                 key_bindings: vec![
                     ("global.send".into(), vec!["ctrl+enter".into()]),
@@ -346,6 +378,7 @@ backend = "encrypted-file"
             &path,
             r#"theme = 3
 mouse = "yes"
+sidebar_width = 500
 color = "red"
 
 [keys]
@@ -373,7 +406,7 @@ backend = "vault"
                 ..Settings::default()
             }
         );
-        assert_eq!(warnings.len(), 8, "{warnings:?}");
+        assert_eq!(warnings.len(), 9, "{warnings:?}");
         assert!(warnings.iter().any(|w| w.contains("\"color\"")));
         assert!(warnings.iter().any(|w| w.contains("vault")));
 
@@ -400,6 +433,7 @@ backend = "vault"
         Settings::set_backend(&path, None).unwrap();
         Settings::set_theme(&path, "dark").unwrap();
         Settings::set_keys_preset(&path, "standard").unwrap();
+        Settings::set_sidebar_width(&path, 36).unwrap();
 
         let (settings, _) = Settings::load(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -407,6 +441,7 @@ backend = "vault"
         assert_eq!(settings.theme.as_deref(), Some("dark"));
         assert_eq!(settings.keys_preset.as_deref(), Some("standard"));
         assert_eq!(settings.secrets_backend, None);
+        assert_eq!(settings.sidebar_width, Some(36));
         assert!(text.contains("# my settings"), "{text}");
         assert!(text.contains("# bright"), "{text}");
 

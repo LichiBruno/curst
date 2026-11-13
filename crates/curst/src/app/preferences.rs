@@ -11,6 +11,12 @@ pub(crate) enum Step {
     Theme,
 }
 
+/// the sidebar's width on a wide terminal, until the user sets one
+pub(crate) const AUTOMATIC_SIDEBAR: u16 = 30;
+
+/// how many columns `-` and `+` change the sidebar by
+const SIDEBAR_STEP: u16 = 2;
+
 /// the presets, with what each is like
 pub(crate) const PRESETS: [(&str, &str); 2] = [
     ("standard", "arrows, Enter and a letter for each action"),
@@ -86,6 +92,20 @@ pub(crate) fn settings(state: &mut State, action: &Action) -> Option<Vec<Command
             use_theme(state, next);
 
             Some(vec![save(state, false, true)])
+        }
+        Action::SidebarNarrower | Action::SidebarWider => {
+            let range = curst_core::store::SIDEBAR_WIDTHS;
+            let now = state.sidebar_width.unwrap_or(AUTOMATIC_SIDEBAR);
+            let next = if matches!(action, Action::SidebarWider) {
+                now.saturating_add(SIDEBAR_STEP)
+            } else {
+                now.saturating_sub(SIDEBAR_STEP)
+            }
+            .clamp(*range.start(), *range.end());
+
+            state.sidebar_width = Some(next);
+
+            Some(vec![Command::SaveSidebarWidth(next)])
         }
         _ => None,
     }

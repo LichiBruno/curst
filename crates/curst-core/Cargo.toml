@@ -10,9 +10,11 @@ age = "0.12.1"
 curl = { version = "0.4.51", default-features = false, features = ["static-curl", "rustls", "http2"] }
 etcetera = "0.11.0"
 getrandom = "0.4.3"
+ignore = "0.4"
 keyring-core = "1.0.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order", "arbitrary_precision"] }
+serde_yaml_ng = "0.10"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 toml = "1.2.1"

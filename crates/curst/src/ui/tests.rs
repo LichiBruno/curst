@@ -307,7 +307,7 @@ mod collections {
         update(&mut state, Action::DeleteRow);
         update(&mut state, Action::ClosePopup);
 
-        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+        assert!(matches!(state.popup, Some(Popup::SaveVariables { .. })));
         insta::assert_snapshot!("confirm", render(&state, 80, 12));
     }
 
@@ -1115,7 +1115,7 @@ mod mouse {
         update(&mut state, Action::DeleteRow);
         click(&mut state, (WIDTH - 1, 0));
 
-        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+        assert!(matches!(state.popup, Some(Popup::SaveVariables { .. })));
     }
 
     #[test]
@@ -1517,4 +1517,437 @@ fn the_secrets_to_fill_in_never_show_what_is_typed() {
 
     insta::assert_snapshot!(text);
     assert!(!text.contains("hunter2"));
+}
+
+#[test]
+fn a_spec_is_previewed_before_it_is_imported() {
+    let mut state = State::default();
+    let text = include_str!("../../../curst-core/src/openapi/fixtures/store-3.0.json");
+    let converted =
+        curst_core::openapi::convert(&curst_core::openapi::parse(text).unwrap(), None).unwrap();
+    let preview = crate::app::SpecPreview::new(
+        converted,
+        curst_core::model::Source {
+            location: "/specs/store.json".into(),
+            ..curst_core::model::Source::default()
+        },
+    );
+
+    update(
+        &mut state,
+        Action::SpecRead(Ok(crate::app::SpecFound::Preview(Box::new(preview)))),
+    );
+
+    insta::assert_snapshot!(render(&state, 100, 20));
+
+    // all of it fits, so there is nothing to scroll; Enter imports it
+    update(&mut state, Action::Down);
+
+    assert!(matches!(&state.popup, Some(Popup::SpecPreview(p)) if p.scroll == 0));
+    assert!(matches!(
+        update(&mut state, Action::ConfirmPopup).as_slice(),
+        [Command::ImportSpec(_)]
+    ));
+
+    update(
+        &mut state,
+        Action::SpecRead(Err("not an OpenAPI or Swagger spec".into())),
+    );
+
+    assert_eq!(
+        state.notice.as_deref(),
+        Some("not imported: not an OpenAPI or Swagger spec")
+    );
+}
+
+mod spec_sources {
+    use super::*;
+    use crate::app::SpecFound;
+
+    #[test]
+    fn a_url_is_fetched_in_the_background_and_a_late_answer_dropped() {
+        let mut state = State::default();
+
+        update(&mut state, Action::ImportSpec);
+
+        for c in "https://api.example.com/docs".chars() {
+            update(&mut state, Action::Type(key(KeyCode::Char(c))));
+        }
+
+        let commands = update(&mut state, Action::ConfirmPopup);
+        let [Command::FetchSpec { id, url, .. }] = commands.as_slice() else {
+            panic!("{commands:?}");
+        };
+
+        assert_eq!(url, "https://api.example.com/docs");
+        assert!(
+            state
+                .notice
+                .as_deref()
+                .unwrap()
+                .starts_with("looking for the spec")
+        );
+
+        // an answer to another fetch changes nothing
+        update(
+            &mut state,
+            Action::SpecFetched {
+                id: id + 1,
+                result: Err("old".into()),
+            },
+        );
+
+        assert!(state.notice.as_deref().unwrap().starts_with("looking"));
+
+        update(
+            &mut state,
+            Action::SpecFetched {
+                id: *id,
+                result: Err("no OpenAPI or Swagger spec was found".into()),
+            },
+        );
+
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("not imported: no OpenAPI or Swagger spec was found")
+        );
+    }
+
+    #[test]
+    fn a_folder_with_several_specs_asks_which() {
+        let mut state = State::default();
+        let specs = vec!["store.json".to_owned(), "api/openapi.yaml".to_owned()];
+
+        update(
+            &mut state,
+            Action::SpecRead(Ok(SpecFound::Choose {
+                folder: "/repo".into(),
+                specs,
+            })),
+        );
+
+        insta::assert_snapshot!(render(&state, 90, 16));
+
+        update(&mut state, Action::Down);
+
+        assert!(matches!(
+            update(&mut state, Action::ConfirmPopup).as_slice(),
+            [Command::ReadSpec { location, picked: Some(picked) }]
+                if location == "/repo" && picked == "api/openapi.yaml"
+        ));
+
+        // a file is read at once, never fetched
+        update(&mut state, Action::ImportSpec);
+
+        for c in "./openapi.yaml".chars() {
+            update(&mut state, Action::Type(key(KeyCode::Char(c))));
+        }
+
+        assert!(matches!(
+            update(&mut state, Action::ConfirmPopup).as_slice(),
+            [Command::ReadSpec { picked: None, .. }]
+        ));
+    }
+}
+
+mod spec_auth {
+    use curst_core::model::{KeyValue, Source, Variable};
+    use curst_core::secrets::{Approval, Secret, SecretKey};
+    use curst_core::vars::VarName;
+
+    use super::*;
+    use crate::app::{NodeKey, SecretChange};
+
+    fn name(text: &str) -> VarName {
+        VarName::new(text).unwrap()
+    }
+
+    fn typed(state: &mut State, text: &str) {
+        for c in text.chars() {
+            update(state, Action::Type(key(KeyCode::Char(c))));
+        }
+    }
+
+    #[test]
+    fn a_curl_command_imports_with_its_token_and_keeps_only_a_placeholder() {
+        let mut state = State::default();
+
+        update(&mut state, Action::ImportSpec);
+        typed(
+            &mut state,
+            "curl -H 'Authorization: Bearer t0k-planted' https://h/openapi.json?key=k3y-planted",
+        );
+
+        // the secrets are stored first
+        let commands = update(&mut state, Action::ConfirmPopup);
+        let [Command::ChangeSecrets { id, changes }] = commands.as_slice() else {
+            panic!("{commands:?}");
+        };
+        let changes = changes.clone();
+
+        // then the globals naming them are saved, and the spec fetched
+        let commands = update(
+            &mut state,
+            Action::SecretsChanged {
+                id: *id,
+                result: Ok(()),
+            },
+        );
+        let [
+            Command::SaveGlobals(globals),
+            Command::FetchSpec {
+                url,
+                headers,
+                secrets,
+                source,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("{commands:?}");
+        };
+
+        assert!(globals.iter().all(|v| v.secret && v.value.is_empty()));
+
+        // fetched now with the values as given
+        assert_eq!(url, "https://h/openapi.json?key=k3y-planted");
+        assert_eq!(
+            headers,
+            &[KeyValue::new("Authorization", "Bearer t0k-planted")]
+        );
+        assert_eq!(secrets.len(), 0);
+
+        // kept with placeholders, the values as global secrets
+        assert_eq!(source.location, "https://h/openapi.json?key={{key}}");
+        assert_eq!(
+            source.headers,
+            [KeyValue::new("Authorization", "Bearer {{token}}")]
+        );
+        assert!(!format!("{source:?}").contains("planted"));
+
+        let kept: Vec<(String, &str)> = changes
+            .iter()
+            .map(|change| match change {
+                SecretChange::Set(key, value) => (key.name().unwrap().to_string(), value.expose()),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+
+        assert_eq!(
+            kept,
+            [
+                ("key".to_owned(), "k3y-planted"),
+                ("token".to_owned(), "t0k-planted")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_refresh_resolves_its_source_and_waits_for_secrets_and_approval() {
+        let mut state = State::default();
+        let mut workspace = crate::app::sample();
+        let token = SecretKey::Global {
+            name: name("spec_token"),
+        };
+
+        workspace.collection.source = Some(Source {
+            location: "https://{{spec_host}}/openapi.json".into(),
+            headers: vec![KeyValue::new("Authorization", "Bearer {{spec_token}}")],
+            picked: None,
+        });
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![workspace],
+                globals: vec![
+                    Variable::new(name("spec_host"), "api.example.com"),
+                    Variable::secret(name("spec_token")),
+                ],
+                problems: vec![],
+                orphans: vec![],
+            },
+        );
+        state.sidebar.selected = Some(NodeKey::root(state.collections[0].id.clone()));
+
+        // the secret comes from the store first
+        let commands = update(&mut state, Action::RefreshSpec);
+        let [Command::LoadSecrets { id, keys }] = commands.as_slice() else {
+            panic!("{commands:?}");
+        };
+
+        assert_eq!(keys, std::slice::from_ref(&token));
+
+        let commands = update(
+            &mut state,
+            Action::SecretsLoaded {
+                id: *id,
+                values: vec![(token.clone(), Some(Secret::new("s3cr3t")))],
+            },
+        );
+        let [
+            Command::LoadSpec {
+                id,
+                source,
+                secrets,
+                ..
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("{commands:?}");
+        };
+
+        assert_eq!(source.location, "https://api.example.com/openapi.json");
+        assert_eq!(
+            source.headers,
+            [KeyValue::new("Authorization", "Bearer s3cr3t")]
+        );
+        assert_eq!(secrets, std::slice::from_ref(&token));
+
+        // a host the secret never went to is asked about first
+        update(
+            &mut state,
+            Action::SpecNeedsApproval {
+                id: *id,
+                approval: Box::new(Approval {
+                    origin: "https://api.example.com".into(),
+                    keys: vec![token.clone()],
+                }),
+            },
+        );
+
+        assert!(matches!(state.popup, Some(Popup::Approve(_))));
+
+        let commands = update(&mut state, Action::ConfirmPopup);
+        let [Command::Approve { id, .. }] = commands.as_slice() else {
+            panic!("{commands:?}");
+        };
+
+        // once approved, the fetch goes
+        let commands = update(
+            &mut state,
+            Action::Approved {
+                id: *id,
+                result: Ok(()),
+            },
+        );
+
+        assert!(
+            matches!(commands.as_slice(), [Command::LoadSpec { source, .. }] if source.headers[0].value == "Bearer s3cr3t"),
+            "{commands:?}"
+        );
+    }
+
+    #[test]
+    fn an_undefined_variable_in_a_source_stops_the_fetch() {
+        let mut state = State::default();
+
+        update(&mut state, Action::ImportSpec);
+        typed(&mut state, "https://{{nowhere}}/openapi.json");
+
+        assert_eq!(update(&mut state, Action::ConfirmPopup).len(), 0);
+        assert!(
+            state
+                .notice
+                .as_deref()
+                .unwrap()
+                .contains("{{nowhere}} not defined"),
+            "{:?}",
+            state.notice
+        );
+    }
+}
+
+#[test]
+fn the_sidebar_width_is_set_in_the_settings() {
+    let mut state = State::default();
+
+    // the width of the sidebar's top border, its corners included
+    let sidebar = |state: &State, width: u16| {
+        let text = render(state, width, 12);
+        let line: String = text.lines().next().unwrap().chars().skip(1).collect();
+
+        line.find('┐')
+            .map_or(0, |at| line[..at].chars().count() + 1)
+    };
+
+    assert_eq!(sidebar(&state, 120), 30);
+
+    update(&mut state, Action::Settings);
+
+    let commands = update(&mut state, Action::SidebarWider);
+
+    assert!(matches!(
+        commands.as_slice(),
+        [Command::SaveSidebarWidth(32)]
+    ));
+
+    update(&mut state, Action::ClosePopup);
+
+    assert_eq!(sidebar(&state, 120), 32);
+
+    // never past its limits, nor two fifths of the screen
+    state.sidebar_width = Some(60);
+    update(&mut state, Action::Settings);
+    update(&mut state, Action::SidebarWider);
+
+    assert_eq!(state.sidebar_width, Some(60));
+
+    update(&mut state, Action::ClosePopup);
+
+    assert_eq!(sidebar(&state, 100), 40);
+
+    state.sidebar_width = Some(16);
+    update(&mut state, Action::Settings);
+    update(&mut state, Action::SidebarNarrower);
+
+    assert_eq!(state.sidebar_width, Some(16));
+}
+
+#[test]
+fn long_lines_wrap_and_keep_their_indent() {
+    assert_eq!(
+        wrap("  the server \"/api\" is relative; set base_url", 20),
+        [
+            "  the server \"/api\"",
+            "    is relative; set",
+            "    base_url"
+        ]
+    );
+    assert_eq!(wrap("short", 20), ["short"]);
+    assert_eq!(wrap("abcdefghij", 4), ["abcd", "  ef", "  gh", "  ij"]);
+}
+
+#[test]
+fn a_long_warning_in_the_preview_is_shown_whole() {
+    let mut state = State::default();
+    let text = include_str!("../../../curst-core/src/openapi/fixtures/notes-3.1.yaml");
+    let converted =
+        curst_core::openapi::convert(&curst_core::openapi::parse(text).unwrap(), None).unwrap();
+    let preview = crate::app::SpecPreview::new(converted, curst_core::model::Source::default());
+
+    update(
+        &mut state,
+        Action::SpecRead(Ok(crate::app::SpecFound::Preview(Box::new(preview)))),
+    );
+
+    // narrow and short: the relative-server warning needs several rows,
+    // and the last of it is reached by scrolling
+    let mut screen = render(&state, 60, 12);
+
+    for _ in 0..20 {
+        update(&mut state, Action::Down);
+        screen.push_str(&render(&state, 60, 12));
+    }
+
+    // the warning goes on in an indented row
+    assert!(
+        screen.contains("is relative; set base_url to where the"),
+        "{screen}"
+    );
+    assert!(screen.contains("┃    API is "), "{screen}");
+
+    // nothing is drawn past the pop-up's border
+    for line in render(&state, 60, 12).lines() {
+        assert!(line.chars().count() <= 62, "{line}");
+    }
 }

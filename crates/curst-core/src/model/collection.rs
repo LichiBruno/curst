@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use super::Request;
+use super::{KeyValue, Request};
 use crate::vars::VarName;
 
 /// a variable as one scope defines it
@@ -121,6 +121,35 @@ pub struct SavedRequest {
 
     /// the request
     pub request: Request,
+
+    /// the spec operation it was made from, for a request imported from
+    /// an `OpenAPI` spec
+    pub spec: Option<SpecOrigin>,
+}
+
+/// where an imported request came from in its spec
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecOrigin {
+    /// the operation, as `GET /pets/{petId}`
+    pub operation: String,
+
+    /// a fingerprint of the operation as the spec described it when the
+    /// request was made; a different one on a refresh means the spec
+    /// changed, whatever the user changed in the request
+    pub fingerprint: String,
+}
+
+/// where a collection imported from a spec fetches it again
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Source {
+    /// what the user gave: a URL, or an absolute file or folder path
+    pub location: String,
+
+    /// headers sent with a URL, which may hold `{{variables}}`
+    pub headers: Vec<KeyValue>,
+
+    /// the spec chosen in a folder that has several
+    pub picked: Option<String>,
 }
 
 /// a folder of requests and other folders
@@ -180,6 +209,9 @@ pub struct Collection {
 
     /// the environments, sorted by name
     pub environments: Vec<Environment>,
+
+    /// the spec it was imported from, to fetch it again
+    pub source: Option<Source>,
 }
 
 impl Collection {
@@ -215,6 +247,7 @@ mod tests {
             slug: slug.into(),
             name: slug.to_uppercase(),
             request: Request::default(),
+            spec: None,
         })
     }
 

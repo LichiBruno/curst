@@ -1,0 +1,20 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 90, 16)"
+---
+"┌ Collections ─────────┐  GET new request           Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"│no collections yet    │┌ Method ─┐┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"│press c to add one    ││   GET   │┃ https://example.com/api, then Enter to send         ┃"
+"│                      │└─────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"│                      │┌ Request  Params  Headers  Body  Auth  ─────────────────────────┐"
+"│    ┏ Which spec? ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓    │"
+"│    ┃2 specs are in /repo:                                                         ┃    │"
+"│    ┃                                                                              ┃    │"
+"│    ┃ store.json                                                                   ┃────┘"
+"│    ┃ api/openapi.yaml                                                             ┃────┐"
+"│    ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛    │"
+"│                      ││                                                                │"
+"│                      ││                                                                │"
+"└──────────────────────┘└────────────────────────────────────────────────────────────────┘"
+" ↑↓ choose  Enter read it  Esc cancel                                                     "
+" Ctrl+C quit                                                                              "

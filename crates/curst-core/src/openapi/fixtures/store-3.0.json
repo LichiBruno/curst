@@ -1,0 +1,75 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Store", "version": "2" },
+  "servers": [
+    { "url": "https://{region}.store.example.com/api", "description": "Production",
+      "variables": { "region": { "default": "eu" } } },
+    { "url": "https://staging.store.example.com/api/", "description": "Staging" }
+  ],
+  "components": {
+    "securitySchemes": {
+      "key": { "type": "apiKey", "in": "header", "name": "X-Api-Key" },
+      "user": { "type": "http", "scheme": "bearer" }
+    },
+    "schemas": {
+      "Category": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "parent": { "$ref": "#/components/schemas/Category" }
+        }
+      },
+      "Order": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "quantity": { "type": "integer" },
+          "category": { "$ref": "#/components/schemas/Category" },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "parameters": {
+      "Page": { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1 } }
+    }
+  },
+  "security": [ { "key": [] } ],
+  "paths": {
+    "/orders": {
+      "get": {
+        "tags": ["orders"],
+        "summary": "List orders",
+        "parameters": [
+          { "$ref": "#/components/parameters/Page" },
+          { "name": "X-Api-Key", "in": "header", "example": "sk_live_DO_NOT_COPY_1234567890" },
+          { "name": "access_token", "in": "query", "example": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2lnbmF0dXJlLXZhbHVl" }
+        ],
+        "responses": { "200": { "description": "ok" } }
+      },
+      "post": {
+        "tags": ["orders"],
+        "summary": "Create order",
+        "security": [ { "user": [] } ],
+        "requestBody": {
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/Order" } }
+          }
+        },
+        "responses": { "201": { "description": "created" } }
+      }
+    },
+    "/orders/{orderId}": {
+      "delete": {
+        "tags": ["orders"],
+        "operationId": "deleteOrder",
+        "parameters": [
+          { "name": "orderId", "in": "path", "required": true, "schema": { "type": "string" }, "example": "o-1" }
+        ],
+        "responses": { "204": { "description": "gone" } }
+      }
+    },
+    "/health": {
+      "get": { "security": [], "responses": { "200": { "description": "up" } } }
+    }
+  }
+}

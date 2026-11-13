@@ -1338,32 +1338,101 @@ mod collections {
         );
     }
 
-    #[test]
-    fn quitting_with_unsaved_variables_asks_and_can_go_back() {
+    /// the variable editor of the sample collection, with a row added
+    fn with_changed_variables() -> State {
         let mut state = with_collection();
 
         press_key(&mut state, ctrl('e'));
         press(&mut state, KeyCode::Char('v'));
         press(&mut state, KeyCode::Char('a'));
         type_text(&mut state, "x");
-        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Esc);
+
+        state
+    }
+
+    fn asked(state: &State, quit: bool) -> bool {
+        matches!(&state.popup, Some(Popup::SaveVariables { quit: q, .. }) if *q == quit)
+    }
+
+    #[test]
+    fn quitting_with_unsaved_variables_offers_to_save_them() {
+        let mut state = with_changed_variables();
+
         press_key(&mut state, ctrl('c'));
 
         assert!(!state.should_quit);
-        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+        assert!(asked(&state, true));
 
-        press(&mut state, KeyCode::Char('n'));
+        // Esc goes back to them
+        press(&mut state, KeyCode::Esc);
 
         assert!(matches!(state.popup, Some(Popup::Variables(_))));
+
+        // n quits without them, and a second Ctrl+C does as well
+        press_key(&mut state, ctrl('c'));
+        press(&mut state, KeyCode::Char('n'));
+
+        assert!(state.should_quit);
+
+        let mut state = with_changed_variables();
 
         press_key(&mut state, ctrl('c'));
         press_key(&mut state, ctrl('c'));
 
         assert!(state.should_quit);
+
+        // y saves them, then quits
+        let mut state = with_changed_variables();
+
+        press_key(&mut state, ctrl('c'));
+
+        let commands = press(&mut state, KeyCode::Char('y'));
+
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::Store {
+                change: Change::SaveVariables(_),
+                ..
+            }]
+        ));
+        assert!(state.should_quit);
     }
 
     #[test]
-    fn closing_the_variable_editor_with_changes_asks_first() {
+    fn quitting_after_saving_a_secret_waits_for_it() {
+        let mut state = with_changed_variables();
+
+        // the new row is made a secret with a value
+        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Tab);
+        type_text(&mut state, "abc");
+        press(&mut state, KeyCode::Esc);
+        press(&mut state, KeyCode::Char('s'));
+        press_key(&mut state, ctrl('c'));
+
+        let commands = press(&mut state, KeyCode::Char('y'));
+        let Some(Command::ChangeSecrets { id, .. }) = commands.first() else {
+            panic!("{commands:?}");
+        };
+
+        // the secret is stored first, the file written after, then curst quits
+        assert!(!state.should_quit);
+
+        let commands = update(
+            &mut state,
+            Action::SecretsChanged {
+                id: *id,
+                result: Ok(()),
+            },
+        );
+
+        assert!(matches!(commands.as_slice(), [Command::Store { .. }]));
+        assert!(state.should_quit);
+    }
+
+    #[test]
+    fn closing_changed_variables_offers_to_save_them() {
         let mut state = with_collection();
 
         press_key(&mut state, ctrl('e'));
@@ -1375,27 +1444,36 @@ mod collections {
 
         assert_eq!(editor.tabs(), [VarTab::Collection, VarTab::Globals]);
 
+        // nothing changed: Esc closes at once
         press(&mut state, KeyCode::Esc);
 
         assert!(state.popup.is_none());
 
-        press_key(&mut state, ctrl('e'));
-        press(&mut state, KeyCode::Char('v'));
-        press(&mut state, KeyCode::Enter);
-        type_text(&mut state, "x");
-        press(&mut state, KeyCode::Esc);
+        let mut state = with_changed_variables();
+
         press(&mut state, KeyCode::Esc);
 
-        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+        assert!(asked(&state, false));
 
-        press(&mut state, KeyCode::Char('n'));
+        press(&mut state, KeyCode::Esc);
 
         assert!(matches!(state.popup, Some(Popup::Variables(_))));
 
+        // n leaves without saving
         press(&mut state, KeyCode::Esc);
-        press(&mut state, KeyCode::Char('y'));
 
+        assert_eq!(press(&mut state, KeyCode::Char('n')).len(), 0);
         assert!(state.popup.is_none());
+        assert!(!state.should_quit);
+
+        // y saves
+        let mut state = with_changed_variables();
+
+        press(&mut state, KeyCode::Esc);
+
+        assert_eq!(press(&mut state, KeyCode::Char('y')).len(), 1);
+        assert!(state.popup.is_none());
+        assert!(!state.should_quit);
     }
 
     #[test]
@@ -2873,9 +2951,14 @@ mod tabs {
             Some("left the collection: only global variables apply now")
         );
         assert_eq!(press(&mut state, KeyCode::Enter), Vec::new());
-        assert_eq!(
-            state.notice.as_deref(),
-            Some("not sent: {{host}} not defined")
+
+        // and it says how to bring them back
+        assert!(
+            state
+                .notice
+                .as_deref()
+                .unwrap()
+                .starts_with("not sent: {{host}} not defined; {{host}} is in Pets, and this request is outside any collection")
         );
 
         press_key(&mut state, ctrl('l'));
@@ -3168,6 +3251,22 @@ mod bundles {
     }
 
     #[test]
+    fn an_imported_collection_uses_its_first_environment() {
+        let mut state = State::default();
+        let commands = update(
+            &mut state,
+            Action::Imported(Ok((Box::new(with_secrets()), Vec::new()))),
+        );
+        let first = state.collections[0].collection.environments[0].id.clone();
+
+        assert_eq!(state.collections[0].active_environment, Some(first.clone()));
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::SetActiveEnvironment { environment: Some(id), .. }] if *id == first
+        ));
+    }
+
+    #[test]
     fn nothing_typed_stores_nothing_and_a_paste_stays_in_the_field() {
         let mut state = State::default();
 
@@ -3313,5 +3412,82 @@ mod bundles {
         update(&mut state, Action::Imported(Err("no such file".into())));
 
         assert_eq!(state.notice.as_deref(), Some("not imported: no such file"));
+    }
+}
+
+mod undefined {
+    use curst_core::model::{EnvId, Environment, Variable};
+    use curst_core::vars::VarName;
+
+    use super::*;
+    use crate::app::workspace::tests::sample;
+
+    /// the sample collection, with a second environment holding `api_key`
+    fn with_staging() -> State {
+        let mut state = State::default();
+        let mut workspace = sample();
+
+        workspace.collection.environments.push(Environment {
+            id: EnvId::new("e2").unwrap(),
+            slug: "staging".into(),
+            name: "Staging".into(),
+            variables: vec![Variable::secret(VarName::new("api_key").unwrap())],
+        });
+        workspace.active_environment = EnvId::new("e1");
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![workspace],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![],
+            },
+        );
+
+        state
+    }
+
+    #[test]
+    fn a_variable_in_an_environment_not_in_use_says_so() {
+        let mut state = with_staging();
+
+        state.collection = Some(state.collections[0].id.clone());
+        type_text(&mut state, "https://h/{{api_key}}");
+
+        assert_eq!(update(&mut state, Action::Send).len(), 0);
+        assert_eq!(
+            state.notice.as_deref(),
+            Some(
+                "not sent: {{api_key}} not defined in Dev; {{api_key}} is in the environment Staging, which is not in use: Ctrl+E chooses it"
+            )
+        );
+    }
+
+    #[test]
+    fn a_request_outside_the_collection_says_so() {
+        let mut state = with_staging();
+
+        type_text(&mut state, "https://h/{{api_key}}");
+
+        assert_eq!(update(&mut state, Action::Send).len(), 0);
+
+        let notice = state.notice.as_deref().unwrap();
+
+        assert!(
+            notice.contains("is in Pets, and this request is outside any collection"),
+            "{notice}"
+        );
+        assert!(notice.contains("save it there with Ctrl+S"), "{notice}");
+
+        // a variable no collection has keeps the short notice
+        let mut state = with_staging();
+
+        type_text(&mut state, "https://h/{{nowhere}}");
+        update(&mut state, Action::Send);
+
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("not sent: {{nowhere}} not defined")
+        );
     }
 }

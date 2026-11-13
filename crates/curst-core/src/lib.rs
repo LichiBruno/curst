@@ -10,6 +10,7 @@
 pub mod curl;
 pub mod http;
 pub mod model;
+pub mod openapi;
 pub mod secrets;
 pub mod store;
 pub mod url;

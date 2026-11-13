@@ -39,7 +39,7 @@ use super::collection::{CollectionDir, CollectionStore};
 use super::format::{RequestFile, VariableFile, to_toml, variables_from_file, variables_to_file};
 use super::fs::read_regular;
 use super::library::Library;
-use crate::model::{Collection, Item, Request, Variable};
+use crate::model::{Collection, Item, Request, SpecOrigin, Variable};
 use crate::secrets::detect;
 
 /// the version of the format this curst writes and reads
@@ -83,7 +83,7 @@ enum ItemFile {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         items: Vec<ItemFile>,
     },
-    Request(RequestFile),
+    Request(Box<RequestFile>),
 }
 
 /// a folder or a request in a bundle, by name only
@@ -105,6 +105,10 @@ pub enum BundleItem {
 
         /// the request
         request: Request,
+
+        /// the spec operation it was made from, when it was; a bundle file
+        /// never carries it
+        spec: Option<SpecOrigin>,
     },
 }
 
@@ -137,7 +141,7 @@ fn items_to_file(items: &[Item]) -> Vec<ItemFile> {
                 items: items_to_file(&folder.items),
             },
             Item::Request(saved) => {
-                ItemFile::Request(RequestFile::new(&saved.name, &saved.request))
+                ItemFile::Request(Box::new(RequestFile::new(&saved.name, &saved.request)))
             }
         })
         .collect()
@@ -258,7 +262,11 @@ fn entries(files: Vec<ItemFile>, depth: usize) -> Result<Vec<BundleItem>, String
             ItemFile::Request(file) => {
                 let (name, request) = file.into_request()?;
 
-                Ok(BundleItem::Request { name, request })
+                Ok(BundleItem::Request {
+                    name,
+                    request,
+                    spec: None,
+                })
             }
         })
         .collect()
@@ -331,8 +339,12 @@ fn create_entries(
                 path.push(slug);
                 create_entries(dir, &path, items)?;
             }
-            BundleItem::Request { name, request } => {
-                dir.create_request(parent, name, request)?;
+            BundleItem::Request {
+                name,
+                request,
+                spec,
+            } => {
+                dir.create_from_spec(parent, name, request, spec.as_ref())?;
             }
         }
     }
@@ -340,7 +352,7 @@ fn create_entries(
     Ok(())
 }
 
-fn fill(dir: &CollectionDir, bundle: &Bundle) -> Result<(), StoreError> {
+pub(crate) fn fill(dir: &CollectionDir, bundle: &Bundle) -> Result<(), StoreError> {
     dir.save_settings(&bundle.name, &bundle.variables)?;
 
     for (name, variables) in &bundle.environments {
@@ -365,7 +377,7 @@ impl Library {
 
     /// makes the collection and has `fill` write what is in it, removing
     /// the collection again when that fails
-    fn import_with(
+    pub(crate) fn import_with(
         &self,
         bundle: Bundle,
         fill: impl FnOnce(&CollectionDir, &Bundle) -> Result<(), StoreError>,

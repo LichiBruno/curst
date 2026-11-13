@@ -652,13 +652,12 @@ fn encode_query_part(text: &str) -> String {
     out
 }
 
-/// the request as a curl command, one option per line; variables stay as
-/// `{{name}}`, so no secret value is ever in it
+/// `url` with the enabled `params` added to its query, encoded, and
+/// `{{name}}` variables left as they are
 #[must_use]
-pub fn emit(request: &Request) -> String {
-    let mut url = request.url.clone();
-    let query: Vec<String> = request
-        .params
+pub fn url_with_params(url: &str, params: &[KeyValue]) -> String {
+    let mut url = url.to_owned();
+    let query: Vec<String> = params
         .iter()
         .filter(|p| p.enabled && !p.name.is_empty())
         .map(|p| {
@@ -675,6 +674,42 @@ pub fn emit(request: &Request) -> String {
         url.push_str(&query.join("&"));
     }
 
+    url
+}
+
+/// the value of an `Authorization` header for basic auth
+#[must_use]
+pub fn basic_value(username: &str, password: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    let bytes = format!("{username}:{password}").into_bytes();
+    let mut out = String::from("Basic ");
+
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            out.push(if i <= chunk.len() {
+                char::from(ALPHABET[((n >> shift) & 63) as usize])
+            } else {
+                '='
+            });
+        }
+    }
+
+    out
+}
+
+/// the request as a curl command, one option per line; variables stay as
+/// `{{name}}`, so no secret value is ever in it
+#[must_use]
+pub fn emit(request: &Request) -> String {
+    let url = url_with_params(&request.url, &request.params);
     let mut parts = vec![format!("curl {}", quote(&url))];
     let has_body = request.body != Body::None;
 

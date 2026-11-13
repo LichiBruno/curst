@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 use std::borrow::Cow;
 use std::fmt::Write;
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use ratatui_textarea::TextArea;
 
@@ -24,13 +24,19 @@ use crate::theme::Theme;
 
 const WIDE: u16 = 110;
 
-/// the sidebar's width for a terminal this wide, 0 when it is too narrow
-fn sidebar_width(width: u16) -> u16 {
-    match width {
-        100.. => 30,
-        60.. => 24,
-        _ => 0,
+/// the sidebar's width for a terminal this wide, 0 when it is too narrow:
+/// the width set in the settings, or one that suits the terminal, never
+/// more than two fifths of it so the panes keep room
+fn sidebar_width(state: &State, width: u16) -> u16 {
+    if width < 60 {
+        return 0;
     }
+
+    let wanted = state
+        .sidebar_width
+        .unwrap_or(if width >= 100 { 30 } else { 24 });
+
+    wanted.min(width / 5 * 2)
 }
 
 pub(crate) fn view(state: &State, frame: &mut Frame) {
@@ -39,7 +45,7 @@ pub(crate) fn view(state: &State, frame: &mut Frame) {
     let [body, footer] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(2)]).areas(frame.area());
     let [side, main] = Layout::horizontal([
-        Constraint::Length(sidebar_width(body.width)),
+        Constraint::Length(sidebar_width(state, body.width)),
         Constraint::Fill(1),
     ])
     .areas(body);
@@ -359,6 +365,42 @@ fn draw_footer(state: &State, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(Paragraph::new(Line::from(here)), top);
     frame.render_widget(Paragraph::new(Line::from(everywhere)), bottom);
+}
+
+/// `text` broken into rows of at most `width` columns, between words where
+/// it can; a row that goes on is indented as its line is, and two more
+pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
+    let indent = text.len() - text.trim_start().len();
+    let more = " ".repeat(indent + 2);
+    let mut rows = Vec::new();
+    let mut row = " ".repeat(indent);
+
+    for word in text.split_whitespace() {
+        let room = width.saturating_sub(row.width());
+        let first = row.trim().is_empty();
+        let needed = word.width() + usize::from(!first);
+
+        if needed > room && !first {
+            rows.push(std::mem::replace(&mut row, more.clone()));
+        }
+
+        if !row.trim().is_empty() {
+            row.push(' ');
+        }
+
+        // a word longer than a row is cut where the row ends
+        for c in word.chars() {
+            if row.width() + c.width().unwrap_or(0) > width && !row.trim().is_empty() {
+                rows.push(std::mem::replace(&mut row, more.clone()));
+            }
+
+            row.push(c);
+        }
+    }
+
+    rows.push(row);
+
+    rows
 }
 
 /// the columns a list of hints takes in the footer
