@@ -206,3 +206,34 @@ fn plain_credentials_are_found_before_export() {
     assert!(found[0].starts_with("the collection variable api_key"));
     assert!(found[1].starts_with("Health"));
 }
+
+#[test]
+fn a_failure_partway_leaves_no_collection_behind() {
+    let (root, library) = library();
+    let original = shop(&library);
+    let path = root.path().join("shop.curst.toml");
+
+    export(&original, &path).unwrap();
+
+    let before = library.collections().unwrap().len();
+    let bundle = read(&path).unwrap();
+    let mut made = None;
+
+    // the requests and environments are written, then something fails
+    let result = library.import_with(bundle, |dir, bundle| {
+        fill(dir, bundle)?;
+        made = Some(dir.root().to_owned());
+
+        Err(StoreError::Invalid("the disk is full".into()))
+    });
+
+    let made = made.unwrap();
+
+    assert!(matches!(result, Err(StoreError::Invalid(_))));
+    assert!(!made.exists(), "{} is still there", made.display());
+    assert_eq!(library.collections().unwrap().len(), before);
+    assert!(
+        library.registry().find(&made).unwrap().is_none(),
+        "the registry still names it"
+    );
+}
