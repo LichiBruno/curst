@@ -1,4 +1,5 @@
 mod editor;
+mod fill;
 mod keymap;
 mod mouse;
 mod palette;
@@ -25,6 +26,7 @@ use ratatui_textarea::TextArea;
 #[cfg(test)]
 pub(crate) use editor::body_text;
 pub(crate) use editor::{AuthEditor, AuthKind, BodyEditor, BodyField, BodyKind, Column, Table};
+pub(crate) use fill::Fill;
 #[cfg(test)]
 pub(crate) use keymap::{HelpRow, HelpSection};
 pub(crate) use keymap::{Hint, Hints, Keymap, Layer, action_for, help_lines};
@@ -150,10 +152,11 @@ pub(crate) enum Then {
     Send(Request),
 
     /// secret changes, and the file writes that follow them once they
-    /// succeed
+    /// succeed, and a request to send after
     Save {
         changes: Vec<SecretChange>,
         files: Vec<Command>,
+        send: Option<Request>,
     },
 
     /// moving every secret to another backend
@@ -511,6 +514,12 @@ pub(crate) enum Action {
     /// copies the response tab's content, or the request as a curl command
     CopyResponse,
     CopyCurl,
+
+    /// a collection to a bundle file, or a bundle file to a collection
+    ExportCollection,
+    ImportCollection,
+    Exported(Result<PathBuf, String>),
+    Imported(Result<(Box<Workspace>, Vec<String>), String>),
     Migrate,
     Migrated {
         id: u64,
@@ -662,6 +671,15 @@ pub(crate) enum Command {
     /// puts text on the clipboard, through the terminal
     Copy(String),
 
+    /// writes a collection to a new bundle file
+    ExportBundle {
+        collection: LocalId,
+        path: PathBuf,
+    },
+
+    /// makes a new collection from a bundle file
+    ImportBundle(PathBuf),
+
     /// writes the keymap preset, the theme or both to `config.toml`; what
     /// is `None` stays as it is in the file
     SavePreferences {
@@ -719,22 +737,24 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         Action::Send => return send::send(state),
         Action::Follow => return send::follow(state),
         Action::MakeSecret => request::make_secret(state),
-        Action::NewTab => tabs::new_tab(state),
-        Action::CloseTab => return tabs::close(state),
-        Action::LeaveCollection => tabs::leave_collection(state),
-        Action::NextRequest | Action::PreviousRequest => {
-            tabs::step(state, matches!(action, Action::NextRequest));
-        }
-        Action::RequestAt(index) => tabs::switch_to(state, index),
+        Action::NewTab
+        | Action::CloseTab
+        | Action::LeaveCollection
+        | Action::NextRequest
+        | Action::PreviousRequest
+        | Action::RequestAt(_) => return tabs::apply(state, &action),
         Action::Tabs
         | Action::Settings
         | Action::Palette
         | Action::Welcome
         | Action::Help
-        | Action::Environments => open_popup(state, &action),
+        | Action::Environments
+        | Action::ExportCollection
+        | Action::ImportCollection => open_popup(state, &action),
         Action::PasteText(text) => return request::paste(state, &text),
         Action::CopyResponse => return copy_response(state),
         Action::CopyCurl => return copy_curl(state),
+
         Action::EditBody => return request::edit_body(state),
         Action::Save => return save(state),
         Action::Cancel => return cancel(state),
@@ -869,6 +889,8 @@ fn open_popup(state: &mut State, action: &Action) {
         Action::Palette => palette::open(state),
         Action::Welcome => preferences::welcome(state),
         Action::Environments => open_environments(state),
+        Action::ExportCollection => sidebar::ask_export(state),
+        Action::ImportCollection => state.popup = Some(Popup::prompt(Purpose::ImportBundle, "")),
 
         // the help lists the keys where the focus is first
         Action::Help => {
@@ -967,10 +989,38 @@ fn report(state: &mut State, action: Action) -> Vec<Command> {
             Err(message) => state.notice = Some(message),
         },
         Action::Notice(message) => state.notice = Some(message),
+        Action::Exported(result) => {
+            state.notice = Some(match result {
+                Ok(path) => format!("exported to {}", path.display()),
+                Err(message) => format!("not exported: {message}"),
+            });
+        }
+        Action::Imported(result) => match result {
+            Ok((workspace, warnings)) => imported(state, *workspace, &warnings),
+            Err(message) => state.notice = Some(format!("not imported: {message}")),
+        },
         _ => {}
     }
 
     Vec::new()
+}
+
+/// a collection made from a bundle: shown, selected, and its secrets asked
+/// for, since a bundle never carries their values
+fn imported(state: &mut State, workspace: Workspace, warnings: &[String]) {
+    let key = NodeKey::root(workspace.id.clone());
+    let secrets = fill::secrets_of(&workspace);
+    let mut notice = format!("imported {}", workspace.collection.name);
+
+    if let Some(first) = warnings.first() {
+        notice = format!("{notice}; {first}");
+    }
+
+    state.notice = Some(notice);
+    state.collections.push(workspace);
+    state.sidebar.expanded.insert(key.clone());
+    state.sidebar.selected = Some(key);
+    fill::open(state, secrets, None);
 }
 
 /// stops a request waiting for its secrets, or one in flight
@@ -994,6 +1044,8 @@ fn reported(action: &Action) -> bool {
             | Action::BodyEdited(_)
             | Action::Stored { .. }
             | Action::CollectionAdded(_)
+            | Action::Exported(_)
+            | Action::Imported(_)
             | Action::GlobalsSaved(_)
             | Action::Saved(_)
             | Action::Notice(_)

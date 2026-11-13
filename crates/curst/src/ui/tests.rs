@@ -1283,3 +1283,30 @@ fn a_new_row_shows_it_wants_a_name_and_a_value() {
     assert_eq!(state.editing_column(), None);
     assert_eq!(state.headers.rows[1].name, "X-Trace");
 }
+
+#[test]
+fn the_secrets_to_fill_in_never_show_what_is_typed() {
+    let mut state = State::default();
+    let mut workspace = crate::app::sample();
+    let name = |text: &str| curst_core::vars::VarName::new(text).unwrap();
+
+    workspace.collection.variables = vec![curst_core::model::Variable::secret(name("token"))];
+    workspace.collection.environments[0]
+        .variables
+        .push(curst_core::model::Variable::secret(name("password")));
+    update(
+        &mut state,
+        Action::Imported(Ok((Box::new(workspace), Vec::new()))),
+    );
+
+    for c in "hunter2".chars() {
+        update(&mut state, Action::Type(key(KeyCode::Char(c))));
+    }
+
+    update(&mut state, Action::ConfirmPopup);
+
+    let text = render(&state, 90, 20);
+
+    insta::assert_snapshot!(text);
+    assert!(!text.contains("hunter2"));
+}

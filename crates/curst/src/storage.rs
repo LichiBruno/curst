@@ -207,6 +207,28 @@ pub(crate) fn run(
                 result,
             })
         }
+        Command::ExportBundle { collection, path } => {
+            let Some(workspace) = find(&collection) else {
+                return Some(Action::Notice("that collection is gone".into()));
+            };
+
+            let result = curst_core::store::bundle::export(&workspace.collection, &path)
+                .map(|()| path)
+                .map_err(|e| e.to_string());
+
+            Some(Action::Exported(result))
+        }
+        Command::ImportBundle(path) => {
+            let result = library
+                .import_bundle(&path)
+                .and_then(|(dir, bundle)| {
+                    open(library, &dir, true)
+                        .map(|(workspace, _)| (Box::new(workspace), bundle.warnings))
+                })
+                .map_err(|e| e.to_string());
+
+            Some(Action::Imported(result))
+        }
         Command::SavePreferences { keys, theme } => {
             let path = library.paths().config_file();
             let result = keys
@@ -376,6 +398,56 @@ mod tests {
         let library = Library::new(Paths::under(dir.path()));
 
         (dir, library)
+    }
+
+    #[test]
+    fn a_collection_goes_out_as_a_bundle_and_comes_back_as_another() {
+        let (dir, library) = library();
+        let created = library.create_collection("Pets").unwrap();
+        let (pets, _) = open(&library, &created, true).unwrap();
+        let path = dir.path().join("pets.curst.toml");
+        let exported = run(
+            &library,
+            std::slice::from_ref(&pets),
+            Command::ExportBundle {
+                collection: pets.id.clone(),
+                path: path.clone(),
+            },
+        );
+
+        assert!(matches!(exported, Some(Action::Exported(Ok(p))) if p == path));
+
+        // a second export would overwrite it, so it is refused
+        assert!(matches!(
+            run(
+                &library,
+                std::slice::from_ref(&pets),
+                Command::ExportBundle {
+                    collection: pets.id.clone(),
+                    path: path.clone(),
+                },
+            ),
+            Some(Action::Exported(Err(_)))
+        ));
+
+        let Some(Action::Imported(Ok((imported, warnings)))) =
+            run(&library, &[], Command::ImportBundle(path))
+        else {
+            panic!("not imported");
+        };
+
+        assert_eq!(imported.collection.name, "Pets");
+        assert_ne!(imported.id, pets.id);
+        assert!(imported.trusted);
+        assert_eq!(warnings, Vec::<String>::new());
+        assert!(matches!(
+            run(
+                &library,
+                &[],
+                Command::ImportBundle(dir.path().join("none.toml"))
+            ),
+            Some(Action::Imported(Err(_)))
+        ));
     }
 
     #[test]

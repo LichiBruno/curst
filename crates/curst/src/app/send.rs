@@ -105,8 +105,22 @@ pub(super) fn send_request(state: &mut State, request: Request) -> Vec<Command> 
             .filter(|k| !state.secret_values.contains_key(k))
             .collect();
 
+        // the values are known, and some are empty: they are asked for, and
+        // the request goes once they are stored
         if unknown.is_empty() {
+            let empty: Vec<(SecretKey, String)> = resolution
+                .unavailable
+                .iter()
+                .filter_map(key)
+                .map(|k| {
+                    let label = super::fill::label(workspace, &k);
+
+                    (k, label)
+                })
+                .collect();
+
             state.notice = Some(not_sent(workspace, &resolution));
+            super::fill::open(state, empty, Some(request));
 
             return Vec::new();
         }
@@ -195,7 +209,11 @@ fn retry(state: &mut State, id: Option<u64>) -> Vec<Command> {
     match state.waiting.take() {
         Some(waiting) if id.is_none_or(|id| id == waiting.id) => match waiting.then {
             Then::Send(request) => send_request(state, request),
-            Then::Save { changes, files } => change_secrets(state, changes, files),
+            Then::Save {
+                changes,
+                files,
+                send,
+            } => save_secrets(state, changes, files, send),
             Then::Migrate { to, passphrase } => start_migration(state, to, passphrase),
             Then::Reveal { editor, key } => reveal(state, editor, key),
         },
@@ -214,6 +232,24 @@ pub(super) fn change_secrets(
     changes: Vec<SecretChange>,
     files: Vec<Command>,
 ) -> Vec<Command> {
+    save_secrets(state, changes, files, None)
+}
+
+/// stores secret values, then sends `request` when one waits for them
+pub(super) fn change_secrets_then_send(
+    state: &mut State,
+    changes: Vec<SecretChange>,
+    request: Option<Request>,
+) -> Vec<Command> {
+    save_secrets(state, changes, Vec::new(), request)
+}
+
+fn save_secrets(
+    state: &mut State,
+    changes: Vec<SecretChange>,
+    files: Vec<Command>,
+    send: Option<Request>,
+) -> Vec<Command> {
     if changes.is_empty() {
         return files;
     }
@@ -224,6 +260,7 @@ pub(super) fn change_secrets(
         then: Then::Save {
             changes: changes.clone(),
             files,
+            send,
         },
     });
 
@@ -242,12 +279,18 @@ pub(super) fn changed(state: &mut State, id: u64, result: Result<(), String>) ->
     state.secret_values.clear();
 
     match (result, waiting.then) {
-        (Ok(()), Then::Save { files, .. }) => {
+        (Ok(()), Then::Save { files, send, .. }) => {
             if state.notice.is_none() {
                 state.notice = Some("secrets saved".into());
             }
 
-            files
+            let mut commands = files;
+
+            if let Some(request) = send {
+                commands.extend(send_request(state, request));
+            }
+
+            commands
         }
         (Err(message), _) => {
             state.notice = Some(format!("nothing was saved: {message}"));

@@ -85,6 +85,8 @@ pub(crate) fn describe(name: &str) -> &'static str {
         "keys" => "the next keymap preset",
         "copy" => "copy the response body",
         "copy-curl" => "copy the request as a curl command",
+        "export" => "export the collection to a bundle file",
+        "import" => "import a bundle file as a new collection",
         "theme" => "the next theme",
         _ if name.starts_with("request.go-") => "go to request 1-8, 9 the last",
         _ if name.starts_with("trust.moved-") => "it moved from the folder with this number",

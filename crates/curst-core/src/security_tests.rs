@@ -128,6 +128,17 @@ fn no_secret_value_reaches_any_file() {
         Some(Secret::new(PLANTED[0]))
     );
 
+    // a bundle of it, made while the values sit in memory, and imported
+    let mut shared = pets.load().unwrap().collection;
+
+    shared.variables = vec![holding("key", PLANTED[1])];
+    shared.environments[0].variables = dev.variables.clone();
+
+    let bundle = dir.path().join("pets.curst.toml");
+
+    crate::store::bundle::export(&shared, &bundle).unwrap();
+    library.import_bundle(&bundle).unwrap();
+
     library.rename_collection(&pets, "Animals").unwrap();
 
     // the scan, over everything under the temporary root
@@ -138,6 +149,12 @@ fn no_secret_value_reaches_any_file() {
     assert!(
         files.iter().any(|(_, bytes)| contains(bytes, CANARY)),
         "the canary was not found, so the scan proves nothing"
+    );
+    assert!(
+        files
+            .iter()
+            .any(|(path, bytes)| path.ends_with("pets.curst.toml") && contains(bytes, CANARY)),
+        "the bundle was not scanned"
     );
 
     for (path, bytes) in &files {

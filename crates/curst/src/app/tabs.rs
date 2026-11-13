@@ -13,7 +13,9 @@ use ratatui_textarea::TextArea;
 use super::editor::{AuthEditor, BodyEditor, Table, single_line};
 use super::popup::{Pending, Popup};
 use super::workspace::NodeKey;
-use super::{Command, OpenRequest, Outcome, RequestTab, ResponseTab, State, URL_PLACEHOLDER};
+use super::{
+    Action, Command, OpenRequest, Outcome, RequestTab, ResponseTab, State, URL_PLACEHOLDER,
+};
 
 /// a request open in a tab that is not the active one
 #[derive(Debug)]
@@ -190,6 +192,22 @@ fn short_url(url: &str) -> String {
     } else {
         rest.to_owned()
     }
+}
+
+/// what the tab keys do
+pub(crate) fn apply(state: &mut State, action: &Action) -> Vec<Command> {
+    match action {
+        Action::NewTab => new_tab(state),
+        Action::CloseTab => return close(state),
+        Action::LeaveCollection => leave_collection(state),
+        Action::NextRequest | Action::PreviousRequest => {
+            step(state, matches!(action, Action::NextRequest));
+        }
+        Action::RequestAt(index) => switch_to(state, *index),
+        _ => {}
+    }
+
+    Vec::new()
 }
 
 /// makes tab `index` the active one

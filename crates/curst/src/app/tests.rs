@@ -3088,3 +3088,230 @@ mod curl {
         );
     }
 }
+
+mod bundles {
+    use std::path::Path;
+
+    use curst_core::model::Variable;
+    use curst_core::secrets::SecretKey;
+    use curst_core::vars::VarName;
+
+    use super::*;
+    use crate::app::workspace::tests::sample;
+
+    fn name(text: &str) -> VarName {
+        VarName::new(text).unwrap()
+    }
+
+    /// the sample collection, with a secret in its environment and one of
+    /// its own
+    fn with_secrets() -> Workspace {
+        let mut workspace = sample();
+
+        workspace.collection.variables = vec![Variable::secret(name("token"))];
+        workspace.collection.environments[0]
+            .variables
+            .push(Variable::secret(name("password")));
+
+        workspace
+    }
+
+    fn stored(commands: &[Command]) -> Vec<(String, String)> {
+        commands
+            .iter()
+            .flat_map(|c| match c {
+                Command::ChangeSecrets { changes, .. } => changes.clone(),
+                _ => Vec::new(),
+            })
+            .map(|change| match change {
+                SecretChange::Set(key, value) => {
+                    (key.name().unwrap().to_string(), value.expose().to_owned())
+                }
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_imported_collection_asks_for_its_secrets() {
+        let mut state = State::default();
+
+        update(
+            &mut state,
+            Action::Imported(Ok((Box::new(with_secrets()), Vec::new()))),
+        );
+
+        assert_eq!(state.collections.len(), 1);
+        assert_eq!(state.notice.as_deref(), Some("imported Pets"));
+
+        let Some(Popup::Fill(fill)) = &state.popup else {
+            panic!("no pop-up");
+        };
+        let labels: Vec<&str> = fill.secrets.iter().map(|(_, l)| l.as_str()).collect();
+
+        assert_eq!(labels, ["password · Dev", "token · the collection"]);
+
+        // the first is typed and kept, the second skipped
+        type_text(&mut state, "pw");
+
+        let commands = press(&mut state, KeyCode::Enter);
+
+        assert_eq!(commands.len(), 0);
+
+        let commands = press(&mut state, KeyCode::Enter);
+
+        assert!(state.popup.is_none());
+        assert_eq!(
+            stored(&commands),
+            [("password".to_owned(), "pw".to_owned())]
+        );
+    }
+
+    #[test]
+    fn nothing_typed_stores_nothing_and_a_paste_stays_in_the_field() {
+        let mut state = State::default();
+
+        update(
+            &mut state,
+            Action::Imported(Ok((Box::new(with_secrets()), Vec::new()))),
+        );
+        update(&mut state, Action::PasteText("curl https://h".into()));
+
+        let Some(Popup::Fill(fill)) = &state.popup else {
+            panic!("the paste left the pop-up");
+        };
+
+        assert_eq!(crate::app::editor::text_of(&fill.input), "curl https://h");
+        assert_eq!(state.tab_count(), 1);
+
+        update(&mut state, Action::Down);
+        update(&mut state, Action::Up);
+
+        let commands = press(&mut state, KeyCode::Esc);
+
+        // what was typed before moving is kept
+        assert_eq!(
+            stored(&commands),
+            [("password".to_owned(), "curl https://h".to_owned())]
+        );
+
+        update(
+            &mut state,
+            Action::Imported(Ok((Box::new(sample()), Vec::new()))),
+        );
+
+        assert!(
+            state.popup.is_none(),
+            "a collection without secrets asks nothing"
+        );
+    }
+
+    #[test]
+    fn a_request_waiting_for_an_empty_secret_goes_once_it_is_filled() {
+        let mut state = State::default();
+
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![with_secrets()],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![],
+            },
+        );
+
+        let key = SecretKey::Collection {
+            collection: state.collections[0].id.clone(),
+            name: name("token"),
+        };
+
+        state.collection = Some(state.collections[0].id.clone());
+        state.collections[0].active_environment = None;
+        state.secret_values.insert(key.clone(), None);
+        state.focus = Focus::Url;
+        type_text(&mut state, "https://h/{{token}}");
+
+        assert_eq!(update(&mut state, Action::Send).len(), 0);
+        assert!(matches!(state.popup, Some(Popup::Fill(_))));
+
+        type_text(&mut state, "t0k");
+
+        let commands = press(&mut state, KeyCode::Enter);
+        let Some(Command::ChangeSecrets { id, .. }) = commands.first() else {
+            panic!("{commands:?}");
+        };
+
+        assert_eq!(stored(&commands), [("token".to_owned(), "t0k".to_owned())]);
+
+        // once stored, the request is sent: its secrets are fetched again
+        let commands = update(
+            &mut state,
+            Action::SecretsChanged {
+                id: *id,
+                result: Ok(()),
+            },
+        );
+
+        assert!(
+            matches!(commands.as_slice(), [Command::LoadSecrets { keys, .. }] if keys == &[key]),
+            "{commands:?}"
+        );
+    }
+
+    #[test]
+    fn export_asks_where_and_warns_about_plain_credentials() {
+        let mut state = State::default();
+
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![sample()],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![],
+            },
+        );
+        state.focus = Focus::Sidebar;
+        press(&mut state, KeyCode::Char('e'));
+
+        let Some(Popup::Prompt { input, .. }) = &state.popup else {
+            panic!("no prompt");
+        };
+
+        assert_eq!(crate::app::editor::text_of(input), "pets.curst.toml");
+
+        let commands = press(&mut state, KeyCode::Enter);
+
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::ExportBundle { path, .. }] if path.as_path() == Path::new("pets.curst.toml")
+        ));
+
+        // a plain-text credential is pointed out first
+        state.collections[0]
+            .collection
+            .variables
+            .push(Variable::new(name("api_key"), "abc123"));
+        press(&mut state, KeyCode::Char('e'));
+
+        assert_eq!(press(&mut state, KeyCode::Enter).len(), 0);
+        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+        assert!(matches!(
+            press(&mut state, KeyCode::Char('y')).as_slice(),
+            [Command::ExportBundle { .. }]
+        ));
+
+        // and import asks for the file
+        press(&mut state, KeyCode::Char('i'));
+        type_text(&mut state, "shared.curst.toml");
+
+        assert!(matches!(
+            press(&mut state, KeyCode::Enter).as_slice(),
+            [Command::ImportBundle(path)] if path.as_path() == Path::new("shared.curst.toml")
+        ));
+
+        update(&mut state, Action::Imported(Err("no such file".into())));
+
+        assert_eq!(state.notice.as_deref(), Some("not imported: no such file"));
+    }
+}

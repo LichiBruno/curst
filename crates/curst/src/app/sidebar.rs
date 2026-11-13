@@ -1,10 +1,12 @@
 //! what the sidebar keys do: moving through the tree, opening requests and
 //! changing the collections
 
-use curst_core::model::Item;
+use std::path::PathBuf;
+
+use curst_core::model::{Item, LocalId};
 
 use super::popup::{Pending, Popup, Purpose};
-use super::workspace::{NodeKey, Row, RowKind, rows};
+use super::workspace::{NodeKey, Row, RowKind, Workspace, rows};
 use super::{Action, Change, Command, Layer, State};
 
 fn visible(state: &State) -> Vec<Row> {
@@ -263,4 +265,63 @@ fn reorder(state: &mut State, up: bool) -> Vec<Command> {
             },
         }]
     })
+}
+
+/// asks where to write the collection under the selection as a bundle
+pub(crate) fn ask_export(state: &mut State) {
+    let Some(workspace) = selected_workspace(state) else {
+        no_collection(state);
+
+        return;
+    };
+
+    let file = format!(
+        "{}.curst.toml",
+        curst_core::curl::name_for(&workspace.collection.name)
+    );
+    let id = workspace.id.clone();
+
+    state.popup = Some(Popup::prompt(Purpose::ExportBundle(id), &file));
+}
+
+/// the collection of the selected row, or the one the tab belongs to
+fn selected_workspace(state: &State) -> Option<&Workspace> {
+    let id = state
+        .sidebar
+        .selected
+        .as_ref()
+        .map(|key| key.collection.clone())
+        .or_else(|| state.collection.clone())?;
+
+    state.workspace(&id)
+}
+
+/// exports a collection, asking first when it would write values that
+/// look like credentials in plain text
+pub(crate) fn export(state: &mut State, collection: LocalId, path: PathBuf) -> Vec<Command> {
+    let Some(workspace) = state.workspace(&collection) else {
+        state.notice = Some("that collection is gone".into());
+
+        return Vec::new();
+    };
+
+    let found = curst_core::store::bundle::plain_credentials(&workspace.collection);
+
+    if let Some(first) = found.first() {
+        let more = match found.len() {
+            1 => String::new(),
+            n => format!(" and {} more", n - 1),
+        };
+
+        state.popup = Some(Popup::confirm(
+            format!(
+                "The bundle would hold credentials in plain text ({first}{more}). Make them secrets first, or export anyway?"
+            ),
+            Pending::Export(collection, path),
+        ));
+
+        return Vec::new();
+    }
+
+    vec![Command::ExportBundle { collection, path }]
 }

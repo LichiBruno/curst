@@ -67,10 +67,13 @@ pub(crate) enum Layer {
     Help,
     Palette,
     Welcome,
+
+    /// values for secrets, typed blind
+    Fill,
 }
 
 impl Layer {
-    pub(crate) const ALL: [Self; 27] = [
+    pub(crate) const ALL: [Self; 28] = [
         Self::Always,
         Self::Global,
         Self::Panes,
@@ -98,6 +101,7 @@ impl Layer {
         Self::Help,
         Self::Palette,
         Self::Welcome,
+        Self::Fill,
     ];
 
     /// the name used in `config.toml`, as in `"sidebar.rename" = "r"`
@@ -130,6 +134,7 @@ impl Layer {
             Self::Help => "help",
             Self::Palette => "palette",
             Self::Welcome => "welcome",
+            Self::Fill => "fill-secrets",
         }
     }
 
@@ -163,6 +168,7 @@ impl Layer {
             Self::Help => "this help",
             Self::Palette => "the command palette",
             Self::Welcome => "the welcome",
+            Self::Fill => "the secrets to fill in",
         }
     }
 
@@ -250,6 +256,8 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         "help" => Action::Help,
         "copy" => Action::CopyResponse,
         "copy-curl" => Action::CopyCurl,
+        "export" => Action::ExportCollection,
+        "import" => Action::ImportCollection,
         "palette" => Action::Palette,
         "keys" => Action::NextKeys,
         "theme" => Action::NextTheme,
@@ -467,6 +475,7 @@ pub(crate) fn layers(state: &State) -> (Vec<Layer>, bool) {
             Popup::Help { .. } => (L::Help, false),
             Popup::Palette(_) => (L::Palette, true),
             Popup::Welcome { .. } => (L::Welcome, false),
+            Popup::Fill(_) => (L::Fill, true),
         };
 
         return (vec![L::Always, layer], text);

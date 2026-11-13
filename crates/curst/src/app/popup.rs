@@ -29,6 +29,8 @@ pub(crate) enum Purpose {
 
     /// the name of a new secret for the value at a place in the request
     MakeSecret(Place),
+    ExportBundle(LocalId),
+    ImportBundle,
 }
 
 impl Purpose {
@@ -43,6 +45,8 @@ impl Purpose {
             Self::NewEnvironment(_) => "New environment",
             Self::RenameEnvironment(..) => "Rename environment",
             Self::MakeSecret(_) => "Name of the new secret",
+            Self::ExportBundle(_) => "Export the collection to the file",
+            Self::ImportBundle => "Import a bundle from the file",
         }
     }
 }
@@ -55,6 +59,9 @@ pub(crate) enum Pending {
     /// quitting, with the pop-up to show again on no
     Quit(Option<Box<Popup>>),
     CloseTab,
+
+    /// exporting a collection that holds plain-text credentials
+    Export(LocalId, PathBuf),
 
     /// closing the variable editor; on no it comes back as it was
     CloseVariables(Box<VariablesEditor>),
@@ -308,6 +315,9 @@ pub(crate) enum Popup {
         then: Option<Box<Popup>>,
     },
 
+    /// values for secrets that have none
+    Fill(Box<super::fill::Fill>),
+
     /// actions and saved requests, found by typing
     Palette(Box<super::Palette>),
 
@@ -415,6 +425,7 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
         }
         Popup::Tabs { selected } => return tab_switcher(state, selected, action),
         Popup::Help { scroll, here } => return help(state, scroll, here, action),
+        Popup::Fill(fill) => return super::fill::apply(state, fill, action),
         Popup::Palette(palette) => return super::palette::apply(state, palette, action),
         Popup::Welcome { step, then } => {
             return super::preferences::welcome_key(state, step, then, action);
@@ -485,6 +496,10 @@ fn confirm_prompt(
             },
         )],
         Purpose::NewCollection => vec![Command::CreateCollection(text)],
+        Purpose::ExportBundle(collection) => {
+            super::sidebar::export(state, collection, PathBuf::from(text))
+        }
+        Purpose::ImportBundle => vec![Command::ImportBundle(PathBuf::from(text))],
         Purpose::Rename(key) if key.path.is_empty() => {
             vec![store(&key, Change::RenameCollection(text))]
         }
@@ -542,6 +557,7 @@ fn run_pending(state: &mut State, pending: Pending) -> Vec<Command> {
             change: Change::DeleteEnvironment(id),
         }],
         Pending::CloseTab => super::tabs::close_now(state),
+        Pending::Export(collection, path) => vec![Command::ExportBundle { collection, path }],
         Pending::Quit(_) => {
             state.should_quit = true;
 
@@ -721,6 +737,9 @@ fn paste(popup: &mut Popup, text: &str) {
         Popup::Palette(palette) => {
             palette.input.insert_str(text);
             palette.selected = 0;
+        }
+        Popup::Fill(fill) => {
+            fill.input.insert_str(text);
         }
         Popup::Variables(editor) => {
             if let Some((_, area)) = &mut editor.table_mut().editing {
