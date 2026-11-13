@@ -360,7 +360,16 @@ impl Library {
     /// # Errors
     /// when the bundle cannot be read, or the collection cannot be written
     pub fn import_bundle(&self, path: &Path) -> Result<(CollectionDir, Bundle), StoreError> {
-        let bundle = read(path)?;
+        self.import_with(read(path)?, fill)
+    }
+
+    /// makes the collection and has `fill` write what is in it, removing
+    /// the collection again when that fails
+    fn import_with(
+        &self,
+        bundle: Bundle,
+        fill: impl FnOnce(&CollectionDir, &Bundle) -> Result<(), StoreError>,
+    ) -> Result<(CollectionDir, Bundle), StoreError> {
         let dir = self.create_collection(&bundle.name)?;
 
         if let Err(err) = fill(&dir, &bundle) {

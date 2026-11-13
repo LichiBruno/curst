@@ -1246,6 +1246,214 @@ mod mouse {
 
         assert_ne!(state.focus, Focus::Sidebar);
     }
+
+    fn wheel(state: &mut State, at: (u16, u16), down: bool) -> Vec<Command> {
+        let kind = if down {
+            MouseEventKind::ScrollDown
+        } else {
+            MouseEventKind::ScrollUp
+        };
+
+        send(state, kind, at)
+    }
+
+    #[test]
+    fn the_wheel_over_a_pane_moves_through_it() {
+        let mut state = super::collections::with_collection();
+
+        state.focus = Focus::Url;
+
+        // the sidebar takes the focus, then the selection moves
+        let at = find(&state, "CREATE");
+
+        wheel(&mut state, at, true);
+
+        assert_eq!(state.focus, Focus::Sidebar);
+
+        let first = state.sidebar.selected.clone();
+
+        wheel(&mut state, at, true);
+
+        assert_ne!(state.sidebar.selected, first);
+
+        wheel(&mut state, at, false);
+
+        assert_eq!(state.sidebar.selected, first);
+
+        // over the request pane, its table
+        state.request_tab = RequestTab::Headers;
+        state.headers = crate::app::Table::from_pairs(&[
+            curst_core::model::KeyValue::new("A", "1"),
+            curst_core::model::KeyValue::new("B", "2"),
+        ]);
+
+        let at = find(&state, "Header");
+
+        wheel(&mut state, at, true);
+
+        assert_eq!(state.focus, Focus::Request);
+        assert_eq!(state.headers.selected, 1);
+
+        // the method and the URL do nothing with it
+        let (x, y) = find(&state, "Method");
+
+        assert_eq!(
+            mouse_actions(&state, event(MouseEventKind::ScrollDown, x, y + 1)).len(),
+            0
+        );
+    }
+
+    #[test]
+    fn the_wheel_in_a_popup_moves_its_list_and_nothing_under_it() {
+        let mut state = State::default();
+
+        update(&mut state, Action::Help);
+
+        let at = find(&state, "Keys");
+
+        wheel(&mut state, at, true);
+
+        assert!(matches!(state.popup, Some(Popup::Help { scroll: 3, .. })));
+
+        update(&mut state, Action::ClosePopup);
+        update(&mut state, Action::Palette);
+        wheel(&mut state, at, true);
+
+        assert!(matches!(&state.popup, Some(Popup::Palette(p)) if p.selected == 1));
+
+        // a question has no list: the wheel does nothing
+        state.popup = Some(Popup::confirm("Really?", crate::app::Pending::CloseTab));
+
+        assert_eq!(
+            mouse_actions(&state, event(MouseEventKind::ScrollDown, at.0, at.1)).len(),
+            0
+        );
+    }
+
+    #[test]
+    fn sideways_scrolling_pans_a_focused_response_only() {
+        let (mut state, id) = sent_state("http://localhost/");
+        let wide = format!("{{\"text\": \"{}\"}}", "x".repeat(300));
+
+        update(
+            &mut state,
+            Action::responded(id, Ok(crate::app::tests::response(&wide))),
+        );
+        state.focus = Focus::Url;
+
+        let at = find(&state, "\"text\"");
+
+        assert_eq!(
+            mouse_actions(&state, event(MouseEventKind::ScrollRight, at.0, at.1)).len(),
+            0
+        );
+
+        state.focus = Focus::Response;
+        send(&mut state, MouseEventKind::ScrollRight, at);
+
+        assert!(state.column > 0);
+
+        send(&mut state, MouseEventKind::ScrollLeft, at);
+
+        assert_eq!(state.column, 0);
+    }
+
+    #[test]
+    fn a_click_on_nothing_does_nothing() {
+        let mut state = State::default();
+
+        state.focus = Focus::Response;
+        click(&mut state, (WIDTH - 1, HEIGHT - 1));
+
+        assert_eq!(state.focus, Focus::Response);
+    }
+
+    #[test]
+    fn a_second_click_on_a_value_edits_it() {
+        let mut state = State::default();
+
+        state.request_tab = RequestTab::Params;
+        state.params =
+            crate::app::Table::from_pairs(&[curst_core::model::KeyValue::new("q", "rust")]);
+        click_on(&mut state, "rust");
+        click_on(&mut state, "rust");
+
+        assert_eq!(state.editing_column(), Some(crate::app::Column::Value));
+    }
+
+    #[test]
+    fn the_variable_editor_answers_clicks() {
+        let mut state = super::collections::with_collection();
+
+        update(&mut state, Action::Environments);
+        update(&mut state, Action::Down);
+        update(&mut state, Action::EditVariables);
+
+        // the row is selected already, so a click on it edits it; its name
+        // is after the box, as the footer's `a add` would match too
+        let (x, y) = find(&state, "[x]  a");
+
+        click(&mut state, (x + 5, y));
+
+        let Some(Popup::Variables(editor)) = &state.popup else {
+            panic!("no editor");
+        };
+
+        assert!(editor.editing());
+
+        // a tab of its title
+        update(&mut state, Action::StopEdit);
+        click_on(&mut state, "Globals");
+
+        let Some(Popup::Variables(editor)) = &state.popup else {
+            panic!("no editor");
+        };
+
+        assert_eq!(editor.tab, crate::app::VarTab::Globals);
+    }
+
+    #[test]
+    fn a_click_in_a_prompt_puts_the_cursor_there() {
+        let mut state = super::collections::with_collection();
+
+        update(&mut state, Action::Rename);
+
+        // the field is under the title; the sidebar names Pets too
+        let (x, y) = find(&state, " Rename ");
+
+        click(&mut state, (x + 2, y + 1));
+
+        let Some(Popup::Prompt { input, .. }) = &state.popup else {
+            panic!("no prompt");
+        };
+
+        assert_eq!(input.cursor(), (0, 2));
+    }
+
+    #[test]
+    fn mouse_actions_without_a_target_change_nothing() {
+        let mut state = State::default();
+
+        // no table on the auth tab, an empty table, and no tabs in the sidebar
+        state.request_tab = RequestTab::Auth;
+        update(&mut state, Action::Pick(3));
+        state.request_tab = RequestTab::Params;
+        update(&mut state, Action::EditCell(crate::app::Column::Value));
+
+        assert_eq!(state.editing_column(), None);
+
+        state.focus = Focus::Sidebar;
+        update(&mut state, Action::ShowTab(1));
+
+        assert_eq!(state.request_tab, RequestTab::Params);
+
+        // the response tab shown again keeps its scroll
+        state.focus = Focus::Response;
+        state.scroll = 2;
+        update(&mut state, Action::ShowTab(0));
+
+        assert_eq!(state.scroll, 2);
+    }
 }
 
 #[test]
