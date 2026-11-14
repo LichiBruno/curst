@@ -43,6 +43,7 @@ fn workspace(
         collection,
         entry.active_environment.clone(),
         entry.trusted,
+        entry.auto_save,
         managed,
     )
 }
@@ -53,6 +54,7 @@ fn rebuilt(
     collection: Collection,
     active: Option<EnvId>,
     trusted: bool,
+    auto_save: bool,
     managed: bool,
 ) -> Workspace {
     // an environment deleted since it was chosen counts as none
@@ -64,6 +66,7 @@ fn rebuilt(
         collection,
         active_environment,
         trusted,
+        auto_save,
         managed,
     }
 }
@@ -291,6 +294,15 @@ pub(crate) fn run(
 
             Some(Action::GlobalsSaved(result))
         }
+        Command::SetAutoSave { collection, on } => {
+            let workspace = find(&collection)?;
+
+            library
+                .registry()
+                .set_auto_save(&workspace.root, on)
+                .err()
+                .map(|e| Action::Notice(format!("could not remember auto save: {e}")))
+        }
         Command::SetActiveEnvironment {
             collection,
             environment,
@@ -411,14 +423,19 @@ fn store(library: &Library, workspace: &Workspace, change: Change) -> Result<Sto
             let created = key(joined(&parent, slug));
 
             if open {
-                stored.saved = Some((created.clone(), request));
+                stored.opened = Some((created.clone(), request));
             }
 
             stored.created = Some(created);
         }
-        Change::SaveRequest { path, request } => {
+        Change::SaveRequest {
+            path,
+            request,
+            quiet,
+        } => {
             dir.save_request(&path, &request)?;
             stored.saved = Some((key(path), request));
+            stored.quiet = quiet;
         }
         Change::CreateFolder { parent, name } => {
             let slug = dir.create_folder(&parent, &name)?;
@@ -493,6 +510,7 @@ fn store(library: &Library, workspace: &Workspace, change: Change) -> Result<Sto
         loaded.collection,
         workspace.active_environment.clone(),
         workspace.trusted,
+        workspace.auto_save,
         workspace.managed,
     ));
     stored.problems = describe(loaded.issues);
@@ -1087,7 +1105,7 @@ mod tests {
         };
 
         assert_eq!(created.created.as_ref(), Some(&key));
-        assert_eq!(created.saved.as_ref().map(|(k, _)| k), Some(&key));
+        assert_eq!(created.opened.as_ref().map(|(k, _)| k), Some(&key));
 
         let pets = created.workspace.unwrap();
         let folder = change(
@@ -1218,6 +1236,40 @@ mod tests {
 
         assert_eq!(pets.active_environment, None);
         assert_eq!(loaded(&library).0[0].active_environment, None);
+    }
+
+    #[test]
+    fn auto_save_is_remembered_and_survives_a_save() {
+        let (_dir, library) = library();
+        let dir = library.create_collection("Pets").unwrap();
+        let (mut pets, _) = open(&library, &dir, true).unwrap();
+        let none = run(
+            &library,
+            std::slice::from_ref(&pets),
+            Command::SetAutoSave {
+                collection: pets.id.clone(),
+                on: true,
+            },
+        );
+
+        assert!(none.is_none());
+        assert!(loaded(&library).0[0].auto_save);
+
+        // the app turns it on in memory as it asks for it
+        pets.auto_save = true;
+
+        let pets = change(
+            &library,
+            &pets,
+            Change::CreateFolder {
+                parent: vec![],
+                name: "users".into(),
+            },
+        )
+        .workspace
+        .unwrap();
+
+        assert!(pets.auto_save);
     }
 
     #[test]

@@ -34,6 +34,7 @@ pub(super) const STANDARD: &[Row] = &[
     (L::Global, "import-openapi", &[]),
     (L::Global, "refresh-spec", &[]),
     (L::Global, "spec-source", &[]),
+    (L::Global, "collection-settings", &[]),
     (L::Url, "send", &["enter"]),
     (L::Url, "focus.next", &["tab"]),
     (L::Url, "focus.previous", &["shift+tab"]),
@@ -82,6 +83,7 @@ pub(super) const STANDARD: &[Row] = &[
     (L::Sidebar, "import-openapi", &["o"]),
     (L::Sidebar, "refresh-spec", &["u"]),
     (L::Sidebar, "spec-source", &["U"]),
+    (L::Sidebar, "collection-settings", &["s"]),
     (L::Request, "edit", &["enter"]),
     (L::Request, "content-type", &["c"]),
     (L::Request, "row.add", &["a"]),
@@ -206,6 +208,11 @@ pub(super) const STANDARD: &[Row] = &[
     (L::SaveRequest, "down", &["down"]),
     (L::SaveRequest, "confirm", &["enter"]),
     (L::SaveRequest, "close", &["esc"]),
+    (L::CollectionSettings, "up", &["up", "k"]),
+    (L::CollectionSettings, "down", &["down", "j"]),
+    (L::CollectionSettings, "confirm", &["enter"]),
+    (L::CollectionSettings, "row.toggle", &["space"]),
+    (L::CollectionSettings, "close", &["esc"]),
 ];
 
 /// what `vim` changes in `standard`: each row replaces the keys of that

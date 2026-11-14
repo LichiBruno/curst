@@ -85,10 +85,13 @@ pub(crate) enum Layer {
 
     /// a new request's name and where it goes
     SaveRequest,
+
+    /// the settings of one collection
+    CollectionSettings,
 }
 
 impl Layer {
-    pub(crate) const ALL: [Self; 33] = [
+    pub(crate) const ALL: [Self; 34] = [
         Self::Always,
         Self::Global,
         Self::Panes,
@@ -122,6 +125,7 @@ impl Layer {
         Self::SaveQuestion,
         Self::Review,
         Self::SaveRequest,
+        Self::CollectionSettings,
     ];
 
     /// the name used in `config.toml`, as in `"sidebar.rename" = "r"`
@@ -160,6 +164,7 @@ impl Layer {
             Self::SaveQuestion => "save-question",
             Self::Review => "refresh-review",
             Self::SaveRequest => "save-request",
+            Self::CollectionSettings => "collection-settings",
         }
     }
 
@@ -199,6 +204,7 @@ impl Layer {
             Self::SaveQuestion => "the question whether to save",
             Self::Review => "the review of a refresh",
             Self::SaveRequest => "the save dialog",
+            Self::CollectionSettings => "the settings of a collection",
         }
     }
 
@@ -292,6 +298,7 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         "discard" => Action::Discard,
         "refresh-spec" => Action::RefreshSpec,
         "spec-source" => Action::ChangeSource,
+        "collection-settings" => Action::CollectionSettings,
         "palette" => Action::Palette,
         "keys" => Action::NextKeys,
         "narrower" => Action::SidebarNarrower,
@@ -517,6 +524,7 @@ pub(crate) fn layers(state: &State) -> (Vec<Layer>, bool) {
             Popup::SaveVariables { .. } => (L::SaveQuestion, false),
             Popup::Review(_) => (L::Review, false),
             Popup::SaveRequest(dialog) => (L::SaveRequest, !dialog.picking),
+            Popup::CollectionSettings { .. } => (L::CollectionSettings, false),
         };
 
         return (vec![L::Always, layer], text);

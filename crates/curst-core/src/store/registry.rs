@@ -28,6 +28,9 @@ pub struct Entry {
 
     /// the environment chosen last
     pub active_environment: Option<EnvId>,
+
+    /// whether edits to its requests are saved without asking
+    pub auto_save: bool,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -46,6 +49,9 @@ struct EntryFile {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     active_environment: Option<String>,
+
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    auto_save: bool,
 }
 
 /// `registry.toml`, read freely and changed only under its lock
@@ -97,6 +103,7 @@ impl Registry {
                     id,
                     trusted: e.trusted,
                     active_environment: e.active_environment.as_deref().and_then(EnvId::new),
+                    auto_save: e.auto_save,
                 })
             })
             .collect()
@@ -126,6 +133,7 @@ impl Registry {
                         id: e.id.as_str().to_owned(),
                         trusted: e.trusted,
                         active_environment: e.active_environment.map(|id| id.as_str().to_owned()),
+                        auto_save: e.auto_save,
                     })
                     .collect(),
             };
@@ -161,6 +169,7 @@ impl Registry {
                 id,
                 trusted,
                 active_environment: None,
+                auto_save: false,
             };
 
             entries.push(entry.clone());
@@ -279,6 +288,21 @@ impl Registry {
             }
         })
     }
+
+    /// turns saving edits without asking on or off for the collection at
+    /// `path`
+    ///
+    /// # Errors
+    /// when the registry cannot be read or written
+    pub fn set_auto_save(&self, path: &Path, on: bool) -> Result<(), StoreError> {
+        let path = canonical(path);
+
+        self.update(|entries| {
+            for entry in entries.iter_mut().filter(|e| e.path == path) {
+                entry.auto_save = on;
+            }
+        })
+    }
 }
 
 #[cfg(test)]
@@ -330,6 +354,26 @@ mod tests {
 
         assert_eq!((moved.id, moved.trusted), (entry.id, true));
         assert_eq!(registry.find(&collection).unwrap(), None);
+    }
+
+    #[test]
+    fn auto_save_survives_other_changes() {
+        let (_dir, registry, collection) = setup();
+
+        registry.register(&collection, false).unwrap();
+        registry.set_auto_save(&collection, true).unwrap();
+        registry.set_trusted(&collection, true).unwrap();
+        registry
+            .set_active_environment(&collection, EnvId::new("e1").as_ref())
+            .unwrap();
+
+        let entry = registry.find(&collection).unwrap().unwrap();
+
+        assert!(entry.auto_save && entry.trusted);
+
+        registry.set_auto_save(&collection, false).unwrap();
+
+        assert!(!registry.find(&collection).unwrap().unwrap().auto_save);
     }
 
     #[test]

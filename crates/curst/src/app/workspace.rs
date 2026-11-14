@@ -18,6 +18,10 @@ pub(crate) struct Workspace {
     /// folder is untrusted until the user says otherwise
     pub(crate) trusted: bool,
 
+    /// whether edits to its requests are saved without asking; this user's
+    /// choice, kept on this machine only
+    pub(crate) auto_save: bool,
+
     /// whether curst made its folder, in the data folder; curst never
     /// renames or deletes any other
     pub(crate) managed: bool,
@@ -265,6 +269,7 @@ pub(crate) mod tests {
             },
             active_environment: None,
             trusted: true,
+            auto_save: false,
             managed: true,
         }
     }

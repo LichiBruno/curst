@@ -1,3 +1,5 @@
+mod autosave;
+mod collection;
 mod editor;
 mod fill;
 mod keymap;
@@ -26,6 +28,7 @@ use curst_core::store::Backend;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui_textarea::TextArea;
 
+pub(crate) use collection::Row as CollectionRow;
 pub(crate) use editor::{AuthEditor, AuthKind, BodyEditor, BodyField, BodyKind, Column, Table};
 #[cfg(test)]
 pub(crate) use editor::{body_text, text_of as editor_text};
@@ -199,6 +202,10 @@ pub(crate) struct OpenRequest {
 
     /// the editor's request right after loading or saving
     baseline: Request,
+
+    /// what a save without asking last tried to write, so one that failed
+    /// is not tried again until the request changes
+    tried: Option<Request>,
 }
 
 #[derive(Debug)]
@@ -235,6 +242,13 @@ pub(crate) struct State {
 
     /// whether to quit once the variables being saved are
     pub(crate) quit_when_saved: bool,
+
+    /// saves made on quitting still to report, curst quitting after the
+    /// last of them
+    pub(crate) quit_after_saves: usize,
+
+    /// the request whose tab closes once its save without asking is done
+    pub(crate) close_after_save: Option<NodeKey>,
 
     /// a spec being loaded again to refresh a collection, if one is
     pub(crate) refresh_fetch: Option<u64>,
@@ -320,6 +334,8 @@ impl Default for State {
             regions: RefCell::new(Vec::new()),
             spec_fetch: None,
             quit_when_saved: false,
+            quit_after_saves: 0,
+            close_after_save: None,
             refresh_fetch: None,
             spec_job: None,
             refreshing: refresh::Refreshing::default(),
@@ -401,7 +417,12 @@ impl State {
 
 #[derive(Debug)]
 pub(crate) enum Action {
+    /// a pause after the user's last key or click
+    Idle,
     Quit,
+
+    /// the settings of the selected collection
+    CollectionSettings,
     Send,
     Cancel,
     Save,
@@ -622,9 +643,16 @@ pub(crate) struct Stored {
     /// a new item, to select in the sidebar
     pub(crate) created: Option<NodeKey>,
 
-    /// where the editor's request was just saved, and what was written;
-    /// keys typed since then still count as unsaved
+    /// a request saved for the first time, which the editor now holds,
+    /// and what was written
+    pub(crate) opened: Option<(NodeKey, Request)>,
+
+    /// a request saved over, and what was written; keys typed since then
+    /// still count as unsaved
     pub(crate) saved: Option<(NodeKey, Request)>,
+
+    /// whether the save was one made without asking, which says nothing
+    pub(crate) quiet: bool,
 
     /// files that could not be read
     pub(crate) problems: Vec<String>,
@@ -644,6 +672,9 @@ pub(crate) enum Change {
     SaveRequest {
         path: Vec<String>,
         request: Request,
+
+        /// saved without asking, so nothing is said about it
+        quiet: bool,
     },
     CreateFolder {
         parent: Vec<String>,
@@ -734,6 +765,10 @@ pub(crate) enum Command {
         collection: LocalId,
         reattach: Option<LocalId>,
     },
+    SetAutoSave {
+        collection: LocalId,
+        on: bool,
+    },
     SetActiveEnvironment {
         collection: LocalId,
         environment: Option<EnvId>,
@@ -813,6 +848,11 @@ pub(crate) fn update(state: &mut State, action: Action) -> Vec<Command> {
         return Vec::new();
     }
 
+    // a pause neither ends a key sequence nor touches a pop-up or notice
+    if let Action::Idle = action {
+        return autosave::idle(state);
+    }
+
     state.pending_keys.clear();
 
     let background = reported(&action);
@@ -837,7 +877,7 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
     }
 
     match action {
-        Action::Quit => quit(state),
+        Action::Quit => return quit(state),
         Action::Send => return send::send(state),
         Action::Follow => return send::follow(state),
         Action::MakeSecret => request::make_secret(state),
@@ -857,6 +897,7 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         | Action::ImportCollection
         | Action::ImportSpec
         | Action::ChangeSource
+        | Action::CollectionSettings
         | Action::RefreshSpec => return open_popup(state, &action),
         Action::PasteText(text) => return request::paste(state, &text),
         Action::CopyResponse | Action::CopyCurl => return copy(state, &action),
@@ -1009,6 +1050,7 @@ fn open_popup(state: &mut State, action: &Action) -> Vec<Command> {
         Action::ImportSpec => spec::ask(state),
         Action::ChangeSource => refresh::ask_source(state),
         Action::RefreshSpec => return refresh::start(state),
+        Action::CollectionSettings => collection::open(state),
 
         // the help lists the keys where the focus is first
         Action::Help => {
@@ -1098,7 +1140,12 @@ fn report(state: &mut State, action: Action) -> Vec<Command> {
 
                 return commands;
             }
-            Err(message) => state.notice = Some(message),
+            Err(message) => {
+                // a save that failed keeps the tab and curst open
+                state.quit_after_saves = 0;
+                state.close_after_save = None;
+                state.notice = Some(message);
+            }
         },
         Action::CollectionAdded(result) => match result {
             Ok(workspace) => {
@@ -1238,7 +1285,7 @@ fn cancel(state: &mut State) -> Vec<Command> {
     Vec::new()
 }
 
-pub(super) fn quit(state: &mut State) {
+pub(super) fn quit(state: &mut State) -> Vec<Command> {
     let asked = matches!(
         state.popup,
         Some(
@@ -1257,10 +1304,10 @@ pub(super) fn quit(state: &mut State) {
     {
         state.popup = Some(Popup::SaveVariables { editor, quit: true });
 
-        return;
+        return Vec::new();
     }
 
-    if state.any_dirty() && !asked {
+    if state.loses_edits() && !asked {
         // on no, the pop-up that was open comes back
         let previous = state.popup.take().map(Box::new);
 
@@ -1268,9 +1315,25 @@ pub(super) fn quit(state: &mut State) {
             "Quit without saving your changes?",
             Pending::Quit(previous),
         ));
-    } else {
-        state.should_quit = true;
+
+        return Vec::new();
     }
+
+    leave(state)
+}
+
+/// quits, once the tabs whose collections save without asking are saved;
+/// a save that fails keeps curst open, with the edits and the error
+pub(super) fn leave(state: &mut State) -> Vec<Command> {
+    let saves = autosave::flush(state);
+
+    if saves.is_empty() {
+        state.should_quit = true;
+    } else {
+        state.quit_after_saves = saves.len();
+    }
+
+    saves
 }
 
 fn save(state: &mut State) -> Vec<Command> {
@@ -1282,6 +1345,7 @@ fn save(state: &mut State) -> Vec<Command> {
             change: Change::SaveRequest {
                 path: open.key.path.clone(),
                 request: state.request(),
+                quiet: false,
             },
         }];
     }
@@ -1468,10 +1532,13 @@ fn stored_change(state: &mut State, collection: &LocalId, stored: Stored) -> Vec
         workspace,
         moved,
         created,
+        opened,
         saved,
+        quiet,
         problems,
     } = stored;
     let doomed = removed_secrets(state.workspace(collection), workspace.as_ref());
+    let mut closing = Vec::new();
 
     if let Some(workspace) = workspace {
         match state.workspace_mut(collection) {
@@ -1503,14 +1570,36 @@ fn stored_change(state: &mut State, collection: &LocalId, stored: Stored) -> Vec
         state.sidebar.selected = Some(key);
     }
 
-    if let Some((key, written)) = saved {
+    if let Some((key, written)) = opened {
         state.notice = Some("saved".into());
         state.collection = Some(key.collection.clone());
         state.open = Some(OpenRequest {
             key,
             name: String::new(),
             baseline: written,
+            tried: None,
         });
+    }
+
+    if let Some((key, written)) = saved {
+        if !quiet {
+            state.notice = Some("saved".into());
+        }
+
+        autosave::written(state, &key, &written);
+
+        if quiet && state.quit_after_saves > 0 {
+            state.quit_after_saves -= 1;
+            state.should_quit = state.quit_after_saves == 0;
+        }
+
+        if quiet
+            && state.close_after_save.as_ref() == Some(&key)
+            && state.open.as_ref().is_some_and(|o| o.key == key)
+        {
+            state.close_after_save = None;
+            closing = tabs::close_now(state);
+        }
     }
 
     // a reload never touches the editor, only the name shown for it
@@ -1529,7 +1618,11 @@ fn stored_change(state: &mut State, collection: &LocalId, stored: Stored) -> Vec
         state.notice = Some(first.clone());
     }
 
-    send::change_secrets(state, doomed, Vec::new())
+    let mut commands = send::change_secrets(state, doomed, Vec::new());
+
+    commands.extend(closing);
+
+    commands
 }
 
 /// drops keys inside `gone`; an open request stays in the editor, unsaved

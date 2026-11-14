@@ -135,6 +135,7 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
         | Popup::SpecPreview(_)
         | Popup::Review(_)
         | Popup::SaveRequest(_)
+        | Popup::CollectionSettings { .. }
         | Popup::SpecChoice { .. } => draw_import(state, popup, frame),
         Popup::Approve(approval) => approve(state, approval, frame),
         Popup::Variables(editor) => variables(state, editor, frame),
@@ -259,6 +260,10 @@ fn draw_import(state: &State, popup: &Popup, frame: &mut Frame) {
         Popup::SpecPreview(preview) => spec_preview(state, preview, frame),
         Popup::Review(review) => refresh_review(state, review, frame),
         Popup::SaveRequest(dialog) => save_dialog(state, dialog, frame),
+        Popup::CollectionSettings {
+            collection,
+            selected,
+        } => collection_settings(state, collection, *selected, frame),
         Popup::SpecChoice {
             folder,
             specs,
@@ -266,6 +271,90 @@ fn draw_import(state: &State, popup: &Popup, frame: &mut Frame) {
         } => spec_choice(state, folder, specs, *selected, frame),
         _ => {}
     }
+}
+
+/// the settings of one collection, each row acted on with Enter
+fn collection_settings(state: &State, collection: &LocalId, selected: usize, frame: &mut Frame) {
+    use crate::app::CollectionRow as Row;
+
+    let Some(workspace) = state.workspace(collection) else {
+        return;
+    };
+
+    let theme = &state.theme;
+    let area = centered(frame, 72, 6);
+    let inner = area.inner(Margin::new(1, 1));
+    let width = usize::from(inner.width);
+    let source = workspace.collection.source.as_ref();
+    let row = |index: usize, text: &str, note: Option<(String, Style)>| {
+        let style = if index == selected {
+            theme.selected
+        } else {
+            Style::default()
+        };
+        let text = format!(" {text} ");
+        let mut spans = vec![Span::styled(text.clone(), style)];
+
+        // a long spec location is cut, so each row stays one line
+        if let Some((note, note_style)) = note {
+            let room = width.saturating_sub(text.width() + 1);
+            let note = if note.width() > room {
+                let kept: String = note.chars().take(room.saturating_sub(1)).collect();
+
+                format!("{kept}…")
+            } else {
+                note
+            };
+
+            spans.push(Span::styled(format!(" {note}"), note_style));
+        }
+
+        Line::from(spans)
+    };
+    let lines: Vec<Line> = Row::ALL
+        .iter()
+        .enumerate()
+        .map(|(index, kind)| match kind {
+            Row::AutoSave => {
+                let (on, style) = if workspace.auto_save {
+                    ("on", theme.success)
+                } else {
+                    ("off", theme.muted)
+                };
+
+                row(index, "Save edits without asking", Some((on.into(), style)))
+            }
+            Row::Refresh => row(
+                index,
+                "Refresh from the spec",
+                source
+                    .is_none()
+                    .then(|| ("not imported from a spec".into(), theme.muted)),
+            ),
+            Row::Source => row(
+                index,
+                "Change where the spec is",
+                source.map(|s| (display(&s.location), theme.muted)),
+            ),
+            Row::Export => row(index, "Export as a bundle file", None),
+        })
+        .collect();
+    let block = pane(
+        theme,
+        Line::from(format!(" {} ", display(&workspace.collection.name))),
+        true,
+    );
+    let rows_area = inner;
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+    frame.render_widget(block, area);
+
+    for index in 0..Row::ALL.len() {
+        line_region(state, rows_area, index, Target::Item(index));
+    }
+
+    frame.render_widget(Paragraph::new(lines), rows_area);
 }
 
 /// a new request's name, and below it where it goes; Tab opens the list
@@ -1137,6 +1226,12 @@ fn import_hints(hints: &mut Hints, popup: &Popup) {
                 .one("confirm", "pick")
                 .one("close", "back");
         }
+        Popup::CollectionSettings { .. } => {
+            hints
+                .pair("up", "down", "choose")
+                .one("confirm", "do it")
+                .one("close", "close");
+        }
         Popup::SaveRequest(_) => {
             hints
                 .one("confirm", "save")
@@ -1242,6 +1337,7 @@ pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
         | Popup::Fill(_)
         | Popup::SpecChoice { .. }
         | Popup::SaveRequest(_)
+        | Popup::CollectionSettings { .. }
         | Popup::SpecPreview(_) => import_hints(&mut hints, popup),
     }
 

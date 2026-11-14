@@ -275,13 +275,26 @@ pub(crate) fn ask_export(state: &mut State) {
         return;
     };
 
+    let id = workspace.id.clone();
+
+    ask_export_of(state, &id);
+}
+
+/// asks where to write `collection` as a bundle
+pub(crate) fn ask_export_of(state: &mut State, collection: &LocalId) {
+    let Some(workspace) = state.workspace(collection) else {
+        return;
+    };
+
     let file = format!(
         "{}.curst.toml",
         curst_core::curl::name_for(&workspace.collection.name)
     );
-    let id = workspace.id.clone();
 
-    state.popup = Some(Popup::prompt(Purpose::ExportBundle(id), &file));
+    state.popup = Some(Popup::prompt(
+        Purpose::ExportBundle(collection.clone()),
+        &file,
+    ));
 }
 
 /// the collection of the selected row, or the one the tab belongs to

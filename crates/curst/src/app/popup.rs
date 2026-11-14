@@ -337,6 +337,12 @@ pub(crate) enum Popup {
     /// a new request's name and where it is saved
     SaveRequest(Box<super::save::SaveDialog>),
 
+    /// the settings of one collection
+    CollectionSettings {
+        collection: LocalId,
+        selected: usize,
+    },
+
     /// the specs a folder holds, to choose one
     SpecChoice {
         folder: String,
@@ -467,6 +473,10 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
         } => return super::spec::choice_key(state, folder, specs, selected, action),
         Popup::Palette(palette) => return super::palette::apply(state, palette, action),
         Popup::SaveRequest(dialog) => return super::save::apply(state, dialog, action),
+        Popup::CollectionSettings {
+            collection,
+            selected,
+        } => return super::collection::apply(state, &collection, selected, action),
         Popup::Welcome { step, then } => {
             return super::preferences::welcome_key(state, step, then, action);
         }
@@ -597,11 +607,7 @@ fn run_pending(state: &mut State, pending: Pending) -> Vec<Command> {
         }],
         Pending::CloseTab => super::tabs::close_now(state),
         Pending::Export(collection, path) => vec![Command::ExportBundle { collection, path }],
-        Pending::Quit(_) => {
-            state.should_quit = true;
-
-            Vec::new()
-        }
+        Pending::Quit(_) => super::leave(state),
     }
 }
 
@@ -1074,18 +1080,20 @@ fn save_question(
                 return Ok(commands);
             }
 
+            let mut commands = commands;
+
             // secrets are stored first, and the files written after them
             if state.waiting.is_some() {
                 state.quit_when_saved = true;
             } else {
-                super::quit(state);
+                commands.extend(super::quit(state));
             }
 
             Ok(commands)
         }
         Action::Discard => {
             if quit {
-                super::quit(state);
+                return Ok(super::quit(state));
             }
 
             Ok(Vec::new())
