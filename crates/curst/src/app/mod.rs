@@ -15,6 +15,8 @@ mod sidebar;
 mod spec;
 mod tabs;
 mod view_model;
+mod workflow;
+mod workflow_editor;
 mod workspace;
 
 use std::cell::{Cell, RefCell};
@@ -22,13 +24,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use curst_core::http::{HttpError, Response};
-use curst_core::model::{EnvId, Environment, LocalId, Method, Request, Variable};
+use curst_core::model::{Auth, EnvId, Environment, LocalId, Method, Request, Variable};
 use curst_core::secrets::{Approval, Secret, SecretKey, SecretScope};
 use curst_core::store::Backend;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui_textarea::TextArea;
 
-pub(crate) use collection::Row as CollectionRow;
+pub(crate) use collection::{AuthDialog, Row as CollectionRow, auth_of};
 pub(crate) use editor::{AuthEditor, AuthKind, BodyEditor, BodyField, BodyKind, Column, Table};
 #[cfg(test)]
 pub(crate) use editor::{body_text, text_of as editor_text};
@@ -44,6 +46,8 @@ pub(crate) use refresh::{Kind as ReviewKind, Review};
 pub(crate) use save::SaveDialog;
 pub(crate) use spec::{Found as SpecFound, Preview as SpecPreview, is_url};
 pub(crate) use view_model::{ResponseView, display, skip_columns};
+pub(crate) use workflow::StepState;
+pub(crate) use workflow_editor::{Row as WorkflowRow, WorkflowEditor};
 pub(crate) use workspace::{NodeKey, RowKind, Sidebar, Workspace, rows};
 
 #[cfg(test)]
@@ -160,6 +164,16 @@ pub(crate) enum Then {
     /// a request, as typed, its templates unresolved
     Send(Request),
 
+    /// the step of the workflow running
+    Workflow,
+
+    /// the values a workflow step kept, stored before the files that name
+    /// them, and before the next step
+    Kept {
+        changes: Vec<SecretChange>,
+        files: Vec<Command>,
+    },
+
     /// a spec to fetch, its source's templates unresolved
     Spec(spec::Job),
 
@@ -275,6 +289,9 @@ pub(crate) struct State {
     pub(crate) secret_values: HashMap<SecretKey, Option<Secret>>,
     pub(crate) waiting: Option<Waiting>,
 
+    /// the workflow being run, kept after it ends to show how it went
+    pub(crate) run: Option<workflow::Run>,
+
     /// the last request sent, as typed, for following a stopped redirect
     pub(crate) last_sent: Option<Request>,
 
@@ -349,6 +366,7 @@ impl Default for State {
             orphans: Vec::new(),
             secret_values: HashMap::new(),
             waiting: None,
+            run: None,
             last_sent: None,
             backend: None,
             collection: None,
@@ -379,6 +397,36 @@ impl State {
     /// tab's, never just the one selected in the sidebar
     pub(crate) fn current_workspace(&self) -> Option<&Workspace> {
         self.workspace(self.collection.as_ref()?)
+    }
+
+    /// the auth the active tab's request inherits, and the folder or
+    /// collection it comes from; none outside a collection
+    pub(crate) fn inherited_auth(&self) -> Option<(Auth, String)> {
+        let workspace = self.current_workspace()?;
+        let parent = self
+            .open
+            .as_ref()
+            .filter(|open| open.key.collection == workspace.id)
+            .map_or(&[][..], |open| {
+                &open.key.path[..open.key.path.len().saturating_sub(1)]
+            });
+
+        Some(workspace.collection.inherited_auth(parent))
+    }
+
+    /// `request` with the auth it inherits in place of inheriting
+    pub(crate) fn with_inherited_auth(&self, mut request: Request) -> Request {
+        // an untrusted collection lends nothing, its auth included
+        let trusted = self.current_workspace().is_some_and(|w| w.trusted);
+
+        if request.auth == Auth::Inherit {
+            request.auth = self
+                .inherited_auth()
+                .filter(|_| trusted)
+                .map_or(Auth::None, |(auth, _)| auth);
+        }
+
+        request
     }
 
     /// the collection the environment picker works on: the active tab's,
@@ -423,6 +471,27 @@ pub(crate) enum Action {
 
     /// the settings of the selected collection
     CollectionSettings,
+
+    /// the workflows of the selected collection
+    Workflows,
+
+    /// runs a collection's workflow
+    RunWorkflow {
+        collection: LocalId,
+        index: usize,
+    },
+
+    /// the answer to a workflow step
+    StepAnswered {
+        id: u64,
+        result: Box<Result<Response, HttpError>>,
+    },
+
+    /// a workflow step waits for its secrets to be approved
+    StepNeedsApproval {
+        id: u64,
+        approval: Box<Approval>,
+    },
     Send,
     Cancel,
     Save,
@@ -697,6 +766,14 @@ pub(crate) enum Change {
     },
     RenameCollection(String),
     DeleteCollection,
+
+    SaveWorkflows(Vec<curst_core::model::Workflow>),
+
+    /// the auth the collection, for an empty path, or a folder passes on
+    SaveAuth {
+        path: Vec<String>,
+        auth: Auth,
+    },
     SaveVariables(Vec<Variable>),
     CreateEnvironment(String),
     SaveEnvironment(Environment),
@@ -726,6 +803,15 @@ pub(crate) enum Command {
         /// approved for its origin, and keeps redirects within approved ones
         secrets: Vec<SecretKey>,
     },
+
+    /// a workflow step's request, sent like any other but answered apart,
+    /// never into a tab
+    SendStep {
+        id: u64,
+        request: Request,
+        secrets: Vec<SecretKey>,
+    },
+    CancelStep,
     LoadSecrets {
         id: u64,
         keys: Vec<SecretKey>,
@@ -878,6 +964,9 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
 
     match action {
         Action::Quit => return quit(state),
+        Action::RunWorkflow { collection, index } => {
+            return workflow::start(state, &collection, index);
+        }
         Action::Send => return send::send(state),
         Action::Follow => return send::follow(state),
         Action::MakeSecret => request::make_secret(state),
@@ -898,6 +987,7 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         | Action::ImportSpec
         | Action::ChangeSource
         | Action::CollectionSettings
+        | Action::Workflows
         | Action::RefreshSpec => return open_popup(state, &action),
         Action::PasteText(text) => return request::paste(state, &text),
         Action::CopyResponse | Action::CopyCurl => return copy(state, &action),
@@ -986,7 +1076,9 @@ fn copy_curl(state: &mut State) -> Vec<Command> {
     state.notice =
         Some("the request went to the clipboard as curl, with variables as {{name}}".into());
 
-    vec![Command::Copy(curst_core::curl::emit(&state.request()))]
+    let request = state.with_inherited_auth(state.request());
+
+    vec![Command::Copy(curst_core::curl::emit(&request))]
 }
 
 /// copies the response body, whichever tab shows, without borders or notes
@@ -1051,6 +1143,10 @@ fn open_popup(state: &mut State, action: &Action) -> Vec<Command> {
         Action::ChangeSource => refresh::ask_source(state),
         Action::RefreshSpec => return refresh::start(state),
         Action::CollectionSettings => collection::open(state),
+        Action::Workflows => match sidebar::selected_collection(state) {
+            Some(collection) => workflow::list(state, &collection),
+            None => state.notice = Some(no_collection(state)),
+        },
 
         // the help lists the keys where the focus is first
         Action::Help => {
@@ -1082,6 +1178,11 @@ fn report(state: &mut State, action: Action) -> Vec<Command> {
         },
         Action::SecretsLocked { id, locked } => send::locked(state, id, locked),
         Action::NeedsApproval { id, approval } => send::needs_approval(state, id, *approval),
+        Action::StepNeedsApproval { id, approval } => {
+            workflow::needs_approval(state, id, *approval);
+        }
+        Action::StepAnswered { id, result } => return workflow::answered(state, id, *result),
+
         Action::Responded { id, mut result } if state.in_flight != Some(id) => {
             if let Ok(view) = result.as_mut() {
                 view.name_save_key(&state.key(Layer::Response, "save-body"));
@@ -1253,6 +1354,8 @@ fn reported(action: &Action) -> bool {
             | Action::Unlocked
             | Action::BackendChosen(_)
             | Action::NeedsApproval { .. }
+            | Action::StepNeedsApproval { .. }
+            | Action::StepAnswered { .. }
             | Action::Approved { .. }
             | Action::SecretsChanged { .. }
             | Action::Migrated { .. }

@@ -296,7 +296,7 @@ pub fn detect(request: &Request) -> Vec<Finding> {
                 Some(value_reason(token).unwrap_or(Reason::Bearer)),
             );
         }
-        Auth::None | Auth::Basic { .. } | Auth::Bearer { .. } => {}
+        Auth::Inherit | Auth::None | Auth::Basic { .. } | Auth::Bearer { .. } => {}
     }
 
     findings

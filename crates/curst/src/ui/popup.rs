@@ -6,7 +6,7 @@ use ratatui::widgets::{Clear, Paragraph, Wrap};
 
 use super::request::table;
 use super::{field, pane, tab_regions, tab_titles};
-use curst_core::model::LocalId;
+use curst_core::model::{Auth, LocalId};
 use curst_core::secrets::{Approval, SecretKey};
 use curst_core::store::Backend;
 
@@ -15,9 +15,23 @@ use ratatui_textarea::TextArea;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    Entry, Field, Fill, Hint, Hints, Layer, PRESETS, Palette, Popup, Review, ReviewKind,
-    SaveDialog, SpecPreview, State, Step, Target, VarTab, VariablesEditor, display,
+    AuthDialog, Entry, Field, Fill, Hint, Hints, Layer, NodeKey, PRESETS, Palette, Popup, Review,
+    ReviewKind, SaveDialog, SpecPreview, State, Step, Target, VarTab, VariablesEditor,
+    WorkflowEditor, WorkflowRow, display,
 };
+
+/// a one-line prompt titled `title`
+fn prompt(state: &State, title: &str, input: &TextArea<'static>, frame: &mut Frame) {
+    let area = centered(frame, 60, 3);
+    let block = pane(&state.theme, Line::from(format!(" {title} ")), true);
+    let inner = block.inner(area);
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+    frame.render_widget(block, area);
+    state.region(inner, Target::Text(Field::Popup));
+    frame.render_widget(&*field(&state.theme, input, None), inner);
+}
 
 /// a box of at most `width` by `height` in the middle of the screen
 fn centered(frame: &Frame, width: u16, height: u16) -> Rect {
@@ -35,17 +49,7 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
     let theme = &state.theme;
 
     match popup {
-        Popup::Prompt { purpose, input } => {
-            let area = centered(frame, 60, 3);
-            let block = pane(theme, Line::from(format!(" {} ", purpose.title())), true);
-            let inner = block.inner(area);
-
-            frame.render_widget(Clear, area);
-            state.region(area, Target::Popup);
-            frame.render_widget(block, area);
-            state.region(inner, Target::Text(Field::Popup));
-            frame.render_widget(&*field(&state.theme, input, None), inner);
-        }
+        Popup::Prompt { purpose, input } => prompt(state, purpose.title(), input, frame),
         Popup::Confirm { message, .. } => {
             let area = centered(frame, 60, 5);
             let block = pane(theme, Line::from(" Are you sure? "), true);
@@ -136,6 +140,10 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
         | Popup::Review(_)
         | Popup::SaveRequest(_)
         | Popup::CollectionSettings { .. }
+        | Popup::Auth(_)
+        | Popup::Run
+        | Popup::Workflows { .. }
+        | Popup::WorkflowEditor(_)
         | Popup::SpecChoice { .. } => draw_import(state, popup, frame),
         Popup::Approve(approval) => approve(state, approval, frame),
         Popup::Variables(editor) => variables(state, editor, frame),
@@ -260,10 +268,16 @@ fn draw_import(state: &State, popup: &Popup, frame: &mut Frame) {
         Popup::SpecPreview(preview) => spec_preview(state, preview, frame),
         Popup::Review(review) => refresh_review(state, review, frame),
         Popup::SaveRequest(dialog) => save_dialog(state, dialog, frame),
-        Popup::CollectionSettings {
+        Popup::CollectionSettings { target, selected } => {
+            collection_settings(state, target, *selected, frame);
+        }
+        Popup::Auth(dialog) => auth_dialog(state, dialog, frame),
+        Popup::Run => run(state, frame),
+        Popup::Workflows {
             collection,
             selected,
-        } => collection_settings(state, collection, *selected, frame),
+        } => workflows(state, collection, *selected, frame),
+        Popup::WorkflowEditor(editor) => workflow_editor(state, editor, frame),
         Popup::SpecChoice {
             folder,
             specs,
@@ -274,15 +288,24 @@ fn draw_import(state: &State, popup: &Popup, frame: &mut Frame) {
 }
 
 /// the settings of one collection, each row acted on with Enter
-fn collection_settings(state: &State, collection: &LocalId, selected: usize, frame: &mut Frame) {
+fn collection_settings(state: &State, target: &NodeKey, selected: usize, frame: &mut Frame) {
     use crate::app::CollectionRow as Row;
 
-    let Some(workspace) = state.workspace(collection) else {
+    let Some(workspace) = state.workspace(&target.collection) else {
         return;
     };
 
+    let rows = Row::of(target);
+    let name = if target.path.is_empty() {
+        workspace.collection.name.as_str()
+    } else {
+        workspace
+            .collection
+            .item(&target.path)
+            .map_or("", |item| item.name())
+    };
     let theme = &state.theme;
-    let area = centered(frame, 72, 6);
+    let area = centered(frame, 72, u16::try_from(rows.len() + 2).unwrap_or(7));
     let inner = area.inner(Margin::new(1, 1));
     let width = usize::from(inner.width);
     let source = workspace.collection.source.as_ref();
@@ -311,10 +334,20 @@ fn collection_settings(state: &State, collection: &LocalId, selected: usize, fra
 
         Line::from(spans)
     };
-    let lines: Vec<Line> = Row::ALL
+    let lines: Vec<Line> = rows
         .iter()
         .enumerate()
         .map(|(index, kind)| match kind {
+            Row::Auth => row(
+                index,
+                "Auth",
+                Some((auth_summary(state, target), theme.muted)),
+            ),
+            Row::Workflows => {
+                let count = workspace.collection.workflows.len();
+
+                row(index, "Workflows", Some((count.to_string(), theme.muted)))
+            }
             Row::AutoSave => {
                 let (on, style) = if workspace.auto_save {
                     ("on", theme.success)
@@ -339,22 +372,433 @@ fn collection_settings(state: &State, collection: &LocalId, selected: usize, fra
             Row::Export => row(index, "Export as a bundle file", None),
         })
         .collect();
-    let block = pane(
-        theme,
-        Line::from(format!(" {} ", display(&workspace.collection.name))),
-        true,
-    );
-    let rows_area = inner;
+    let block = pane(theme, Line::from(format!(" {} ", display(name))), true);
 
     frame.render_widget(Clear, area);
     state.region(area, Target::Popup);
     frame.render_widget(block, area);
 
-    for index in 0..Row::ALL.len() {
-        line_region(state, rows_area, index, Target::Item(index));
+    for index in 0..rows.len() {
+        line_region(state, inner, index, Target::Item(index));
     }
 
-    frame.render_widget(Paragraph::new(lines), rows_area);
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// a list of lines in a box, `selected` highlighted, each a click target;
+/// the list scrolls to keep `selected` in sight
+fn list_box(
+    state: &State,
+    frame: &mut Frame,
+    title: String,
+    lines: Vec<Line<'static>>,
+    selected: Option<usize>,
+) {
+    let theme = &state.theme;
+    let height = frame.area().height.saturating_sub(4).max(5);
+    let shown = usize::from(height.saturating_sub(2)).max(1);
+    let first = selected.unwrap_or(0).saturating_sub(shown - 1);
+    let rows = u16::try_from(lines.len().min(shown) + 2).unwrap_or(height);
+    let area = centered(frame, 80, rows);
+    let inner = area.inner(Margin::new(1, 1));
+    let count = lines.len();
+    let lines: Vec<Line> = lines
+        .into_iter()
+        .enumerate()
+        .skip(first)
+        .take(shown)
+        .map(|(index, line)| {
+            if Some(index) == selected {
+                line.style(theme.selected)
+            } else {
+                line
+            }
+        })
+        .collect();
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+
+    for index in first..count.min(first + shown) {
+        line_region(state, inner, index - first, Target::Item(index));
+    }
+
+    frame.render_widget(
+        Paragraph::new(lines).block(pane(theme, Line::from(title), true)),
+        area,
+    );
+}
+
+/// the workflows of a collection, and a row to make a new one
+fn workflows(state: &State, collection: &LocalId, selected: usize, frame: &mut Frame) {
+    let Some(workspace) = state.workspace(collection) else {
+        return;
+    };
+
+    let theme = &state.theme;
+    let mut lines: Vec<Line> = workspace
+        .collection
+        .workflows
+        .iter()
+        .map(|w| {
+            let steps = match w.steps.len() {
+                1 => "1 step".to_owned(),
+                n => format!("{n} steps"),
+            };
+
+            Line::from(vec![
+                Span::raw(format!(" {} ", display(&w.name))),
+                Span::styled(steps, theme.muted),
+            ])
+        })
+        .collect();
+
+    lines.push(Line::from(Span::styled(" + new workflow", theme.muted)));
+
+    let title = format!(" Workflows of {} ", display(&workspace.collection.name));
+
+    list_box(state, frame, title, lines, Some(selected));
+}
+
+/// the workflow running: each step and how far it got, and why it stopped
+fn run(state: &State, frame: &mut Frame) {
+    use crate::app::StepState;
+
+    let Some(run) = &state.run else {
+        return;
+    };
+
+    let theme = &state.theme;
+    let workspace = state.workspace(&run.collection);
+    let mut lines: Vec<Line> = run
+        .workflow
+        .steps
+        .iter()
+        .zip(&run.states)
+        .map(|(step, done)| {
+            let name = workspace
+                .and_then(|w| w.collection.item(&step.request))
+                .map_or_else(|| step.request.join("/"), |item| item.name().to_owned());
+            let (mark, style) = match done {
+                StepState::Waiting => ("·".to_owned(), theme.muted),
+                StepState::Running => ("…".to_owned(), theme.warning),
+                StepState::Done(status) => (status.to_string(), theme.success),
+                StepState::Failed => ("✗".to_owned(), theme.error),
+            };
+            let kept: Vec<String> = step
+                .keep
+                .iter()
+                .map(|c| format!("{{{{{}}}}}", c.variable))
+                .collect();
+            let mut spans = vec![
+                Span::styled(format!(" {mark:>3} "), style),
+                Span::raw(display(&name)),
+            ];
+
+            if !kept.is_empty() {
+                spans.push(Span::styled(format!("  → {}", kept.join(" ")), theme.muted));
+            }
+
+            Line::from(spans)
+        })
+        .collect();
+
+    if let Some(error) = &run.error {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!(" {}", display(error)),
+            theme.error,
+        )));
+    } else if run.finished() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(" done", theme.success)));
+    }
+
+    // a long error wraps, and the box grows to show all of it
+    let width = usize::from(frame.area().width.min(80).saturating_sub(2)).max(1);
+    let rows: usize = lines.iter().map(|l| l.width().div_ceil(width).max(1)).sum();
+    let area = centered(frame, 80, u16::try_from(rows + 2).unwrap_or(u16::MAX));
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+    frame.render_widget(
+        Paragraph::new(lines).wrap(Wrap { trim: false }).block(pane(
+            theme,
+            Line::from(format!(" {} ", display(&run.workflow.name))),
+            true,
+        )),
+        area,
+    );
+}
+
+/// a workflow being edited: its name, each step's request and the values
+/// it keeps; or the requests to choose a step's from
+fn workflow_editor(state: &State, editor: &WorkflowEditor, frame: &mut Frame) {
+    let theme = &state.theme;
+
+    if let Some((step, selected)) = editor.picking {
+        let lines = editor
+            .requests
+            .iter()
+            .map(|(_, label)| Line::from(format!(" {}", display(label))))
+            .collect();
+
+        list_box(
+            state,
+            frame,
+            format!(" Request of step {} ", step + 1),
+            lines,
+            Some(selected),
+        );
+
+        return;
+    }
+
+    let rows = editor.rows();
+    let height = frame.area().height.saturating_sub(4).max(6);
+    let shown = usize::from(height.saturating_sub(2)).max(1);
+    let first = editor.row.saturating_sub(shown - 1);
+    let area = centered(
+        frame,
+        90,
+        u16::try_from(rows.len().min(shown) + 2).unwrap_or(height),
+    );
+    let inner = area.inner(Margin::new(1, 1));
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+    frame.render_widget(pane(theme, Line::from(" Workflow "), true), area);
+
+    for (index, row) in rows.iter().enumerate().skip(first).take(shown) {
+        let Ok(offset) = u16::try_from(index - first) else {
+            break;
+        };
+        let line = Rect {
+            y: inner.y + offset,
+            height: 1,
+            ..inner
+        };
+        let selected = index == editor.row;
+
+        line_region(state, inner, index - first, Target::Item(index));
+        editor_row(state, editor, *row, line, selected, frame);
+    }
+}
+
+/// one row of the workflow editor, drawn on `line`
+fn editor_row(
+    state: &State,
+    editor: &WorkflowEditor,
+    row: WorkflowRow,
+    line: Rect,
+    selected: bool,
+    frame: &mut Frame,
+) {
+    use crate::app::WorkflowRow as Row;
+
+    let theme = &state.theme;
+    let style = if selected {
+        theme.selected
+    } else {
+        Style::default()
+    };
+
+    match row {
+        Row::Name => {
+            let [label, field_area] =
+                Layout::horizontal([Constraint::Length(10), Constraint::Fill(1)]).areas(line);
+
+            frame.render_widget(Paragraph::new(Span::styled(" Name", style)), label);
+
+            if selected {
+                state.region(field_area, Target::Text(Field::Popup));
+            }
+
+            frame.render_widget(&*field(theme, &editor.name, None), field_area);
+        }
+        Row::Request(step) => {
+            let request = &editor.steps[step].request;
+            let label = editor
+                .label(request)
+                .map_or_else(|| "choose a request".to_owned(), display);
+            let label_style = if request.is_empty() {
+                theme.muted
+            } else {
+                Style::default()
+            };
+
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(format!(" {:<3}", step + 1), style),
+                    Span::styled(label, label_style),
+                ])),
+                line,
+            );
+        }
+        Row::Capture(step, i) => {
+            let capture = &editor.steps[step].keep[i];
+            let [gap, variable, arrow, from] = Layout::horizontal([
+                Constraint::Length(6),
+                Constraint::Length(20),
+                Constraint::Length(3),
+                Constraint::Fill(1),
+            ])
+            .areas(line);
+
+            frame.render_widget(Paragraph::new(Span::styled(" ", style)), gap);
+            frame.render_widget(&*field(theme, &capture.variable, None), variable);
+            frame.render_widget(Paragraph::new(Span::styled(" ← ", theme.muted)), arrow);
+            frame.render_widget(&*field(theme, &capture.from, None), from);
+
+            if selected {
+                let at = if editor.column == 0 { variable } else { from };
+
+                state.region(at, Target::Text(Field::Popup));
+            }
+        }
+        Row::AddCapture(_) => frame.render_widget(
+            Paragraph::new(Span::styled(
+                "      + keep a value",
+                if selected { style } else { theme.muted },
+            )),
+            line,
+        ),
+        Row::AddStep => frame.render_widget(
+            Paragraph::new(Span::styled(
+                " + add a step",
+                if selected { style } else { theme.muted },
+            )),
+            line,
+        ),
+    }
+}
+
+/// the auth a collection or folder sets, and for one that inherits, what
+fn auth_summary(state: &State, target: &NodeKey) -> String {
+    use super::request::auth_label;
+
+    let Some(auth) = crate::app::auth_of(state, target) else {
+        return String::new();
+    };
+
+    if target.path.is_empty() || auth != Auth::Inherit {
+        // a collection that inherits has nothing above it
+        let auth = if auth == Auth::Inherit {
+            Auth::None
+        } else {
+            auth
+        };
+
+        return auth_label(&auth).into();
+    }
+
+    let parent = &target.path[..target.path.len() - 1];
+    let (inherited, from) = state
+        .workspace(&target.collection)
+        .map_or((Auth::None, String::new()), |w| {
+            w.collection.inherited_auth(parent)
+        });
+
+    format!(
+        "inherit: {} from {}",
+        auth_label(&inherited),
+        display(&from)
+    )
+}
+
+/// the auth of a collection or folder: its type, then its fields
+fn auth_dialog(state: &State, dialog: &AuthDialog, frame: &mut Frame) {
+    use super::request::auth_label;
+
+    let theme = &state.theme;
+    let fields = dialog.editor.fields();
+    let height = u16::try_from(fields.len() + 3).unwrap_or(5);
+    let area = centered(frame, 72, height);
+    let inner = area.inner(Margin::new(1, 1));
+    let name = state
+        .workspace(&dialog.target.collection)
+        .and_then(|w| {
+            if dialog.target.path.is_empty() {
+                Some(w.collection.name.as_str())
+            } else {
+                w.collection
+                    .item(&dialog.target.path)
+                    .map(curst_core::model::Item::name)
+            }
+        })
+        .unwrap_or("");
+    let style = |row: usize| {
+        if row == dialog.row {
+            theme.selected
+        } else {
+            theme.muted
+        }
+    };
+    let mut kind = vec![
+        Span::styled(" Type        ", style(0)),
+        Span::styled(
+            dialog.editor.kind.label(),
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+    ];
+
+    if dialog.editor.kind == crate::app::AuthKind::Inherit {
+        let target = &dialog.target.path;
+        let (auth, from) =
+            state
+                .workspace(&dialog.target.collection)
+                .map_or((Auth::None, String::new()), |w| {
+                    w.collection
+                        .inherited_auth(&target[..target.len().saturating_sub(1)])
+                });
+
+        kind.push(Span::styled(
+            format!("  {} from {}", auth_label(&auth), display(&from)),
+            theme.muted,
+        ));
+    }
+
+    frame.render_widget(Clear, area);
+    state.region(area, Target::Popup);
+    frame.render_widget(
+        pane(
+            theme,
+            Line::from(format!(" Auth of {} ", display(name))),
+            true,
+        ),
+        area,
+    );
+    line_region(state, inner, 0, Target::Item(0));
+    frame.render_widget(
+        Paragraph::new(Line::from(kind)),
+        Rect { height: 1, ..inner },
+    );
+
+    for (index, (label, input)) in fields.into_iter().enumerate() {
+        let row = index + 1;
+        let Ok(offset) = u16::try_from(row) else {
+            break;
+        };
+        let line = Rect {
+            y: inner.y + offset,
+            height: 1,
+            ..inner
+        };
+        let [label_area, field_area] =
+            Layout::horizontal([Constraint::Length(13), Constraint::Fill(1)]).areas(line);
+
+        line_region(state, inner, row, Target::Item(row));
+
+        if row == dialog.row {
+            state.region(field_area, Target::Text(Field::Popup));
+        }
+
+        frame.render_widget(
+            Paragraph::new(Span::styled(format!(" {label}"), style(row))),
+            label_area,
+        );
+        frame.render_widget(&*field(theme, input, None), field_area);
+    }
 }
 
 /// a new request's name, and below it where it goes; Tab opens the list
@@ -701,6 +1145,10 @@ fn palette_list(state: &State, palette: &Palette, frame: &mut Frame) {
             Entry::Open { method, title, .. } => (
                 format!(" {:<7} {}", method.as_str(), display(title)),
                 "open ".to_owned(),
+            ),
+            Entry::Workflow { title, .. } => (
+                format!(" {:<7} {}", "RUN", display(title)),
+                "workflow ".to_owned(),
             ),
         };
         let gap = width.saturating_sub(left.width() + right.width()).max(1);
@@ -1232,6 +1680,54 @@ fn import_hints(hints: &mut Hints, popup: &Popup) {
                 .one("confirm", "do it")
                 .one("close", "close");
         }
+        Popup::Auth(dialog) if dialog.row == 0 => {
+            hints
+                .one("kind", "type")
+                .pair("up", "down", "move")
+                .one("confirm", "save")
+                .one("close", "cancel");
+        }
+        Popup::Auth(_) => {
+            hints
+                .pair("up", "down", "move")
+                .one("confirm", "save")
+                .one("close", "cancel");
+        }
+        Popup::Run => {
+            hints.one("close", "close");
+        }
+        Popup::Workflows { .. } => {
+            hints
+                .pair("up", "down", "choose")
+                .one("confirm", "run")
+                .one("edit", "edit")
+                .one("row.delete", "delete")
+                .one("close", "close");
+        }
+        Popup::WorkflowEditor(editor) if editor.picking.is_some() => {
+            hints
+                .pair("up", "down", "choose")
+                .one("confirm", "pick")
+                .one("close", "back");
+        }
+        Popup::WorkflowEditor(editor) => {
+            hints.pair("up", "down", "move");
+
+            if matches!(editor.current(), crate::app::WorkflowRow::Capture(..)) {
+                hints.one("next-cell", "next field");
+            }
+
+            hints.one("confirm", "choose");
+
+            if matches!(
+                editor.current(),
+                crate::app::WorkflowRow::Capture(..) | crate::app::WorkflowRow::Request(_)
+            ) {
+                hints.one("row.delete", "delete");
+            }
+
+            hints.one("save", "save").one("close", "close");
+        }
         Popup::SaveRequest(_) => {
             hints
                 .one("confirm", "save")
@@ -1338,6 +1834,10 @@ pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
         | Popup::SpecChoice { .. }
         | Popup::SaveRequest(_)
         | Popup::CollectionSettings { .. }
+        | Popup::Auth(_)
+        | Popup::Run
+        | Popup::Workflows { .. }
+        | Popup::WorkflowEditor(_)
         | Popup::SpecPreview(_) => import_hints(&mut hints, popup),
     }
 

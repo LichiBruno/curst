@@ -288,6 +288,7 @@ fn bearer_and_basic_auth() {
     assert!(!state.auth.typing);
 
     press(&mut state, KeyCode::Char('t'));
+    press(&mut state, KeyCode::Char('t'));
     press(&mut state, KeyCode::Enter);
     type_text(&mut state, "me");
     press(&mut state, KeyCode::Tab);
@@ -802,6 +803,9 @@ mod collections {
             Some(Popup::CollectionSettings { selected: 0, .. })
         ));
 
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Down);
+
         let commands = press(&mut state, KeyCode::Enter);
 
         assert_eq!(
@@ -834,8 +838,7 @@ mod collections {
         let mut state = with_collection();
 
         press(&mut state, KeyCode::Char('s'));
-        press(&mut state, KeyCode::Down);
-        press(&mut state, KeyCode::Enter);
+        update(&mut state, Action::Pick(3));
 
         // the sample was not imported from a spec
         assert!(state.popup.is_none());
@@ -847,7 +850,7 @@ mod collections {
         );
 
         press(&mut state, KeyCode::Char('s'));
-        update(&mut state, Action::Pick(3));
+        update(&mut state, Action::Pick(5));
 
         assert!(matches!(
             &state.popup,
@@ -856,7 +859,7 @@ mod collections {
 
         press(&mut state, KeyCode::Esc);
         press(&mut state, KeyCode::Char('s'));
-        update(&mut state, Action::Pick(2));
+        update(&mut state, Action::Pick(4));
 
         assert!(matches!(
             state.popup,
@@ -865,6 +868,135 @@ mod collections {
                 ..
             })
         ));
+    }
+
+    /// the sample with Bearer {{token}} on the collection and basic auth
+    /// on the Users folder
+    fn with_auth() -> State {
+        let mut state = with_collection();
+        let collection = &mut state.collections[0].collection;
+
+        collection.auth = Auth::Bearer {
+            token: "{{token}}".into(),
+        };
+
+        if let Some(curst_core::model::Item::Folder(users)) = collection.items.first_mut() {
+            users.auth = Auth::Basic {
+                username: "me".into(),
+                password: "pw".into(),
+            };
+        }
+
+        state
+    }
+
+    #[test]
+    fn requests_send_the_auth_they_inherit() {
+        let mut state = with_auth();
+
+        state.globals = vec![Variable::new(VarName::new("token").unwrap(), "t1")];
+        open_create(&mut state);
+        state.url = editor::single_line("http://h/", "");
+
+        let commands = update(&mut state, Action::Send);
+        let [Command::Send { request, .. }] = commands.as_slice() else {
+            panic!("not sent: {:?}", state.notice);
+        };
+
+        assert_eq!(request.auth, Auth::Bearer { token: "t1".into() });
+
+        // a folder's auth wins over the collection's
+        state.focus = Focus::Sidebar;
+        state.sidebar.selected = Some(node(&["users"]));
+        press(&mut state, KeyCode::Right);
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+        state.url = editor::single_line("http://h/", "");
+
+        assert_eq!(
+            state.with_inherited_auth(state.request()).auth,
+            Auth::Basic {
+                username: "me".into(),
+                password: "pw".into()
+            }
+        );
+
+        // copied as curl, the inherited auth goes with it
+        let commands = update(&mut state, Action::CopyCurl);
+
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::Copy(text)] if text.contains("-u") && text.contains("me:pw")
+        ));
+
+        // a request that sets its own keeps it
+        state.auth = AuthEditor::from_auth(&Auth::None);
+
+        assert_eq!(state.with_inherited_auth(state.request()).auth, Auth::None);
+    }
+
+    #[test]
+    fn a_folder_sets_the_auth_its_requests_inherit() {
+        let mut state = with_auth();
+
+        state.sidebar.selected = Some(node(&["users"]));
+        press(&mut state, KeyCode::Char('s'));
+
+        assert!(matches!(
+            &state.popup,
+            Some(Popup::CollectionSettings { target, .. }) if target.path == ["users"]
+        ));
+
+        // the folder has one row, its auth
+        press(&mut state, KeyCode::Enter);
+
+        let Some(Popup::Auth(dialog)) = &state.popup else {
+            panic!("no auth dialog");
+        };
+
+        assert_eq!(dialog.editor.kind, AuthKind::Basic);
+
+        // basic, then bearer: the token typed into its field
+        press(&mut state, KeyCode::Char(' '));
+        press(&mut state, KeyCode::Down);
+        type_text(&mut state, "{{folder_token}}");
+
+        let commands = press(&mut state, KeyCode::Enter);
+
+        assert_eq!(
+            commands,
+            [Command::Store {
+                collection: LocalId::new("c1").unwrap(),
+                change: Change::SaveAuth {
+                    path: vec!["users".into()],
+                    auth: Auth::Bearer {
+                        token: "{{folder_token}}".into()
+                    },
+                },
+            }]
+        );
+
+        // bearer, then inherit for a folder, but never for the collection
+        state.sidebar.selected = Some(node(&["users"]));
+        press(&mut state, KeyCode::Char('s'));
+        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Char(' '));
+        press(&mut state, KeyCode::Char(' '));
+
+        assert!(matches!(&state.popup, Some(Popup::Auth(d)) if d.editor.kind == AuthKind::Inherit));
+
+        press(&mut state, KeyCode::Esc);
+        state.sidebar.selected = Some(node(&[]));
+        press(&mut state, KeyCode::Char('s'));
+        press(&mut state, KeyCode::Enter);
+
+        for _ in 0..3 {
+            press(&mut state, KeyCode::Char(' '));
+
+            assert!(
+                matches!(&state.popup, Some(Popup::Auth(d)) if d.editor.kind != AuthKind::Inherit)
+            );
+        }
     }
 
     #[test]
@@ -3864,5 +3996,434 @@ mod undefined {
             state.notice.as_deref(),
             Some("not sent: {{nowhere}} not defined")
         );
+    }
+}
+
+mod workflows {
+    use curst_core::model::{Capture, Extract, Item, Step, Workflow};
+    use curst_core::secrets::{Approval, Secret, SecretKey};
+    use curst_core::vars::VarName;
+
+    use super::*;
+    use crate::app::workspace::tests::sample;
+
+    fn c1() -> LocalId {
+        LocalId::new("c1").unwrap()
+    }
+
+    fn token_key() -> SecretKey {
+        SecretKey::Collection {
+            collection: c1(),
+            name: VarName::new("token").unwrap(),
+        }
+    }
+
+    /// Pets with Bearer {{token}} for every request, CREATE as a login
+    /// that sets its own auth, and a workflow: log in, keep the token, then
+    /// ask for LIST with it
+    fn loaded() -> State {
+        let mut workspace = sample();
+        let collection = &mut workspace.collection;
+
+        collection.auth = Auth::Bearer {
+            token: "{{token}}".into(),
+        };
+
+        for item in &mut collection.items {
+            match item {
+                Item::Request(login) => {
+                    login.request.url = "http://h/login".into();
+                    login.request.auth = Auth::None;
+                }
+                Item::Folder(users) => {
+                    if let Some(Item::Request(list)) = users.items.first_mut() {
+                        list.request.url = "http://h/me".into();
+                    }
+                }
+            }
+        }
+
+        collection.workflows = vec![Workflow {
+            name: "Log in".into(),
+            steps: vec![
+                Step {
+                    request: vec!["create".into()],
+                    keep: vec![Capture {
+                        variable: VarName::new("token").unwrap(),
+                        from: Extract::Json("$.access_token".into()),
+                    }],
+                },
+                Step {
+                    request: vec!["users".into(), "list".into()],
+                    keep: vec![],
+                },
+            ],
+        }];
+
+        let mut state = State::default();
+
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![workspace],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![],
+            },
+        );
+
+        state
+    }
+
+    fn run(state: &mut State) -> Vec<Command> {
+        update(
+            state,
+            Action::RunWorkflow {
+                collection: c1(),
+                index: 0,
+            },
+        )
+    }
+
+    fn step_sent(commands: &[Command]) -> (u64, Request) {
+        match commands.last() {
+            Some(Command::SendStep { id, request, .. }) => (*id, request.clone()),
+            other => panic!("no step sent: {other:?}"),
+        }
+    }
+
+    fn answer(state: &mut State, id: u64, body: &str) -> Vec<Command> {
+        update(
+            state,
+            Action::StepAnswered {
+                id,
+                result: Box::new(Ok(super::response(body))),
+            },
+        )
+    }
+
+    #[test]
+    fn a_run_logs_in_keeps_the_token_and_uses_it() {
+        let mut state = loaded();
+        let commands = run(&mut state);
+        let (id, login) = step_sent(&commands);
+
+        assert!(matches!(state.popup, Some(Popup::Run)));
+        assert_eq!(login.url, "http://h/login");
+        assert_eq!(login.auth, Auth::None);
+
+        // the token is stored as a secret of the collection, which had no
+        // such variable: it is added, after the value is stored
+        let commands = answer(&mut state, id, r#"{"access_token":"abc"}"#);
+        let [
+            Command::ChangeSecrets {
+                id: change,
+                changes,
+            },
+        ] = commands.as_slice()
+        else {
+            panic!("nothing stored: {commands:?}");
+        };
+
+        assert_eq!(
+            changes,
+            &[SecretChange::Set(token_key(), Secret::new("abc"))]
+        );
+
+        let commands = update(
+            &mut state,
+            Action::SecretsChanged {
+                id: *change,
+                result: Ok(()),
+            },
+        );
+
+        assert!(matches!(
+            &commands[0],
+            Command::Store { change: Change::SaveVariables(vars), .. }
+                if vars.iter().any(|v| v.name.as_str() == "token" && v.secret)
+        ));
+
+        // the next step needs the new value, read from the store again
+        let Some(Command::LoadSecrets { id, keys }) = commands.last() else {
+            panic!("the token is not read: {commands:?}");
+        };
+
+        assert_eq!(keys, &[token_key()]);
+
+        let commands = update(
+            &mut state,
+            Action::SecretsLoaded {
+                id: *id,
+                values: vec![(token_key(), Some(Secret::new("abc")))],
+            },
+        );
+        let (id, me) = step_sent(&commands);
+
+        assert_eq!(
+            me.auth,
+            Auth::Bearer {
+                token: "abc".into()
+            }
+        );
+
+        // the last answer ends the run, and the tab saw none of it
+        assert_eq!(answer(&mut state, id, "{}"), Vec::new());
+        assert!(
+            state
+                .run
+                .as_ref()
+                .is_some_and(|r| r.finished() && r.error.is_none())
+        );
+        assert!(state.outcome.is_none());
+
+        update(&mut state, Action::ConfirmPopup);
+
+        assert!(state.popup.is_none());
+        assert_eq!(state.notice.as_deref(), Some("Log in is done"));
+    }
+
+    #[test]
+    fn a_login_that_inherits_its_own_token_is_stopped_with_the_fix() {
+        let mut state = loaded();
+
+        if let Some(Item::Request(login)) = state.collections[0].collection.items.get_mut(1) {
+            login.request.auth = Auth::Inherit;
+        }
+
+        assert_eq!(run(&mut state), Vec::new());
+
+        let error = state.run.as_ref().and_then(|r| r.error.clone()).unwrap();
+
+        assert!(
+            error.contains("{{token}}") && error.contains("auth none"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_step_may_use_a_value_it_replaces_once_it_has_one() {
+        let mut state = loaded();
+
+        // a refresh: the login sends the token it then replaces
+        if let Some(Item::Request(login)) = state.collections[0].collection.items.get_mut(1) {
+            login.request.auth = Auth::Inherit;
+        }
+
+        state.collections[0].collection.variables =
+            vec![Variable::secret(VarName::new("token").unwrap())];
+        state
+            .secret_values
+            .insert(token_key(), Some(Secret::new("old")));
+
+        let (id, login) = step_sent(&run(&mut state));
+
+        assert_eq!(
+            login.auth,
+            Auth::Bearer {
+                token: "old".into()
+            }
+        );
+
+        // the new value replaces the old one, in the same place
+        let commands = answer(&mut state, id, r#"{"access_token":"new"}"#);
+
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::ChangeSecrets { changes, .. }]
+                if *changes == [SecretChange::Set(token_key(), Secret::new("new"))]
+        ));
+    }
+
+    #[test]
+    fn a_failed_step_keeps_nothing_and_stops() {
+        let mut state = loaded();
+        let (id, _) = step_sent(&run(&mut state));
+        let mut unauthorized = super::response("{}");
+
+        unauthorized.status = 401;
+        unauthorized.status_line = "HTTP/1.1 401 Unauthorized".into();
+
+        let commands = update(
+            &mut state,
+            Action::StepAnswered {
+                id,
+                result: Box::new(Ok(unauthorized)),
+            },
+        );
+
+        assert_eq!(commands, Vec::new());
+        assert!(
+            state
+                .run
+                .as_ref()
+                .and_then(|r| r.error.as_deref())
+                .is_some_and(|e| e.contains("401"))
+        );
+
+        // a value the answer does not have stops it too
+        let mut state = loaded();
+        let (id, _) = step_sent(&run(&mut state));
+
+        assert_eq!(answer(&mut state, id, r#"{"other":1}"#), Vec::new());
+        assert!(
+            state
+                .run
+                .as_ref()
+                .and_then(|r| r.error.as_deref())
+                .is_some_and(|e| e.contains("$.access_token"))
+        );
+    }
+
+    #[test]
+    fn an_approval_in_the_middle_resumes_the_run() {
+        let mut state = loaded();
+        let (id, _) = step_sent(&run(&mut state));
+        let approval = Approval {
+            origin: "http://h:80".into(),
+            keys: vec![token_key()],
+        };
+
+        update(
+            &mut state,
+            Action::StepNeedsApproval {
+                id,
+                approval: Box::new(approval),
+            },
+        );
+
+        assert!(matches!(state.popup, Some(Popup::Approve(_))));
+        assert!(matches!(
+            press(&mut state, KeyCode::Char('y')).as_slice(),
+            [Command::Approve { .. }]
+        ));
+
+        let commands = update(&mut state, Action::Approved { id, result: Ok(()) });
+        let (_, again) = step_sent(&commands);
+
+        assert_eq!(again.url, "http://h/login");
+        assert!(matches!(state.popup, Some(Popup::Run)));
+
+        // Esc cancels the step on its way
+        assert_eq!(
+            update(&mut state, Action::ClosePopup),
+            [Command::CancelStep]
+        );
+        assert!(state.run.is_none());
+    }
+
+    #[test]
+    fn refusing_an_approval_stops_the_run() {
+        let mut state = loaded();
+        let (id, _) = step_sent(&run(&mut state));
+
+        update(
+            &mut state,
+            Action::StepNeedsApproval {
+                id,
+                approval: Box::new(Approval {
+                    origin: "http://h:80".into(),
+                    keys: vec![token_key()],
+                }),
+            },
+        );
+        press(&mut state, KeyCode::Char('n'));
+
+        assert!(matches!(state.popup, Some(Popup::Run)));
+        assert!(state.waiting.is_none());
+        assert!(state.run.as_ref().is_some_and(|r| r.error.is_some()));
+    }
+
+    #[test]
+    fn workflows_are_made_in_the_editor() {
+        let mut state = loaded();
+
+        state.collections[0].collection.workflows.clear();
+        state.focus = Focus::Sidebar;
+        press(&mut state, KeyCode::Char('w'));
+
+        assert!(matches!(state.popup, Some(Popup::Workflows { .. })));
+
+        // the only row makes a new one
+        press(&mut state, KeyCode::Enter);
+        type_text(&mut state, "Log in");
+        press(&mut state, KeyCode::Down);
+
+        // add a step: the list of requests opens, LIST is the first
+        press(&mut state, KeyCode::Enter);
+
+        let Some(Popup::WorkflowEditor(editor)) = &state.popup else {
+            panic!("no editor");
+        };
+
+        assert_eq!(editor.picking, Some((0, 0)));
+        assert_eq!(editor.requests[0].0, ["users", "list"]);
+
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+
+        // keep the token from the answer
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+        type_text(&mut state, "token");
+        press(&mut state, KeyCode::Tab);
+        type_text(&mut state, "$.access_token");
+
+        let commands = press_key(&mut state, ctrl('s'));
+
+        assert_eq!(
+            commands,
+            [Command::Store {
+                collection: c1(),
+                change: Change::SaveWorkflows(vec![Workflow {
+                    name: "Log in".into(),
+                    steps: vec![Step {
+                        request: vec!["create".into()],
+                        keep: vec![Capture {
+                            variable: VarName::new("token").unwrap(),
+                            from: Extract::Json("$.access_token".into()),
+                        }],
+                    }],
+                }]),
+            }]
+        );
+
+        // quitting with changes asks too
+        press(&mut state, KeyCode::Char('w'));
+        press(&mut state, KeyCode::Enter);
+        type_text(&mut state, "x");
+        update(&mut state, Action::Quit);
+
+        assert!(!state.should_quit);
+        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+
+        press(&mut state, KeyCode::Esc);
+
+        assert!(matches!(state.popup, Some(Popup::WorkflowEditor(_))));
+
+        press(&mut state, KeyCode::Esc);
+        press(&mut state, KeyCode::Enter);
+
+        // a click on the last row makes a new one, whatever is selected
+        state.collections[0].collection.workflows = vec![Workflow::default()];
+        press(&mut state, KeyCode::Char('w'));
+        update(&mut state, Action::Pick(1));
+
+        assert!(matches!(&state.popup, Some(Popup::WorkflowEditor(e)) if e.index.is_none()));
+
+        press(&mut state, KeyCode::Esc);
+        state.collections[0].collection.workflows.clear();
+
+        // leaving with changes asks first, and no brings the editor back
+        press(&mut state, KeyCode::Char('w'));
+        press(&mut state, KeyCode::Enter);
+        type_text(&mut state, "x");
+        press(&mut state, KeyCode::Esc);
+
+        assert!(matches!(state.popup, Some(Popup::Confirm { .. })));
+
+        press(&mut state, KeyCode::Esc);
+
+        assert!(matches!(state.popup, Some(Popup::WorkflowEditor(_))));
     }
 }

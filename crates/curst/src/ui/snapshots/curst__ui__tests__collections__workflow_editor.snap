@@ -1,0 +1,20 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 90, 16)"
+---
+"┏ Collections ━━━━━━━━━┓  GET new request           Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"┃▾ Pets                ┃┌ Method ─┐┌ URL ────────────────────────────────────────────────┐"
+"┃  ▸ Users             ┃│   GET   ││ https://example.com/api, then Enter to send         │"
+"┃  POST CREATE         ┃└─────────┘└─────────────────────────────────────────────────────┘"
+"┏ Workflow ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"┃ Name     Log in                                                                        ┃"
+"┃ 1  POST CREATE                                                                         ┃"
+"┃      token                ← $.access_token                                             ┃"
+"┃      + keep a value                                                                    ┃"
+"┃ 2  GET Users › LIST                                                                    ┃"
+"┃      + keep a value                                                                    ┃"
+"┃ + add a step                                                                           ┃"
+"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"┗━━━━━━━━━━━━━━━━━━━━━━┛└────────────────────────────────────────────────────────────────┘"
+" ↑↓ move  Enter choose  Ctrl+S save  Esc close                                            "
+" Ctrl+C quit                                                                              "

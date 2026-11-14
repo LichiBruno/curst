@@ -68,6 +68,10 @@ pub(crate) enum Pending {
 
     /// exporting a collection that holds plain-text credentials
     Export(LocalId, PathBuf),
+    DeleteWorkflow(LocalId, usize),
+
+    /// leaving a pop-up with changes, which comes back on no
+    Leave(Box<Popup>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,8 +341,23 @@ pub(crate) enum Popup {
     /// a new request's name and where it is saved
     SaveRequest(Box<super::save::SaveDialog>),
 
-    /// the settings of one collection
+    /// the settings of a collection, or of a folder for an inner key
     CollectionSettings {
+        target: NodeKey,
+        selected: usize,
+    },
+
+    /// the auth a collection or folder passes on, being edited
+    Auth(Box<super::collection::AuthDialog>),
+
+    /// the workflow running, or how it went
+    Run,
+
+    /// a workflow being made or changed
+    WorkflowEditor(Box<super::workflow_editor::WorkflowEditor>),
+
+    /// a collection's workflows, to run, edit or delete
+    Workflows {
         collection: LocalId,
         selected: usize,
     },
@@ -438,11 +457,11 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
         },
         Popup::Confirm { message, pending } => match action {
             Action::ConfirmPopup => return Ok(run_pending(state, pending)),
-            Action::ClosePopup => {
-                if let Pending::Quit(previous) = pending {
-                    state.popup = previous.map(|p| *p);
-                }
-            }
+            Action::ClosePopup => match pending {
+                Pending::Quit(previous) => state.popup = previous.map(|p| *p),
+                Pending::Leave(previous) => state.popup = Some(*previous),
+                _ => {}
+            },
             other => {
                 state.popup = Some(Popup::Confirm { message, pending });
 
@@ -473,10 +492,18 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
         } => return super::spec::choice_key(state, folder, specs, selected, action),
         Popup::Palette(palette) => return super::palette::apply(state, palette, action),
         Popup::SaveRequest(dialog) => return super::save::apply(state, dialog, action),
-        Popup::CollectionSettings {
+        Popup::CollectionSettings { target, selected } => {
+            return super::collection::apply(state, &target, selected, action);
+        }
+        Popup::Auth(dialog) => return super::collection::auth_key(state, dialog, action),
+        Popup::Run => return super::workflow::run_key(state, action),
+        Popup::Workflows {
             collection,
             selected,
-        } => return super::collection::apply(state, &collection, selected, action),
+        } => return super::workflow::list_key(state, collection, selected, action),
+        Popup::WorkflowEditor(editor) => {
+            return super::workflow_editor::apply(state, editor, action);
+        }
         Popup::Welcome { step, then } => {
             return super::preferences::welcome_key(state, step, then, action);
         }
@@ -607,6 +634,10 @@ fn run_pending(state: &mut State, pending: Pending) -> Vec<Command> {
         }],
         Pending::CloseTab => super::tabs::close_now(state),
         Pending::Export(collection, path) => vec![Command::ExportBundle { collection, path }],
+        Pending::DeleteWorkflow(collection, index) => {
+            super::workflow::delete(state, &collection, index)
+        }
+        Pending::Leave(_) => Vec::new(),
         Pending::Quit(_) => super::leave(state),
     }
 }
@@ -671,8 +702,8 @@ fn secret_popup(state: &mut State, popup: Popup, action: Action) -> Result<Vec<C
                 }]);
             }
             Action::ClosePopup => {
-                state.waiting = None;
                 state.notice = Some("not sent".into());
+                super::send::give_back(state);
             }
             other => {
                 state.popup = Some(Popup::Approve(approval));
@@ -784,6 +815,11 @@ fn paste(popup: &mut Popup, text: &str) {
         }
         Popup::Fill(fill) => {
             fill.input.insert_str(text);
+        }
+        Popup::WorkflowEditor(editor) => {
+            if let Some(field) = editor.field() {
+                field.insert_str(text);
+            }
         }
         Popup::SaveRequest(dialog) => {
             dialog.input.insert_str(text);

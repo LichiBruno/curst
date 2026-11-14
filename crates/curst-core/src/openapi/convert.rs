@@ -43,6 +43,10 @@ struct Building {
     variables: Vec<Variable>,
     warnings: Vec<String>,
     credentials: Vec<String>,
+
+    /// what the spec as a whole asks for, which the collection passes on
+    /// to operations that say nothing of their own
+    auth: Option<Auth>,
 }
 
 impl Building {
@@ -448,6 +452,21 @@ fn request(root: &Value, version: Version, op: &Located, building: &mut Building
         taken,
     } = secured(root, version, operation, label, building);
 
+    // an operation with its own requirement says exactly what it uses;
+    // one without inherits the spec's, set on the collection
+    let auth = if operation.get("security").is_some() {
+        match auth {
+            Auth::Inherit => Auth::None,
+            auth => auth,
+        }
+    } else {
+        if auth != Auth::Inherit {
+            building.auth.get_or_insert(auth);
+        }
+
+        Auth::Inherit
+    };
+
     for parameter in parameters(root, path_item, operation) {
         let (Some(name), Some(place)) = (
             parameter.get("name").and_then(Value::as_str),
@@ -669,6 +688,7 @@ pub fn convert(root: &Value, origin: Option<&str>) -> Result<Converted, SpecErro
         .into_iter()
         .map(|f| BundleItem::Folder {
             name: f.name,
+            auth: Auth::Inherit,
             items: f.items,
         })
         .collect();
@@ -681,6 +701,8 @@ pub fn convert(root: &Value, origin: Option<&str>) -> Result<Converted, SpecErro
             variables,
             environments,
             items,
+            auth: building.auth.unwrap_or_default(),
+            workflows: Vec::new(),
             warnings: building.warnings,
         },
         requests: count,

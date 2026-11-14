@@ -23,6 +23,24 @@ fn shop(library: &Library) -> Collection {
         .create_folder(std::slice::from_ref(&orders), "Archived")
         .unwrap();
 
+    dir.save_auth(
+        &[],
+        &Auth::Bearer {
+            token: "{{token}}".into(),
+        },
+    )
+    .unwrap();
+    dir.save_auth(std::slice::from_ref(&orders), &Auth::None)
+        .unwrap();
+    dir.save_workflows(&[crate::model::Workflow {
+        name: "Order".into(),
+        steps: vec![crate::model::Step {
+            request: vec![orders.clone(), "create-order".into()],
+            keep: vec![],
+        }],
+    }])
+    .unwrap();
+
     dir.create_request(
         std::slice::from_ref(&orders),
         "Create order",
@@ -101,6 +119,13 @@ fn a_collection_comes_back_from_its_bundle_as_a_new_one() {
     assert_eq!(imported.name, "Shop");
     assert_eq!(names(&imported), names(&original));
     assert_eq!(imported.items, original.items);
+    assert_eq!(imported.auth, original.auth);
+    assert_eq!(imported.workflows, original.workflows);
+    assert!(
+        text.contains("request = [\n    \"Orders\",\n    \"Create order\",\n]"),
+        "{text}"
+    );
+    assert!(matches!(&imported.items[0], Item::Folder(f) if f.auth == Auth::None));
     assert_eq!(imported.environments[0].name, "Staging");
     assert_eq!(
         imported.environments[0].variables,

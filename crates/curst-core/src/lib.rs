@@ -15,6 +15,7 @@ pub mod secrets;
 pub mod store;
 pub mod url;
 pub mod vars;
+pub mod workflow;
 
 #[cfg(test)]
 mod security_tests;

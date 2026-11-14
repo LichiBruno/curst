@@ -203,6 +203,9 @@ struct Runtime {
     results: Sender<Action>,
     inbox: Receiver<Action>,
     cancel: Option<Cancel>,
+
+    /// the workflow step on its way, apart from the tab's request
+    step_cancel: Option<Cancel>,
     workers: Vec<JoinHandle<()>>,
 
     /// the secrets thread's queue, and the thread
@@ -246,6 +249,7 @@ impl Runtime {
             results,
             inbox,
             cancel: None,
+            step_cancel: None,
             workers: Vec::new(),
             secret_jobs,
             secrets_thread,
@@ -544,6 +548,44 @@ impl Runtime {
     }
 
     /// sends a request on a worker, once its secrets pass the guard
+    /// sends a workflow step's request through the same checks as any
+    /// other, its answer going to the run, not a tab
+    fn send_step(&mut self, id: u64, request: Request, secrets: Vec<SecretKey>, state: &State) {
+        let cancel = Cancel::new();
+        let executor = Arc::clone(&self.executor);
+        let results = self.results.clone();
+        let index = self
+            .library
+            .as_ref()
+            .ok()
+            .map(|l| SecretIndex::new(l.paths().secrets_index_file()));
+        let untrusted = secrets.iter().any(|key| {
+            key.collection()
+                .is_some_and(|c| state.workspace(c).is_none_or(|w| !w.trusted))
+        });
+
+        self.step_cancel = Some(cancel.clone());
+        self.workers.retain(|worker| !worker.is_finished());
+        self.workers.push(thread::spawn(move || {
+            let action = match guard(index.as_ref(), &secrets, &request, untrusted) {
+                Ok(rule) => Action::StepAnswered {
+                    id,
+                    result: Box::new(executor.execute(&request, &cancel, &rule)),
+                },
+                Err(Stop::Refused(message)) => Action::StepAnswered {
+                    id,
+                    result: Box::new(Err(HttpError::Transfer(message))),
+                },
+                Err(Stop::Approve(approval)) => Action::StepNeedsApproval {
+                    id,
+                    approval: Box::new(approval),
+                },
+            };
+
+            let _ = results.send(action);
+        }));
+    }
+
     fn send(&mut self, id: u64, request: Request, secrets: Vec<SecretKey>, state: &State) {
         let cancel = Cancel::new();
         let executor = Arc::clone(&self.executor);
@@ -583,6 +625,16 @@ impl Runtime {
                 request,
                 secrets,
             } => self.send(id, request, secrets, state),
+            Command::SendStep {
+                id,
+                request,
+                secrets,
+            } => self.send_step(id, request, secrets, state),
+            Command::CancelStep => {
+                if let Some(cancel) = self.step_cancel.take() {
+                    cancel.cancel();
+                }
+            }
             Command::LoadSecrets { id, keys } => self.secret_job(Job::Load { id, keys }),
             Command::Unlock(passphrase) => self.secret_job(Job::Unlock(passphrase)),
             Command::ChooseBackend(backend) => self.secret_job(Job::Choose(backend)),

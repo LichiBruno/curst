@@ -1,0 +1,16 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 90, 12)"
+---
+"┏ Collections ━━━━━━━━━┓  GET new request           Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"┃▾ Pets                ┃┌ Method ─┐┌ URL ────────────────────────────────────────────────┐"
+"┃  ▸ Users             ┃│   GET   ││ https://example.com/api, then Enter to send         │"
+"┃  POST CREATE         ┃└─────────┘└─────────────────────────────────────────────────────┘"
+"┃        ┏ Auth of Pets ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓────────┐"
+"┃        ┃ Type        bearer token                                             ┃        │"
+"┃        ┃ Token       {{token}}                                                ┃────────┘"
+"┃        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛────────┐"
+"┃                      ┃│no response yet, type a URL and press Enter                     │"
+"┗━━━━━━━━━━━━━━━━━━━━━━┛└────────────────────────────────────────────────────────────────┘"
+" ↑↓ move  Enter save  Esc cancel                                                          "
+" Ctrl+C quit                                                                              "

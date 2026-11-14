@@ -9,14 +9,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::format::{
-    CollectionFile, EnvironmentFile, FolderFile, RequestFile, SourceFile, to_toml,
-    variables_from_file, variables_to_file,
+    AuthFile, CollectionFile, EnvironmentFile, FolderFile, RequestFile, SourceFile, WorkflowFile,
+    to_toml, variables_from_file, variables_to_file,
 };
 use super::fs::{Node, node, not_plain, read_regular, write_atomic};
 use super::{StoreError, ids, slug};
 use crate::model::{
-    Collection, EnvId, Environment, Folder, Item, Request, SavedRequest, Source, SpecOrigin,
-    Variable,
+    Auth, Collection, EnvId, Environment, Folder, Item, Request, SavedRequest, Source, SpecOrigin,
+    Variable, Workflow,
 };
 
 const COLLECTION_FILE: &str = "collection.toml";
@@ -102,6 +102,19 @@ pub trait CollectionStore: Send + Sync {
     /// # Errors
     /// when `collection.toml` cannot be read or written
     fn save_source(&self, source: Option<&Source>) -> Result<(), StoreError>;
+
+    /// sets the auth the collection, for an empty `path`, or the folder at
+    /// `path` passes on to its requests
+    ///
+    /// # Errors
+    /// when the folder does not exist or its file cannot be written
+    fn save_auth(&self, path: &[String], auth: &Auth) -> Result<(), StoreError>;
+
+    /// replaces the collection's workflows
+    ///
+    /// # Errors
+    /// when `collection.toml` cannot be read or written
+    fn save_workflows(&self, workflows: &[Workflow]) -> Result<(), StoreError>;
 
     /// overwrites the request at `path`, keeping its name
     ///
@@ -250,6 +263,8 @@ impl CollectionDir {
             order: Vec::new(),
             variables: Vec::new(),
             source: None,
+            auth: None,
+            workflows: Vec::new(),
         };
 
         write_atomic(&file, to_toml(&content).as_bytes())?;
@@ -381,6 +396,29 @@ impl CollectionDir {
         Ok(children.into_iter().map(|(name, _)| name).collect())
     }
 
+    /// points the workflow steps at `from`, or inside it, to `to`, after
+    /// a rename or a move
+    fn rebase_workflows(&self, from: &[String], to: &[String]) -> Result<(), StoreError> {
+        let path = self.root.join(COLLECTION_FILE);
+        let mut file: CollectionFile = read_file(&path)?;
+        let mut changed = false;
+
+        for step in file.workflows.iter_mut().flat_map(|w| w.steps.iter_mut()) {
+            if step.request.starts_with(from) {
+                let rest = step.request.split_off(from.len());
+
+                step.request = to.iter().cloned().chain(rest).collect();
+                changed = true;
+            }
+        }
+
+        if changed {
+            write_atomic(&path, to_toml(&file).as_bytes())?;
+        }
+
+        Ok(())
+    }
+
     fn folder_file(dir: &Path) -> Result<FolderFile, StoreError> {
         let path = dir.join(FOLDER_FILE);
 
@@ -389,6 +427,7 @@ impl CollectionDir {
             None => Ok(FolderFile {
                 name: dir_name(dir),
                 order: Vec::new(),
+                auth: None,
             }),
         }
     }
@@ -470,6 +509,7 @@ impl CollectionDir {
         Folder {
             slug: slug.to_owned(),
             name,
+            auth: AuthFile::into_auth(file.auth),
             items: Self::load_items(dir, false, &file.order, issues),
         }
     }
@@ -640,6 +680,17 @@ impl CollectionStore for CollectionDir {
             .collect();
         let items = Self::load_items(&self.root, true, &file.order, &mut issues);
         let environments = self.load_environments(&mut issues);
+        let mut workflows = Vec::new();
+
+        for workflow in file.workflows {
+            match workflow.into_workflow() {
+                Ok(workflow) => workflows.push(workflow),
+                Err(message) => issues.push(LoadIssue {
+                    path: path.clone(),
+                    message,
+                }),
+            }
+        }
 
         Ok(Loaded {
             collection: Collection {
@@ -648,6 +699,8 @@ impl CollectionStore for CollectionDir {
                 items,
                 environments,
                 source: file.source.map(Source::from),
+                auth: AuthFile::into_auth(file.auth),
+                workflows,
             },
             issues,
         })
@@ -731,6 +784,33 @@ impl CollectionStore for CollectionDir {
         write_atomic(&path, to_toml(&file).as_bytes())
     }
 
+    fn save_workflows(&self, workflows: &[Workflow]) -> Result<(), StoreError> {
+        let path = self.root.join(COLLECTION_FILE);
+        let mut file: CollectionFile = read_file(&path)?;
+
+        file.workflows = workflows.iter().map(WorkflowFile::of).collect();
+
+        write_atomic(&path, to_toml(&file).as_bytes())
+    }
+
+    fn save_auth(&self, path: &[String], auth: &Auth) -> Result<(), StoreError> {
+        if path.is_empty() {
+            let file_path = self.root.join(COLLECTION_FILE);
+            let mut file: CollectionFile = read_file(&file_path)?;
+
+            file.auth = AuthFile::of(auth);
+
+            return write_atomic(&file_path, to_toml(&file).as_bytes());
+        }
+
+        let dir = self.folder_dir(path)?;
+        let mut file = Self::folder_file(&dir)?;
+
+        file.auth = AuthFile::of(auth);
+
+        write_atomic(&dir.join(FOLDER_FILE), to_toml(&file).as_bytes())
+    }
+
     fn create_folder(&self, parent: &[String], name: &str) -> Result<String, StoreError> {
         let dir = self.folder_dir(parent)?;
         let mut order = self.order_of(parent)?;
@@ -739,6 +819,7 @@ impl CollectionStore for CollectionDir {
         let content = FolderFile {
             name: name.to_owned(),
             order: Vec::new(),
+            auth: None,
         };
 
         fs::create_dir(&folder).map_err(|e| StoreError::io(&folder, e))?;
@@ -788,6 +869,11 @@ impl CollectionStore for CollectionDir {
 
         self.write_order(parent, order)?;
 
+        let mut to = parent.to_vec();
+
+        to.push(slug.clone());
+        self.rebase_workflows(path, &to)?;
+
         Ok(slug)
     }
 
@@ -817,6 +903,11 @@ impl CollectionStore for CollectionDir {
         target_order.push(entry(item.kind, &slug));
         self.write_order(from, source_order)?;
         self.write_order(parent, target_order)?;
+
+        let mut to = parent.to_vec();
+
+        to.push(slug.clone());
+        self.rebase_workflows(path, &to)?;
 
         Ok(slug)
     }

@@ -257,6 +257,35 @@ fn transfer(library: &Library, collections: &[Workspace], command: Command) -> O
     }
 }
 
+/// keeps in the registry a choice this user made for a collection
+fn remember(library: &Library, workspace: &Workspace, command: Command) -> Option<Action> {
+    let registry = library.registry();
+    let result = match command {
+        Command::SetAutoSave { on, .. } => registry.set_auto_save(&workspace.root, on),
+        Command::SetActiveEnvironment { environment, .. } => {
+            registry.set_active_environment(&workspace.root, environment.as_ref())
+        }
+        _ => Ok(()),
+    };
+
+    result
+        .err()
+        .map(|e| Action::Notice(format!("could not remember that: {e}")))
+}
+
+/// records where the collection's spec is; a path is kept absolute, so it
+/// works wherever curst starts
+fn set_source(
+    dir: &CollectionDir,
+    mut source: curst_core::model::Source,
+) -> Result<(), StoreError> {
+    if !crate::app::is_url(&source.location) {
+        source.location = absolute(&source.location).display().to_string();
+    }
+
+    dir.save_source(Some(&source))
+}
+
 /// runs a store command, or returns `None` for one that is not about storage
 pub(crate) fn run(
     library: &Library,
@@ -294,26 +323,11 @@ pub(crate) fn run(
 
             Some(Action::GlobalsSaved(result))
         }
-        Command::SetAutoSave { collection, on } => {
-            let workspace = find(&collection)?;
+        Command::SetAutoSave { ref collection, .. }
+        | Command::SetActiveEnvironment { ref collection, .. } => {
+            let workspace = find(collection)?;
 
-            library
-                .registry()
-                .set_auto_save(&workspace.root, on)
-                .err()
-                .map(|e| Action::Notice(format!("could not remember auto save: {e}")))
-        }
-        Command::SetActiveEnvironment {
-            collection,
-            environment,
-        } => {
-            let workspace = find(&collection)?;
-
-            library
-                .registry()
-                .set_active_environment(&workspace.root, environment.as_ref())
-                .err()
-                .map(|e| Action::Notice(format!("could not remember the environment: {e}")))
+            remember(library, workspace, command)
         }
         Command::Trust {
             collection,
@@ -360,6 +374,8 @@ pub(crate) fn run(
                 .map(|err| Action::Notice(format!("settings not saved: {err}")))
         }
         Command::Send { .. }
+        | Command::SendStep { .. }
+        | Command::CancelStep
         | Command::Cancel
         | Command::SaveBody(_)
         | Command::LoadSecrets { .. }
@@ -492,14 +508,9 @@ fn store(library: &Library, workspace: &Workspace, change: Change) -> Result<Sto
         Change::ApplyRefresh { plan, choices } => {
             curst_core::openapi::refresh::apply(&dir, &workspace.collection, &plan, &choices)?;
         }
-        Change::SetSource(mut source) => {
-            // a path is kept absolute, so it works wherever curst starts
-            if !crate::app::is_url(&source.location) {
-                source.location = absolute(&source.location).display().to_string();
-            }
-
-            dir.save_source(Some(&source))?;
-        }
+        Change::SaveAuth { path, auth } => dir.save_auth(&path, &auth)?,
+        Change::SaveWorkflows(workflows) => dir.save_workflows(&workflows)?,
+        Change::SetSource(source) => set_source(&dir, source)?,
     }
 
     let loaded = dir.load()?;

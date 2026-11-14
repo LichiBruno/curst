@@ -297,6 +297,12 @@ pub(crate) fn ask_export_of(state: &mut State, collection: &LocalId) {
     ));
 }
 
+/// the id of the collection of the selected row, or the one the tab
+/// belongs to
+pub(crate) fn selected_collection(state: &State) -> Option<LocalId> {
+    selected_workspace(state).map(|w| w.id.clone())
+}
+
 /// the collection of the selected row, or the one the tab belongs to
 fn selected_workspace(state: &State) -> Option<&Workspace> {
     let id = state

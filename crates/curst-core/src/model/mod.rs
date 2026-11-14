@@ -6,8 +6,8 @@ use std::fmt;
 use std::str::FromStr;
 
 pub use collection::{
-    Collection, EnvId, Environment, Folder, Item, LocalId, SavedRequest, Source, SpecOrigin,
-    Variable,
+    Capture, Collection, EnvId, Environment, Extract, Folder, Item, LocalId, SavedRequest, Source,
+    SpecOrigin, Step, Variable, Workflow,
 };
 
 /// an HTTP method
@@ -176,8 +176,12 @@ impl Body {
 /// how a request authenticates
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Auth {
-    /// no authentication
+    /// what the folder or collection above says; a collection that says
+    /// nothing means none
     #[default]
+    Inherit,
+
+    /// no authentication
     None,
 
     /// HTTP basic authentication

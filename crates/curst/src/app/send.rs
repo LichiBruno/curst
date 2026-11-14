@@ -63,6 +63,8 @@ pub(super) fn send(state: &mut State) -> Vec<Command> {
         return Vec::new();
     }
 
+    let request = state.with_inherited_auth(request);
+
     send_request(state, request)
 }
 
@@ -302,6 +304,8 @@ fn retry(state: &mut State, id: Option<u64>) -> Vec<Command> {
     match state.waiting.take() {
         Some(waiting) if id.is_none_or(|id| id == waiting.id) => match waiting.then {
             Then::Send(request) => send_request(state, request),
+            Then::Workflow => super::workflow::step(state),
+            Then::Kept { changes, files } => super::workflow::store_values(state, changes, files),
             Then::Spec(job) => super::spec::run(state, job),
             Then::Save {
                 changes,
@@ -391,15 +395,22 @@ pub(super) fn changed(state: &mut State, id: u64, result: Result<(), String>) ->
 
             commands
         }
+        (Ok(()), Then::Kept { files, .. }) => super::workflow::kept(state, files),
+        (Err(message), Then::Kept { .. }) => super::workflow::not_kept(state, &message),
         (Err(message), _) => {
             state.quit_when_saved = false;
             state.notice = Some(format!("nothing was saved: {message}"));
 
             Vec::new()
         }
-        (Ok(()), Then::Send(_) | Then::Spec(_) | Then::Migrate { .. } | Then::Reveal { .. }) => {
-            Vec::new()
-        }
+        (
+            Ok(()),
+            Then::Send(_)
+            | Then::Workflow
+            | Then::Spec(_)
+            | Then::Migrate { .. }
+            | Then::Reveal { .. },
+        ) => Vec::new(),
     }
 }
 
@@ -561,12 +572,18 @@ pub(super) fn reveal(
 /// drops the work that was waiting; a variable editor waiting for a value
 /// comes back as it was
 pub(super) fn give_back(state: &mut State) {
-    if let Some(Waiting {
-        then: Then::Reveal { editor, .. },
-        ..
-    }) = state.waiting.take()
-    {
-        state.popup = Some(Popup::Variables(editor));
+    match state.waiting.take() {
+        Some(Waiting {
+            then: Then::Reveal { editor, .. },
+            ..
+        }) => state.popup = Some(Popup::Variables(editor)),
+        Some(Waiting {
+            then: Then::Workflow | Then::Kept { .. },
+            ..
+        }) => {
+            super::workflow::given_up(state);
+        }
+        _ => {}
     }
 }
 

@@ -1,0 +1,18 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 70, 14)"
+---
+"┏ Collections ━━━━━━━━━┓  GET new request                             "
+"┃▾ Pets                ┃┌ Method ─┐┌ URL ────────────────────────────┐"
+"┃  ▸ Users             ┃│   GET   ││ https://example.com/api, then En│"
+"┃  POST CREATE         ┃└─────────┘└─────────────────────────────────┘"
+"┏ Log in ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓"
+"┃   ✗ CREATE  → {{token}}                                            ┃"
+"┃   · LIST                                                           ┃"
+"┃                                                                    ┃"
+"┃ step 1: CREATE uses {{token}}, which this step sets: give it auth  ┃"
+"┃none or its own                                                     ┃"
+"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+"┗━━━━━━━━━━━━━━━━━━━━━━┛└────────────────────────────────────────────┘"
+" Esc close                                                            "
+" Ctrl+C quit                                                          "

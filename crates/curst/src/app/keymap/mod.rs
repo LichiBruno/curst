@@ -88,10 +88,31 @@ pub(crate) enum Layer {
 
     /// the settings of one collection
     CollectionSettings,
+
+    /// the auth of a collection or folder, on its type
+    AuthDialog,
+
+    /// the auth of a collection or folder, on a field
+    AuthTyping,
+
+    /// a workflow running
+    Run,
+
+    /// a collection's workflows
+    Workflows,
+
+    /// a workflow being made or changed
+    WorkflowEditor,
+
+    /// a field of a workflow being typed in
+    WorkflowTyping,
+
+    /// the requests to choose a workflow step's from
+    WorkflowPick,
 }
 
 impl Layer {
-    pub(crate) const ALL: [Self; 34] = [
+    pub(crate) const ALL: [Self; 41] = [
         Self::Always,
         Self::Global,
         Self::Panes,
@@ -126,6 +147,13 @@ impl Layer {
         Self::Review,
         Self::SaveRequest,
         Self::CollectionSettings,
+        Self::AuthDialog,
+        Self::AuthTyping,
+        Self::Run,
+        Self::Workflows,
+        Self::WorkflowEditor,
+        Self::WorkflowTyping,
+        Self::WorkflowPick,
     ];
 
     /// the name used in `config.toml`, as in `"sidebar.rename" = "r"`
@@ -165,6 +193,13 @@ impl Layer {
             Self::Review => "refresh-review",
             Self::SaveRequest => "save-request",
             Self::CollectionSettings => "collection-settings",
+            Self::AuthDialog => "auth",
+            Self::AuthTyping => "auth-typing",
+            Self::Run => "workflow-run",
+            Self::Workflows => "workflows",
+            Self::WorkflowEditor => "workflow-editor",
+            Self::WorkflowTyping => "workflow-typing",
+            Self::WorkflowPick => "workflow-pick",
         }
     }
 
@@ -204,7 +239,14 @@ impl Layer {
             Self::SaveQuestion => "the question whether to save",
             Self::Review => "the review of a refresh",
             Self::SaveRequest => "the save dialog",
-            Self::CollectionSettings => "the settings of a collection",
+            Self::CollectionSettings => "the settings of a collection or folder",
+            Self::AuthDialog => "the auth of a collection or folder",
+            Self::AuthTyping => "an auth field being edited",
+            Self::Run => "a workflow running",
+            Self::Workflows => "the workflows of a collection",
+            Self::WorkflowEditor => "a workflow being edited",
+            Self::WorkflowTyping => "a workflow field being edited",
+            Self::WorkflowPick => "the request of a workflow step",
         }
     }
 
@@ -299,6 +341,7 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         "refresh-spec" => Action::RefreshSpec,
         "spec-source" => Action::ChangeSource,
         "collection-settings" => Action::CollectionSettings,
+        "workflows" => Action::Workflows,
         "palette" => Action::Palette,
         "keys" => Action::NextKeys,
         "narrower" => Action::SidebarNarrower,
@@ -525,6 +568,13 @@ pub(crate) fn layers(state: &State) -> (Vec<Layer>, bool) {
             Popup::Review(_) => (L::Review, false),
             Popup::SaveRequest(dialog) => (L::SaveRequest, !dialog.picking),
             Popup::CollectionSettings { .. } => (L::CollectionSettings, false),
+            Popup::Auth(dialog) if dialog.row > 0 => (L::AuthTyping, true),
+            Popup::Auth(_) => (L::AuthDialog, false),
+            Popup::Run => (L::Run, false),
+            Popup::Workflows { .. } => (L::Workflows, false),
+            Popup::WorkflowEditor(editor) if editor.picking.is_some() => (L::WorkflowPick, false),
+            Popup::WorkflowEditor(editor) if editor.current().typing() => (L::WorkflowTyping, true),
+            Popup::WorkflowEditor(_) => (L::WorkflowEditor, false),
         };
 
         return (vec![L::Always, layer], text);

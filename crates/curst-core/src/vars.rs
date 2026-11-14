@@ -300,6 +300,7 @@ pub fn resolve_request(request: &Request, lookup: &impl Lookup) -> (Request, Res
         Body::Form(fields) => Body::Form(resolve_pairs(fields, lookup, out)),
     };
     let auth = match &request.auth {
+        Auth::Inherit => Auth::Inherit,
         Auth::None => Auth::None,
         Auth::Basic { username, password } => Auth::Basic {
             username: resolve(username, lookup, out),

@@ -690,3 +690,120 @@ fn the_source_of_a_collection_survives_its_settings() {
 
     assert_eq!(store.load().unwrap().collection.source, None);
 }
+
+#[test]
+fn folders_and_the_collection_keep_the_auth_they_pass_on() {
+    let (_dir, store) = new_collection();
+    let users = store.create_folder(&[], "Users").unwrap();
+    let bearer = Auth::Bearer {
+        token: "{{token}}".into(),
+    };
+
+    store
+        .create_request(&[], "Plain", &get("http://h/"))
+        .unwrap();
+    store
+        .create_request(
+            &[],
+            "Open",
+            &Request {
+                auth: Auth::None,
+                ..get("http://h/")
+            },
+        )
+        .unwrap();
+    store.save_auth(&[], &bearer).unwrap();
+    store
+        .save_auth(std::slice::from_ref(&users), &Auth::None)
+        .unwrap();
+
+    let collection = store.load().unwrap().collection;
+    let auth = |slug: &str| match collection.item(&path(&[slug])) {
+        Some(Item::Request(r)) => r.request.auth.clone(),
+        _ => panic!("no {slug}"),
+    };
+
+    // a request saying nothing inherits; one that says none keeps none
+    assert_eq!(auth("plain"), Auth::Inherit);
+    assert_eq!(auth("open"), Auth::None);
+    assert_eq!(collection.auth, bearer);
+    assert_eq!(
+        collection.inherited_auth(&[]),
+        (bearer.clone(), "Pets".into())
+    );
+    assert_eq!(
+        collection.inherited_auth(&path(&["users"])),
+        (Auth::None, "Users".into())
+    );
+
+    // a folder set back to inheriting passes on what is above it
+    store
+        .save_auth(std::slice::from_ref(&users), &Auth::Inherit)
+        .unwrap();
+
+    let collection = store.load().unwrap().collection;
+
+    assert_eq!(
+        collection.inherited_auth(&path(&["users"])),
+        (bearer, "Pets".into())
+    );
+
+    let text = std::fs::read_to_string(store.root().join("open.toml")).unwrap();
+
+    assert!(text.contains("kind = \"none\""), "{text}");
+}
+
+#[test]
+fn workflow_steps_follow_their_requests_through_renames_and_moves() {
+    use crate::model::{Capture, Extract, Step, Workflow};
+
+    let (_dir, store) = new_collection();
+    let auth = store.create_folder(&[], "Auth").unwrap();
+    let login = store
+        .create_request(std::slice::from_ref(&auth), "Login", &get("http://h/login"))
+        .unwrap();
+    let workflow = Workflow {
+        name: "Log in".into(),
+        steps: vec![Step {
+            request: vec![auth.clone(), login],
+            keep: vec![
+                Capture {
+                    variable: VarName::new("token").unwrap(),
+                    from: Extract::Json("$.access_token".into()),
+                },
+                Capture {
+                    variable: VarName::new("session").unwrap(),
+                    from: Extract::Header("X-Session".into()),
+                },
+            ],
+        }],
+    };
+
+    store
+        .save_workflows(std::slice::from_ref(&workflow))
+        .unwrap();
+
+    assert_eq!(
+        store.load().unwrap().collection.workflows,
+        std::slice::from_ref(&workflow)
+    );
+
+    let step = || {
+        store.load().unwrap().collection.workflows[0].steps[0]
+            .request
+            .clone()
+    };
+
+    // a renamed request, then a renamed folder, then a move to the top
+    let renamed = store.rename(&path(&["auth", "login"]), "Sign in").unwrap();
+
+    assert_eq!(step(), [auth.clone(), renamed.clone()]);
+
+    let folder = store.rename(&path(&["auth"]), "Session").unwrap();
+
+    assert_eq!(step(), [folder.clone(), renamed.clone()]);
+
+    let moved = store.move_item(&[folder, renamed], &[]).unwrap();
+
+    assert_eq!(step(), [moved]);
+}

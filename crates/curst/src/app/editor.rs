@@ -380,6 +380,7 @@ impl BodyEditor {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum AuthKind {
     #[default]
+    Inherit,
     None,
     Basic,
     Bearer,
@@ -388,14 +389,16 @@ pub(crate) enum AuthKind {
 impl AuthKind {
     pub(crate) fn next(self) -> Self {
         match self {
+            Self::Inherit => Self::None,
             Self::None => Self::Basic,
             Self::Basic => Self::Bearer,
-            Self::Bearer => Self::None,
+            Self::Bearer => Self::Inherit,
         }
     }
 
     pub(crate) fn label(self) -> &'static str {
         match self {
+            Self::Inherit => "inherit",
             Self::None => "none",
             Self::Basic => "basic",
             Self::Bearer => "bearer token",
@@ -404,7 +407,7 @@ impl AuthKind {
 
     pub(crate) fn field_count(self) -> usize {
         match self {
-            Self::None => 0,
+            Self::Inherit | Self::None => 0,
             Self::Basic => 2,
             Self::Bearer => 1,
         }
@@ -427,7 +430,7 @@ impl Default for AuthEditor {
         password.set_mask_char('•');
 
         Self {
-            kind: AuthKind::None,
+            kind: AuthKind::Inherit,
             username: single_line("", "user name"),
             password,
             token: single_line("", "token"),
@@ -442,7 +445,8 @@ impl AuthEditor {
         let mut editor = Self::default();
 
         match auth {
-            Auth::None => {}
+            Auth::Inherit => {}
+            Auth::None => editor.kind = AuthKind::None,
             Auth::Basic { username, password } => {
                 editor.kind = AuthKind::Basic;
                 editor.username = single_line(username, "user name");
@@ -460,6 +464,7 @@ impl AuthEditor {
 
     pub(crate) fn auth(&self) -> Auth {
         match self.kind {
+            AuthKind::Inherit => Auth::Inherit,
             AuthKind::None => Auth::None,
             AuthKind::Basic => Auth::Basic {
                 username: text_of(&self.username),
@@ -473,7 +478,7 @@ impl AuthEditor {
 
     pub(crate) fn fields(&self) -> Vec<(&'static str, &TextArea<'static>)> {
         match self.kind {
-            AuthKind::None => Vec::new(),
+            AuthKind::Inherit | AuthKind::None => Vec::new(),
             AuthKind::Basic => vec![("User name", &self.username), ("Password", &self.password)],
             AuthKind::Bearer => vec![("Token", &self.token)],
         }
@@ -671,8 +676,12 @@ mod tests {
     fn auth_kinds_build_the_model_auth() {
         let mut auth = AuthEditor::default();
 
-        assert_eq!(auth.auth(), Auth::None);
+        assert_eq!(auth.auth(), Auth::Inherit);
         assert!(auth.selected_field().is_none());
+
+        auth.cycle_kind();
+
+        assert_eq!(auth.auth(), Auth::None);
 
         auth.cycle_kind();
         auth.selected_field().unwrap().insert_str("me");

@@ -4,13 +4,13 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use curst_core::model::Request;
+use curst_core::model::{Auth, Request};
 use curst_core::secrets::detect;
 
 use super::{field, pane, tab_regions, tab_titles};
 use crate::app::{
     AuthKind, BodyField, BodyKind, Column, Field, Focus, Layer, RequestTab, RowCell, State, Table,
-    Target,
+    Target, display,
 };
 use crate::theme::Theme;
 
@@ -180,6 +180,20 @@ fn auth(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
         kind_area,
     );
 
+    if state.auth.kind == AuthKind::Inherit {
+        let text = match state.inherited_auth() {
+            Some((auth, from)) => format!("{} from {}", auth_label(&auth), display(&from)),
+            None => "none: the request is in no collection".into(),
+        };
+
+        frame.render_widget(
+            Paragraph::new(Span::styled(text, theme.muted)),
+            row_area(content, 0).unwrap_or(content),
+        );
+
+        return;
+    }
+
     if state.auth.kind == AuthKind::None {
         return;
     }
@@ -209,6 +223,16 @@ fn auth(state: &State, focused: bool, frame: &mut Frame, area: Rect) {
             label_area,
         );
         frame.render_widget(&*super::field(theme, field, None), field_area);
+    }
+}
+
+/// what an auth is, in a few words
+pub(super) fn auth_label(auth: &Auth) -> &'static str {
+    match auth {
+        Auth::Inherit => "inherit",
+        Auth::None => "none",
+        Auth::Basic { .. } => "basic",
+        Auth::Bearer { .. } => "bearer token",
     }
 }
 
