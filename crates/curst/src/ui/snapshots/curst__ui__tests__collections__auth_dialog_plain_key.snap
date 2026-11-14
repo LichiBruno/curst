@@ -1,0 +1,16 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 90, 12)"
+---
+"┏ Collections ━━━━━━━━━┓  GET new request           Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"┃▾ Pets                ┃┌ Method ─┐┌ URL ────────────────────────────────────────────────┐"
+"┃  ▸ Users             ┃│   GET   ││ https://example.com/api, then Enter to send         │"
+"┃  POST C┏ Auth of Pets ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓────────┘"
+"┃        ┃ Type        API key in a header                                      ┃────────┐"
+"┃        ┃ Header      X-Api-Key                                                ┃        │"
+"┃        ┃ Key         sk_live_0123456789abcdefghijklmn                         ┃────────┘"
+"┃        ┃ ⚠ this looks like a token (sk_live_…), saved as plain text           ┃────────┐"
+"┃        ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛        │"
+"┗━━━━━━━━━━━━━━━━━━━━━━┛└────────────────────────────────────────────────────────────────┘"
+" Space type  ↑↓ move  Enter save  Esc cancel                                              "
+" Ctrl+C quit                                                                              "

@@ -309,6 +309,11 @@ pub fn resolve_request(request: &Request, lookup: &impl Lookup) -> (Request, Res
         Auth::Bearer { token } => Auth::Bearer {
             token: resolve(token, lookup, out),
         },
+        Auth::ApiKey { name, value, place } => Auth::ApiKey {
+            name: resolve(name, lookup, out),
+            value: resolve(value, lookup, out),
+            place: *place,
+        },
     };
     let resolved = Request {
         method: request.method,

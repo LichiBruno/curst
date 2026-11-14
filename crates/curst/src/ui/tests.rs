@@ -314,6 +314,18 @@ mod collections {
 
         insta::assert_snapshot!("auth_dialog", render(&state, 90, 12));
 
+        // a key typed in as it is, not as a {{variable}}, is warned about
+        state.collections[0].collection.auth = curst_core::model::Auth::ApiKey {
+            name: "X-Api-Key".into(),
+            value: "sk_live_0123456789abcdefghijklmn".into(),
+            place: curst_core::model::KeyPlace::Header,
+        };
+        update(&mut state, Action::ClosePopup);
+        update(&mut state, Action::CollectionSettings);
+        update(&mut state, Action::ConfirmPopup);
+
+        insta::assert_snapshot!("auth_dialog_plain_key", render(&state, 90, 12));
+
         update(&mut state, Action::ClosePopup);
         state.sidebar.selected = Some(key(&["create"]));
         update(&mut state, Action::Edit);

@@ -1319,6 +1319,61 @@ mod tests {
     }
 
     #[test]
+    fn a_workflow_step_asks_before_its_secrets_go_and_answers_apart() {
+        use curst_core::secrets::{MemoryStore, Secret, Secrets};
+
+        let dir = tempfile::tempdir().unwrap();
+        let library = Library::new(Paths::under(dir.path()));
+        let index = SecretIndex::new(library.paths().secrets_index_file());
+        let token = SecretKey::Global {
+            name: curst_core::vars::VarName::new("token").unwrap(),
+        };
+
+        Secrets::new(index.clone(), Arc::new(MemoryStore::new()))
+            .set(&token, &Secret::new("t"))
+            .unwrap();
+
+        let mut runtime = Runtime::new(
+            Arc::new(web(vec![("https://api.example.com/login", "{}")])),
+            Ok(library),
+            Modes {
+                enhanced: false,
+                mouse: false,
+                paste: false,
+            },
+        );
+        let state = State::default();
+        let step = || Command::SendStep {
+            id: 7,
+            request: Request {
+                url: "https://api.example.com/login".into(),
+                ..Request::default()
+            },
+            secrets: vec![token.clone()],
+        };
+        let reply = |runtime: &Runtime| runtime.inbox.recv_timeout(Duration::from_secs(5)).unwrap();
+
+        // an origin not approved for the secret: the run is asked, nothing goes
+        runtime.execute(step(), &state);
+
+        assert!(matches!(
+            reply(&runtime),
+            Action::StepNeedsApproval { id: 7, .. }
+        ));
+
+        // once approved, the answer comes back to the run, not to a tab
+        index
+            .approve(std::slice::from_ref(&token), "https://api.example.com")
+            .unwrap();
+        runtime.execute(step(), &state);
+
+        assert!(matches!(
+            reply(&runtime),
+            Action::StepAnswered { id: 7, result } if result.as_ref().as_ref().is_ok_and(|r| r.status == 200)
+        ));
+    }
+
+    #[test]
     fn base64_is_what_osc_52_expects() {
         assert_eq!(base64(b""), "");
         assert_eq!(base64(b"f"), "Zg==");
