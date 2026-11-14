@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use curst_core::http::{
     Cancel, Config, CurlExecutor, HttpError, HttpExecutor, RedirectRule, Response,
 };
-use curst_core::model::{Auth, Body, KeyValue, Method, Request};
+use curst_core::model::{Auth, Body, KeyPlace, KeyValue, Method, Request};
 use httpmock::MockServer;
 
 fn send(request: &Request) -> Result<Response, HttpError> {
@@ -212,6 +212,82 @@ fn basic_and_bearer_auth() {
 
     basic.assert();
     bearer.assert();
+}
+
+#[test]
+fn an_api_key_goes_in_its_header_or_the_query() {
+    let server = MockServer::start();
+    let header = server.mock(|when, then| {
+        when.path("/h").header("x-api-key", "k1");
+        then.status(200);
+    });
+    let query = server.mock(|when, then| {
+        when.path("/q")
+            .query_param("api_key", "k2")
+            .query_param("page", "1");
+        then.status(200);
+    });
+
+    send(&Request {
+        auth: Auth::ApiKey {
+            name: "X-Api-Key".into(),
+            value: "k1".into(),
+            place: KeyPlace::Header,
+        },
+        ..get(http(&server, "/h"))
+    })
+    .unwrap();
+    send(&Request {
+        params: vec![KeyValue::new("page", "1")],
+        auth: Auth::ApiKey {
+            name: "api_key".into(),
+            value: "k2".into(),
+            place: KeyPlace::Query,
+        },
+        ..get(http(&server, "/q"))
+    })
+    .unwrap();
+
+    header.assert();
+    query.assert();
+}
+
+#[test]
+fn an_api_key_never_follows_a_redirect_elsewhere() {
+    let first = MockServer::start();
+    let other = MockServer::start();
+
+    first.mock(|when, then| {
+        when.path("/out");
+        then.status(307)
+            .header("location", http(&other, "/landing"));
+    });
+
+    let landing = other.mock(|when, then| {
+        when.path("/landing")
+            .header_missing("x-api-key")
+            .query_param_missing("api_key");
+        then.status(200);
+    });
+
+    for (name, place) in [
+        ("X-Api-Key", KeyPlace::Header),
+        ("api_key", KeyPlace::Query),
+    ] {
+        let response = send(&Request {
+            auth: Auth::ApiKey {
+                name: name.into(),
+                value: "k".into(),
+                place,
+            },
+            ..get(http(&first, "/out"))
+        })
+        .unwrap();
+
+        assert_eq!(response.status, 200);
+    }
+
+    landing.assert_calls(2);
 }
 
 #[test]

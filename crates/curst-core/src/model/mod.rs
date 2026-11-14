@@ -198,6 +198,30 @@ pub enum Auth {
         /// the token
         token: String,
     },
+
+    /// a key under a name of its own, such as `X-Api-Key`, in a header or
+    /// the query
+    ApiKey {
+        /// the header or parameter name
+        name: String,
+
+        /// the key
+        value: String,
+
+        /// where it goes
+        place: KeyPlace,
+    },
+}
+
+/// where an API key goes
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyPlace {
+    /// a request header
+    #[default]
+    Header,
+
+    /// a query parameter
+    Query,
 }
 
 /// an HTTP request as the user edits it

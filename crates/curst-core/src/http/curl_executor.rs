@@ -6,7 +6,7 @@ use super::{
     Cancel, Config, HttpError, HttpExecutor, RedirectRule, Response, ResponseBody, StoppedRedirect,
     Timings,
 };
-use crate::model::{Auth, Method, Request};
+use crate::model::{Auth, KeyPlace, KeyValue, Method, Request};
 use crate::url;
 
 const USER_AGENT: &str = concat!("curst/", env!("CARGO_PKG_VERSION"));
@@ -47,7 +47,7 @@ impl HttpExecutor for CurlExecutor {
         let start = url::origin(&request.full_url());
         let mut hop = Hop {
             method: request.method,
-            url: request.full_url(),
+            url: first_url(request),
             body: request.body.encode(),
             with_credentials: true,
         };
@@ -99,6 +99,26 @@ impl HttpExecutor for CurlExecutor {
             hop.with_credentials = hop.with_credentials && url::origin(&next) == start;
             hop.url = next;
         }
+    }
+}
+
+/// the URL the request starts at: an API key that goes in the query is
+/// added there, and only there, never to where a redirect points
+fn first_url(request: &Request) -> String {
+    match &request.auth {
+        Auth::ApiKey {
+            name,
+            value,
+            place: KeyPlace::Query,
+        } if !name.is_empty() => {
+            let mut keyed = request.clone();
+
+            keyed
+                .params
+                .push(KeyValue::new(name.clone(), value.clone()));
+            keyed.full_url()
+        }
+        _ => request.full_url(),
     }
 }
 
@@ -228,7 +248,12 @@ fn configure(
 
     match &request.auth {
         _ if !hop.with_credentials => {}
-        Auth::Inherit | Auth::None => {}
+        Auth::Inherit
+        | Auth::None
+        | Auth::ApiKey {
+            place: KeyPlace::Query,
+            ..
+        } => {}
         Auth::Basic { username, password } => {
             let mut auth = curl::easy::Auth::new();
 
@@ -240,6 +265,15 @@ fn configure(
         Auth::Bearer { token } => {
             if !has("authorization") {
                 headers.append(&format!("Authorization: Bearer {token}"))?;
+            }
+        }
+        Auth::ApiKey {
+            name,
+            value,
+            place: KeyPlace::Header,
+        } => {
+            if !name.is_empty() && !has(name) {
+                headers.append(&format!("{name}: {value}"))?;
             }
         }
     }

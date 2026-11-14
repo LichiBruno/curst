@@ -330,6 +330,7 @@ fn kind(auth: &Auth) -> &'static str {
         Auth::None => "no",
         Auth::Basic { .. } => "basic",
         Auth::Bearer { .. } => "bearer",
+        Auth::ApiKey { .. } => "API key",
     }
 }
 

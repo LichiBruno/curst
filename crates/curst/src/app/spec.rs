@@ -477,7 +477,7 @@ pub(crate) fn from_curl(
     let literal_auth = match &literal.auth {
         Auth::Basic { username, password } => Some(curl::basic_value(username, password)),
         Auth::Bearer { token } => Some(format!("Bearer {token}")),
-        Auth::Inherit | Auth::None => None,
+        Auth::Inherit | Auth::None | Auth::ApiKey { .. } => None,
     };
 
     for credential in imported.credentials {

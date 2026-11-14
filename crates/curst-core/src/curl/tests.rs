@@ -214,6 +214,28 @@ fn emitted_commands_keep_placeholders_and_never_read_files() {
 }
 
 #[test]
+fn an_api_key_is_copied_where_it_goes() {
+    let keyed = |place| Request {
+        url: "https://h/x".into(),
+        auth: Auth::ApiKey {
+            name: "X-Api-Key".into(),
+            value: "{{api_key}}".into(),
+            place,
+        },
+        ..Request::default()
+    };
+
+    assert_eq!(
+        emit(&keyed(KeyPlace::Header)),
+        "curl https://h/x \\\n  -H 'X-Api-Key: {{api_key}}'"
+    );
+    assert_eq!(
+        emit(&keyed(KeyPlace::Query)),
+        "curl 'https://h/x?X-Api-Key={{api_key}}'"
+    );
+}
+
+#[test]
 fn credentials_become_placeholders() {
     let command = "curl 'https://h/x?api_key=k123&page=1' -u ann:pw \
                    -H 'Cookie: sid=s3cr3t' -H 'X-Api-Key: xyz'";

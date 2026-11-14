@@ -115,6 +115,8 @@ impl State {
             show_cursor(&mut editor.username, row == 1);
             show_cursor(&mut editor.password, row == 2);
             show_cursor(&mut editor.token, row == 1);
+            show_cursor(&mut editor.key_name, row == 1);
+            show_cursor(&mut editor.key, row == 2);
         }
 
         show_cursor(
@@ -135,15 +137,18 @@ impl State {
 
         let typing = request && self.request_tab == RequestTab::Auth && self.auth.typing;
         let selected = self.auth.selected;
+        let key = matches!(self.auth.kind, AuthKind::KeyHeader | AuthKind::KeyQuery);
         let (username, password, token) = match self.auth.kind {
-            AuthKind::Inherit | AuthKind::None => (false, false, false),
             AuthKind::Basic => (selected == 0, selected == 1, false),
             AuthKind::Bearer => (false, false, selected == 0),
+            _ => (false, false, false),
         };
 
         show_cursor(&mut self.auth.username, typing && username);
         show_cursor(&mut self.auth.password, typing && password);
         show_cursor(&mut self.auth.token, typing && token);
+        show_cursor(&mut self.auth.key_name, typing && key && selected == 0);
+        show_cursor(&mut self.auth.key, typing && key && selected == 1);
     }
 }
 
@@ -324,9 +329,15 @@ fn flagged(state: &State) -> Option<(Place, String)> {
                 ..Request::default()
             };
 
+            // a key is named after its header or parameter, as api_key
+            let hint = match &request.auth {
+                Auth::ApiKey { name, .. } if !name.is_empty() => name.clone(),
+                _ => "token".to_owned(),
+            };
+
             detect::detect(&request).first().map(|f| match f.place {
                 Place::Password => (Place::Password, "password".to_owned()),
-                _ => (Place::Token, "token".to_owned()),
+                _ => (Place::Token, hint),
             })
         }
     }
@@ -359,6 +370,7 @@ fn value_at(state: &State, place: Place) -> Option<String> {
         },
         Place::Token => match state.auth.auth() {
             Auth::Bearer { token } => Some(token),
+            Auth::ApiKey { value, .. } => Some(value),
             _ => None,
         },
         Place::UrlUserInfo | Place::UrlQuery(_) => None,
@@ -384,7 +396,16 @@ fn put_at(state: &mut State, place: Place, text: String) {
                 });
             }
         }
-        Place::Token => state.auth = AuthEditor::from_auth(&Auth::Bearer { token: text }),
+        Place::Token => match state.auth.auth() {
+            Auth::ApiKey { name, place, .. } => {
+                state.auth = AuthEditor::from_auth(&Auth::ApiKey {
+                    name,
+                    value: text,
+                    place,
+                });
+            }
+            _ => state.auth = AuthEditor::from_auth(&Auth::Bearer { token: text }),
+        },
         Place::UrlUserInfo | Place::UrlQuery(_) => {}
     }
 }

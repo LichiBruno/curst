@@ -807,3 +807,45 @@ fn workflow_steps_follow_their_requests_through_renames_and_moves() {
 
     assert_eq!(step(), [moved]);
 }
+
+#[test]
+fn an_api_key_keeps_its_name_and_place() {
+    use crate::model::KeyPlace;
+
+    let (_dir, store) = new_collection();
+    let header = Auth::ApiKey {
+        name: "X-Api-Key".into(),
+        value: "{{api_key}}".into(),
+        place: KeyPlace::Header,
+    };
+    let query = Auth::ApiKey {
+        name: "key".into(),
+        value: "{{api_key}}".into(),
+        place: KeyPlace::Query,
+    };
+
+    store.save_auth(&[], &header).unwrap();
+    store
+        .create_request(
+            &[],
+            "Search",
+            &Request {
+                auth: query.clone(),
+                ..get("http://h/")
+            },
+        )
+        .unwrap();
+
+    let collection = store.load().unwrap().collection;
+
+    assert_eq!(collection.auth, header);
+    assert!(matches!(
+        collection.item(&path(&["search"])),
+        Some(Item::Request(r)) if r.request.auth == query
+    ));
+
+    let text = std::fs::read_to_string(store.root().join("search.toml")).unwrap();
+
+    assert!(text.contains("kind = \"api_key\""), "{text}");
+    assert!(text.contains("in = \"query\""), "{text}");
+}

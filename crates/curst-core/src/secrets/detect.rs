@@ -28,7 +28,7 @@ pub enum Place {
     /// the basic auth password
     Password,
 
-    /// the bearer token
+    /// the bearer token, or the API key
     Token,
 }
 
@@ -296,7 +296,17 @@ pub fn detect(request: &Request) -> Vec<Finding> {
                 Some(value_reason(token).unwrap_or(Reason::Bearer)),
             );
         }
-        Auth::Inherit | Auth::None | Auth::Basic { .. } | Auth::Bearer { .. } => {}
+        Auth::ApiKey { value, .. } if !holds_nothing(value) => {
+            found(
+                Place::Token,
+                Some(value_reason(value).unwrap_or(Reason::Bearer)),
+            );
+        }
+        Auth::Inherit
+        | Auth::None
+        | Auth::Basic { .. }
+        | Auth::Bearer { .. }
+        | Auth::ApiKey { .. } => {}
     }
 
     findings

@@ -715,13 +715,28 @@ fn auth_summary(state: &State, target: &NodeKey) -> String {
     )
 }
 
+/// a warning when `auth` holds a value typed in as it is, not as a
+/// `{{variable}}`, since it is written to the file that way
+fn plain_text(auth: &Auth) -> Option<String> {
+    let request = curst_core::model::Request {
+        auth: auth.clone(),
+        ..curst_core::model::Request::default()
+    };
+
+    curst_core::secrets::detect::detect(&request)
+        .first()
+        .map(|f| format!(" ⚠ {}, saved as plain text", f.reason.describe()))
+}
+
 /// the auth of a collection or folder: its type, then its fields
 fn auth_dialog(state: &State, dialog: &AuthDialog, frame: &mut Frame) {
     use super::request::auth_label;
 
     let theme = &state.theme;
     let fields = dialog.editor.fields();
-    let height = u16::try_from(fields.len() + 3).unwrap_or(5);
+
+    let warning = plain_text(&dialog.editor.auth());
+    let height = u16::try_from(fields.len() + 3 + usize::from(warning.is_some())).unwrap_or(5);
     let area = centered(frame, 72, height);
     let inner = area.inner(Margin::new(1, 1));
     let name = state
@@ -782,6 +797,21 @@ fn auth_dialog(state: &State, dialog: &AuthDialog, frame: &mut Frame) {
         Paragraph::new(Line::from(kind)),
         Rect { height: 1, ..inner },
     );
+
+    if let Some(warning) = warning {
+        let Ok(offset) = u16::try_from(fields.len() + 1) else {
+            return;
+        };
+
+        frame.render_widget(
+            Paragraph::new(Span::styled(warning, theme.warning)),
+            Rect {
+                y: inner.y + offset,
+                height: 1,
+                ..inner
+            },
+        );
+    }
 
     for (index, (label, input)) in fields.into_iter().enumerate() {
         let row = index + 1;

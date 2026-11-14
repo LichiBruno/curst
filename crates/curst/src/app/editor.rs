@@ -1,4 +1,4 @@
-use curst_core::model::{Auth, Body, KeyValue, Variable};
+use curst_core::model::{Auth, Body, KeyPlace, KeyValue, Variable};
 use curst_core::secrets::Secret;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::style::{Modifier, Style};
@@ -384,6 +384,8 @@ pub(crate) enum AuthKind {
     None,
     Basic,
     Bearer,
+    KeyHeader,
+    KeyQuery,
 }
 
 impl AuthKind {
@@ -392,7 +394,9 @@ impl AuthKind {
             Self::Inherit => Self::None,
             Self::None => Self::Basic,
             Self::Basic => Self::Bearer,
-            Self::Bearer => Self::Inherit,
+            Self::Bearer => Self::KeyHeader,
+            Self::KeyHeader => Self::KeyQuery,
+            Self::KeyQuery => Self::Inherit,
         }
     }
 
@@ -402,13 +406,15 @@ impl AuthKind {
             Self::None => "none",
             Self::Basic => "basic",
             Self::Bearer => "bearer token",
+            Self::KeyHeader => "API key in a header",
+            Self::KeyQuery => "API key in the query",
         }
     }
 
     pub(crate) fn field_count(self) -> usize {
         match self {
             Self::Inherit | Self::None => 0,
-            Self::Basic => 2,
+            Self::Basic | Self::KeyHeader | Self::KeyQuery => 2,
             Self::Bearer => 1,
         }
     }
@@ -420,6 +426,8 @@ pub(crate) struct AuthEditor {
     pub(crate) username: TextArea<'static>,
     pub(crate) password: TextArea<'static>,
     pub(crate) token: TextArea<'static>,
+    pub(crate) key_name: TextArea<'static>,
+    pub(crate) key: TextArea<'static>,
     pub(crate) selected: usize,
     pub(crate) typing: bool,
 }
@@ -434,6 +442,8 @@ impl Default for AuthEditor {
             username: single_line("", "user name"),
             password,
             token: single_line("", "token"),
+            key_name: single_line("", "X-Api-Key"),
+            key: single_line("", "key"),
             selected: 0,
             typing: false,
         }
@@ -457,6 +467,14 @@ impl AuthEditor {
                 editor.kind = AuthKind::Bearer;
                 editor.token = single_line(token, "token");
             }
+            Auth::ApiKey { name, value, place } => {
+                editor.kind = match place {
+                    KeyPlace::Header => AuthKind::KeyHeader,
+                    KeyPlace::Query => AuthKind::KeyQuery,
+                };
+                editor.key_name = single_line(name, "X-Api-Key");
+                editor.key = single_line(value, "key");
+            }
         }
 
         editor
@@ -473,6 +491,15 @@ impl AuthEditor {
             AuthKind::Bearer => Auth::Bearer {
                 token: text_of(&self.token),
             },
+            AuthKind::KeyHeader | AuthKind::KeyQuery => Auth::ApiKey {
+                name: text_of(&self.key_name).trim().to_owned(),
+                value: text_of(&self.key),
+                place: if self.kind == AuthKind::KeyQuery {
+                    KeyPlace::Query
+                } else {
+                    KeyPlace::Header
+                },
+            },
         }
     }
 
@@ -481,6 +508,8 @@ impl AuthEditor {
             AuthKind::Inherit | AuthKind::None => Vec::new(),
             AuthKind::Basic => vec![("User name", &self.username), ("Password", &self.password)],
             AuthKind::Bearer => vec![("Token", &self.token)],
+            AuthKind::KeyHeader => vec![("Header", &self.key_name), ("Key", &self.key)],
+            AuthKind::KeyQuery => vec![("Parameter", &self.key_name), ("Key", &self.key)],
         }
     }
 
@@ -489,6 +518,8 @@ impl AuthEditor {
             (AuthKind::Basic, 0) => Some(&mut self.username),
             (AuthKind::Basic, 1) => Some(&mut self.password),
             (AuthKind::Bearer, 0) => Some(&mut self.token),
+            (AuthKind::KeyHeader | AuthKind::KeyQuery, 0) => Some(&mut self.key_name),
+            (AuthKind::KeyHeader | AuthKind::KeyQuery, 1) => Some(&mut self.key),
             _ => None,
         }
     }

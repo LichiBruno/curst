@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    Auth, Body, Capture, EnvId, Extract, KeyValue, Method, Request, Source, SpecOrigin, Step,
-    Variable, Workflow,
+    Auth, Body, Capture, EnvId, Extract, KeyPlace, KeyValue, Method, Request, Source, SpecOrigin,
+    Step, Variable, Workflow,
 };
 use crate::vars::VarName;
 
@@ -86,6 +86,17 @@ pub(crate) enum AuthFile {
         #[serde(default)]
         token: String,
     },
+    #[serde(rename = "api_key")]
+    ApiKey {
+        name: String,
+
+        #[serde(default)]
+        value: String,
+
+        /// `header`, or `query`
+        #[serde(default, rename = "in", skip_serializing_if = "String::is_empty")]
+        place: String,
+    },
 }
 
 impl AuthFile {
@@ -102,6 +113,14 @@ impl AuthFile {
             Auth::Bearer { token } => Some(Self::Bearer {
                 token: token.clone(),
             }),
+            Auth::ApiKey { name, value, place } => Some(Self::ApiKey {
+                name: name.clone(),
+                value: value.clone(),
+                place: match place {
+                    KeyPlace::Header => String::new(),
+                    KeyPlace::Query => "query".into(),
+                },
+            }),
         }
     }
 
@@ -111,6 +130,15 @@ impl AuthFile {
             Some(Self::None) => Auth::None,
             Some(Self::Basic { username, password }) => Auth::Basic { username, password },
             Some(Self::Bearer { token }) => Auth::Bearer { token },
+            Some(Self::ApiKey { name, value, place }) => Auth::ApiKey {
+                name,
+                value,
+                place: if place.eq_ignore_ascii_case("query") {
+                    KeyPlace::Query
+                } else {
+                    KeyPlace::Header
+                },
+            },
         }
     }
 }

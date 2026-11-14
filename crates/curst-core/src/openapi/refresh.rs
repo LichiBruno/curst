@@ -218,6 +218,9 @@ pub fn request_lines(request: &Request) -> Vec<String> {
             lines.push(format!("auth basic {username} : {password}"));
         }
         Auth::Bearer { token } => lines.push(format!("auth bearer {token}")),
+        Auth::ApiKey { name, value, place } => {
+            lines.push(format!("auth api key {name} = {value} in {place:?}"));
+        }
     }
 
     match &request.body {

@@ -233,6 +233,7 @@ pub(super) fn auth_label(auth: &Auth) -> &'static str {
         Auth::None => "none",
         Auth::Basic { .. } => "basic",
         Auth::Bearer { .. } => "bearer token",
+        Auth::ApiKey { .. } => "API key",
     }
 }
 

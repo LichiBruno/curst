@@ -11,7 +11,7 @@ mod tests;
 
 pub use shell::{ShellError, quote, split};
 
-use crate::model::{Auth, Body, KeyValue, Method, Request, percent_encode};
+use crate::model::{Auth, Body, KeyPlace, KeyValue, Method, Request, percent_encode};
 use crate::secrets::Secret;
 use crate::secrets::detect::{self, Place};
 use crate::vars::VarName;
@@ -709,7 +709,18 @@ pub fn basic_value(username: &str, password: &str) -> String {
 /// `{{name}}`, so no secret value is ever in it
 #[must_use]
 pub fn emit(request: &Request) -> String {
-    let url = url_with_params(&request.url, &request.params);
+    let mut params = request.params.clone();
+
+    if let Auth::ApiKey {
+        name,
+        value,
+        place: KeyPlace::Query,
+    } = &request.auth
+    {
+        params.push(KeyValue::new(name.clone(), value.clone()));
+    }
+
+    let url = url_with_params(&request.url, &params);
     let mut parts = vec![format!("curl {}", quote(&url))];
     let has_body = request.body != Body::None;
 
@@ -731,7 +742,12 @@ pub fn emit(request: &Request) -> String {
     }
 
     match &request.auth {
-        Auth::Inherit | Auth::None => {}
+        Auth::Inherit
+        | Auth::None
+        | Auth::ApiKey {
+            place: KeyPlace::Query,
+            ..
+        } => {}
         Auth::Basic { username, password } => {
             parts.push(format!("-u {}", quote(&format!("{username}:{password}"))));
         }
@@ -741,6 +757,11 @@ pub fn emit(request: &Request) -> String {
                 quote(&format!("Authorization: Bearer {token}"))
             ));
         }
+        Auth::ApiKey {
+            name,
+            value,
+            place: KeyPlace::Header,
+        } => parts.push(format!("-H {}", quote(&format!("{name}: {value}")))),
     }
 
     // --data-raw, so a body starting with @ is never read as a file name

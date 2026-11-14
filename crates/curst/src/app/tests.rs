@@ -1040,12 +1040,15 @@ mod collections {
             }]
         );
 
-        // bearer, then inherit for a folder, but never for the collection
+        // bearer, the API keys, then inherit for a folder, but never for
+        // the collection
         state.sidebar.selected = Some(node(&["users"]));
         press(&mut state, KeyCode::Char('s'));
         press(&mut state, KeyCode::Enter);
-        press(&mut state, KeyCode::Char(' '));
-        press(&mut state, KeyCode::Char(' '));
+
+        for _ in 0..4 {
+            press(&mut state, KeyCode::Char(' '));
+        }
 
         assert!(matches!(&state.popup, Some(Popup::Auth(d)) if d.editor.kind == AuthKind::Inherit));
 
@@ -1054,7 +1057,7 @@ mod collections {
         press(&mut state, KeyCode::Char('s'));
         press(&mut state, KeyCode::Enter);
 
-        for _ in 0..3 {
+        for _ in 0..6 {
             press(&mut state, KeyCode::Char(' '));
 
             assert!(
