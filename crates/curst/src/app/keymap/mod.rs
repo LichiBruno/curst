@@ -342,6 +342,7 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         "spec-source" => Action::ChangeSource,
         "collection-settings" => Action::CollectionSettings,
         "workflows" => Action::Workflows,
+        "share-auth" => Action::ShareAuth,
         "palette" => Action::Palette,
         "keys" => Action::NextKeys,
         "narrower" => Action::SidebarNarrower,

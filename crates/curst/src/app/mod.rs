@@ -475,6 +475,10 @@ pub(crate) enum Action {
     /// the workflows of the selected collection
     Workflows,
 
+    /// the active request's auth becomes its collection's, for every
+    /// request to inherit
+    ShareAuth,
+
     /// runs a collection's workflow
     RunWorkflow {
         collection: LocalId,
@@ -769,6 +773,12 @@ pub(crate) enum Change {
 
     SaveWorkflows(Vec<curst_core::model::Workflow>),
 
+    /// every request inherits its auth from now on, the collection's set to
+    /// `auth` first when there is one
+    InheritAuth {
+        auth: Option<Auth>,
+    },
+
     /// the auth the collection, for an empty path, or a folder passes on
     SaveAuth {
         path: Vec<String>,
@@ -964,6 +974,7 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
 
     match action {
         Action::Quit => return quit(state),
+        Action::ShareAuth => collection::share_auth(state),
         Action::RunWorkflow { collection, index } => {
             return workflow::start(state, &collection, index);
         }

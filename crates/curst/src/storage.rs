@@ -273,6 +273,32 @@ fn remember(library: &Library, workspace: &Workspace, command: Command) -> Optio
         .map(|e| Action::Notice(format!("could not remember that: {e}")))
 }
 
+/// has every request inherit its auth, the collection's set to `auth` first
+fn inherit_auth(
+    dir: &CollectionDir,
+    collection: &curst_core::model::Collection,
+    auth: Option<curst_core::model::Auth>,
+) -> Result<(), StoreError> {
+    use curst_core::model::{Auth, Item};
+
+    if let Some(auth) = auth {
+        dir.save_auth(&[], &auth)?;
+    }
+
+    for path in collection.own_auth() {
+        if let Some(Item::Request(saved)) = collection.item(&path) {
+            let request = curst_core::model::Request {
+                auth: Auth::Inherit,
+                ..saved.request.clone()
+            };
+
+            dir.save_request(&path, &request)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// records where the collection's spec is; a path is kept absolute, so it
 /// works wherever curst starts
 fn set_source(
@@ -510,6 +536,7 @@ fn store(library: &Library, workspace: &Workspace, change: Change) -> Result<Sto
         }
         Change::SaveAuth { path, auth } => dir.save_auth(&path, &auth)?,
         Change::SaveWorkflows(workflows) => dir.save_workflows(&workflows)?,
+        Change::InheritAuth { auth } => inherit_auth(&dir, &workspace.collection, auth)?,
         Change::SetSource(source) => set_source(&dir, source)?,
     }
 
@@ -1281,6 +1308,43 @@ mod tests {
         .unwrap();
 
         assert!(pets.auto_save);
+    }
+
+    #[test]
+    fn every_request_comes_to_inherit_the_collection_auth() {
+        use curst_core::model::Auth;
+
+        let (_dir, library) = library();
+        let dir = library.create_collection("Pets").unwrap();
+        let own = Request {
+            url: "http://h/".into(),
+            auth: Auth::None,
+            ..Request::default()
+        };
+
+        dir.create_request(&[], "One", &own).unwrap();
+        dir.create_request(&[], "Two", &own).unwrap();
+
+        let (pets, _) = open(&library, &dir, true).unwrap();
+        let bearer = Auth::Bearer {
+            token: "{{api_key}}".into(),
+        };
+        let pets = change(
+            &library,
+            &pets,
+            Change::InheritAuth {
+                auth: Some(bearer.clone()),
+            },
+        )
+        .workspace
+        .unwrap();
+
+        assert_eq!(pets.collection.auth, bearer);
+        assert_eq!(pets.collection.own_auth(), Vec::<Vec<String>>::new());
+        assert!(matches!(
+            pets.collection.item(&["one".to_owned()]),
+            Some(Item::Request(r)) if r.request.url == "http://h/"
+        ));
     }
 
     #[test]

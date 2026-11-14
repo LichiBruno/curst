@@ -2,11 +2,11 @@
 //! inherit, and for a collection whether its edits are saved without
 //! asking, refreshing it from its spec, and exporting it
 
-use curst_core::model::{Auth, Item};
+use curst_core::model::{Auth, Item, LocalId};
 use ratatui_textarea::TextArea;
 
 use super::editor::{AuthEditor, AuthKind};
-use super::popup::Popup;
+use super::popup::{Pending, Popup};
 use super::workspace::NodeKey;
 use super::{Action, Change, Command, State};
 
@@ -14,6 +14,7 @@ use super::{Action, Change, Command, State};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Row {
     Auth,
+    InheritAll,
     Workflows,
     AutoSave,
     Refresh,
@@ -22,8 +23,9 @@ pub(crate) enum Row {
 }
 
 impl Row {
-    const COLLECTION: [Self; 6] = [
+    const COLLECTION: [Self; 7] = [
         Self::Auth,
+        Self::InheritAll,
         Self::Workflows,
         Self::AutoSave,
         Self::Refresh,
@@ -144,6 +146,11 @@ fn act(state: &mut State, target: &NodeKey, index: usize) -> Vec<Command> {
     match Row::of(target)[index] {
         Row::Auth => {
             open_auth(state, target);
+
+            Vec::new()
+        }
+        Row::InheritAll => {
+            ask_inherit(state, collection, None);
 
             Vec::new()
         }
@@ -279,4 +286,107 @@ pub(crate) fn auth_key(
     state.popup = Some(Popup::Auth(dialog));
 
     Ok(Vec::new())
+}
+
+/// asks before every request of `collection` drops its own auth to
+/// inherit, from `auth` when it is to become the collection's
+fn ask_inherit(state: &mut State, collection: &LocalId, auth: Option<Auth>) {
+    let Some(workspace) = state.workspace(collection) else {
+        return;
+    };
+
+    let own = workspace.collection.own_auth().len();
+    let name = &workspace.collection.name;
+    let message = match (&auth, own) {
+        (None, 0) => {
+            state.notice = Some(format!("every request in {name} inherits already"));
+
+            return;
+        }
+        (None, n) => format!(
+            "Make {n} {} in {name} inherit the collection's auth? Their own auth is dropped.",
+            requests(n)
+        ),
+        (Some(auth), n) => format!(
+            "Use this {} auth for all of {name}? {n} {} drop their own auth and inherit it.",
+            kind(auth),
+            requests(n)
+        ),
+    };
+
+    state.popup = Some(Popup::confirm(
+        message,
+        Pending::InheritAuth(collection.clone(), auth),
+    ));
+}
+
+fn requests(n: usize) -> &'static str {
+    if n == 1 { "request" } else { "requests" }
+}
+
+fn kind(auth: &Auth) -> &'static str {
+    match auth {
+        Auth::Inherit => "inherited",
+        Auth::None => "no",
+        Auth::Basic { .. } => "basic",
+        Auth::Bearer { .. } => "bearer",
+    }
+}
+
+/// the active request's auth becomes its collection's, and every request
+/// inherits it
+pub(crate) fn share_auth(state: &mut State) {
+    let auth = state.auth.auth();
+    let Some(collection) = state
+        .current_workspace()
+        .filter(|w| w.trusted)
+        .map(|w| w.id.clone())
+    else {
+        state.notice = Some("the request is in no collection you trust".into());
+
+        return;
+    };
+
+    if auth == Auth::Inherit {
+        state.notice = Some("the request inherits already: give it an auth to share".into());
+
+        return;
+    }
+
+    ask_inherit(state, &collection, Some(auth));
+}
+
+/// every request of `collection` inherits from now on; tabs that show
+/// a request's old auth unchanged show it inheriting, so none counts as
+/// edited for it
+pub(crate) fn inherit_everywhere(
+    state: &mut State,
+    collection: LocalId,
+    auth: Option<Auth>,
+) -> Vec<Command> {
+    let shared = auth.clone();
+    let tab = |open: Option<&mut super::OpenRequest>, editor: &mut AuthEditor| {
+        let Some(open) = open.filter(|o| o.key.collection == collection) else {
+            return;
+        };
+
+        let before = editor.auth();
+
+        if before == open.baseline.auth || Some(&before) == shared.as_ref() {
+            *editor = AuthEditor::from_auth(&Auth::Inherit);
+        }
+
+        open.baseline.auth = Auth::Inherit;
+    };
+
+    tab(state.open.as_mut(), &mut state.auth);
+
+    for parked in &mut state.others {
+        tab(parked.open.as_mut(), &mut parked.auth);
+    }
+
+    vec![Command::Store {
+        collection,
+        change: Change::InheritAuth { auth },
+    }]
 }

@@ -805,6 +805,7 @@ mod collections {
 
         press(&mut state, KeyCode::Down);
         press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Down);
 
         let commands = press(&mut state, KeyCode::Enter);
 
@@ -838,7 +839,7 @@ mod collections {
         let mut state = with_collection();
 
         press(&mut state, KeyCode::Char('s'));
-        update(&mut state, Action::Pick(3));
+        update(&mut state, Action::Pick(4));
 
         // the sample was not imported from a spec
         assert!(state.popup.is_none());
@@ -850,7 +851,7 @@ mod collections {
         );
 
         press(&mut state, KeyCode::Char('s'));
-        update(&mut state, Action::Pick(5));
+        update(&mut state, Action::Pick(6));
 
         assert!(matches!(
             &state.popup,
@@ -859,7 +860,7 @@ mod collections {
 
         press(&mut state, KeyCode::Esc);
         press(&mut state, KeyCode::Char('s'));
-        update(&mut state, Action::Pick(4));
+        update(&mut state, Action::Pick(5));
 
         assert!(matches!(
             state.popup,
@@ -933,6 +934,69 @@ mod collections {
         state.auth = AuthEditor::from_auth(&Auth::None);
 
         assert_eq!(state.with_inherited_auth(state.request()).auth, Auth::None);
+    }
+
+    #[test]
+    fn a_request_shares_its_auth_with_the_whole_collection() {
+        let mut state = with_collection();
+
+        // as after an import: every request sets its own
+        for item in &mut state.collections[0].collection.items {
+            match item {
+                curst_core::model::Item::Request(r) => r.request.auth = Auth::None,
+                curst_core::model::Item::Folder(f) => {
+                    if let Some(curst_core::model::Item::Request(r)) = f.items.first_mut() {
+                        r.request.auth = Auth::None;
+                    }
+                }
+            }
+        }
+
+        open_create(&mut state);
+        state.auth = AuthEditor::from_auth(&Auth::Bearer {
+            token: "{{api_key}}".into(),
+        });
+        state.focus = Focus::Request;
+        state.request_tab = RequestTab::Auth;
+        press(&mut state, KeyCode::Char('A'));
+
+        assert!(matches!(
+            &state.popup,
+            Some(Popup::Confirm { message, .. }) if message.contains("2 requests")
+        ));
+
+        let commands = press(&mut state, KeyCode::Enter);
+
+        assert_eq!(
+            commands,
+            [Command::Store {
+                collection: LocalId::new("c1").unwrap(),
+                change: Change::InheritAuth {
+                    auth: Some(Auth::Bearer {
+                        token: "{{api_key}}".into()
+                    }),
+                },
+            }]
+        );
+
+        // the request now inherits, and nothing counts as edited
+        assert_eq!(state.auth.kind, AuthKind::Inherit);
+        assert!(!state.is_dirty());
+
+        // the settings row does the same, keeping the collection's auth
+        state.sidebar.selected = Some(node(&[]));
+        state.focus = Focus::Sidebar;
+        press(&mut state, KeyCode::Char('s'));
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+
+        assert_eq!(
+            press(&mut state, KeyCode::Enter),
+            [Command::Store {
+                collection: LocalId::new("c1").unwrap(),
+                change: Change::InheritAuth { auth: None },
+            }]
+        );
     }
 
     #[test]

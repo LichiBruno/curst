@@ -72,6 +72,9 @@ pub(crate) enum Pending {
 
     /// leaving a pop-up with changes, which comes back on no
     Leave(Box<Popup>),
+
+    /// every request of a collection inheriting, from this auth when given
+    InheritAuth(LocalId, Option<curst_core::model::Auth>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -638,6 +641,9 @@ fn run_pending(state: &mut State, pending: Pending) -> Vec<Command> {
             super::workflow::delete(state, &collection, index)
         }
         Pending::Leave(_) => Vec::new(),
+        Pending::InheritAuth(collection, auth) => {
+            super::collection::inherit_everywhere(state, collection, auth)
+        }
         Pending::Quit(_) => super::leave(state),
     }
 }
