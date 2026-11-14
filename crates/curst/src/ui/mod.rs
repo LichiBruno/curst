@@ -474,7 +474,8 @@ pub(crate) fn hints(state: &State) -> Vec<Hint> {
                 .one("new-collection", "collection")
                 .one("rename", "rename")
                 .one("delete", "delete")
-                .pair("cut", "paste", "move");
+                .pair("cut", "paste", "move")
+                .one("collection-settings", "collection settings");
         }
         Focus::Url => {
             hints.one("send", "send").one("focus.next", "next");

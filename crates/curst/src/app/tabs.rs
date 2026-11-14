@@ -60,19 +60,22 @@ impl Default for Parked {
 }
 
 impl Parked {
-    fn is_dirty(&self) -> bool {
-        let request = Request {
+    /// the request the tab's editors hold
+    pub(crate) fn request(&self) -> Request {
+        Request {
             method: self.method,
             url: super::editor::text_of(&self.url).trim().to_owned(),
             params: self.params.pairs(),
             headers: self.headers.pairs(),
             body: self.body.body(),
             auth: self.auth.auth(),
-        };
+        }
+    }
 
+    fn is_dirty(&self) -> bool {
         self.open
             .as_ref()
-            .is_some_and(|open| request != open.baseline)
+            .is_some_and(|open| self.request() != open.baseline)
     }
 }
 
@@ -133,9 +136,18 @@ impl State {
         self.others.len() + 1
     }
 
-    /// whether any tab, the active one or another, has unsaved changes
-    pub(crate) fn any_dirty(&self) -> bool {
-        self.is_dirty() || self.others.iter().any(Parked::is_dirty)
+    /// whether any tab has edits that quitting would lose: unsaved, in a
+    /// collection that does not save them without asking
+    pub(crate) fn loses_edits(&self) -> bool {
+        let saves = |open: Option<&OpenRequest>| {
+            open.is_some_and(|open| super::autosave::auto_saves(self, &open.key))
+        };
+
+        (self.is_dirty() && !saves(self.open.as_ref()))
+            || self
+                .others
+                .iter()
+                .any(|tab| tab.is_dirty() && !saves(tab.open.as_ref()))
     }
 
     /// whether the active tab holds nothing worth keeping: never saved,
@@ -253,6 +265,19 @@ pub(crate) fn new_tab(state: &mut State) {
 
 /// closes the active tab, asking first when it has unsaved changes
 pub(crate) fn close(state: &mut State) -> Vec<Command> {
+    let saves = state
+        .open
+        .as_ref()
+        .is_some_and(|open| super::autosave::auto_saves(state, &open.key));
+
+    // edits a collection saves without asking are saved, not asked about;
+    // the tab closes once the save is done, and stays when it fails
+    if state.is_dirty() && saves {
+        state.close_after_save = state.open.as_ref().map(|o| o.key.clone());
+
+        return super::autosave::flush(state);
+    }
+
     if state.is_dirty() {
         let name = state
             .open

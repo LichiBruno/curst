@@ -719,7 +719,7 @@ mod collections {
         assert!(state.popup.is_none());
         assert_eq!(state.open.as_ref().map(|o| o.name.as_str()), Some("LIST"));
         assert_eq!(state.tab_count(), 2);
-        assert!(state.any_dirty());
+        assert!(state.loses_edits());
 
         // quitting asks while any tab has changes
         press(&mut state, KeyCode::Char('q'));
@@ -742,7 +742,7 @@ mod collections {
 
         assert_eq!(state.tab_count(), 1);
         assert_eq!(state.open.as_ref().map(|o| o.name.as_str()), Some("LIST"));
-        assert!(!state.any_dirty());
+        assert!(!state.loses_edits());
     }
 
     #[test]
@@ -757,6 +757,310 @@ mod collections {
         assert!(!state.should_quit);
 
         press_key(&mut state, ctrl('c'));
+
+        assert!(state.should_quit);
+    }
+
+    /// the sample collection with its edits saved without asking, and
+    /// CREATE open with an edit
+    fn auto_saving() -> State {
+        let mut state = with_collection();
+
+        state.collections[0].auto_save = true;
+        open_create(&mut state);
+        state.focus = Focus::Url;
+        type_text(&mut state, "http://changed/");
+
+        state
+    }
+
+    fn quiet_save(commands: &[Command]) -> Option<&Request> {
+        match commands {
+            [
+                Command::Store {
+                    change:
+                        Change::SaveRequest {
+                            request,
+                            quiet: true,
+                            ..
+                        },
+                    ..
+                },
+            ] => Some(request),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn collection_settings_turn_auto_save_on_and_off() {
+        let mut state = with_collection();
+
+        press(&mut state, KeyCode::Char('s'));
+
+        assert!(matches!(
+            state.popup,
+            Some(Popup::CollectionSettings { selected: 0, .. })
+        ));
+
+        let commands = press(&mut state, KeyCode::Enter);
+
+        assert_eq!(
+            commands,
+            [Command::SetAutoSave {
+                collection: LocalId::new("c1").unwrap(),
+                on: true,
+            }]
+        );
+        assert!(state.collections[0].auto_save);
+        assert!(matches!(
+            state.popup,
+            Some(Popup::CollectionSettings { .. })
+        ));
+
+        press(&mut state, KeyCode::Char(' '));
+
+        assert!(!state.collections[0].auto_save);
+
+        // an untrusted collection is written to only when the user says so
+        state.collections[0].trusted = false;
+
+        assert_eq!(press(&mut state, KeyCode::Enter), Vec::new());
+        assert!(!state.collections[0].auto_save);
+        assert!(state.notice.as_deref().is_some_and(|n| n.contains("trust")));
+    }
+
+    #[test]
+    fn collection_settings_export_and_refresh_that_collection() {
+        let mut state = with_collection();
+
+        press(&mut state, KeyCode::Char('s'));
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+
+        // the sample was not imported from a spec
+        assert!(state.popup.is_none());
+        assert!(
+            state
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("not imported from a spec"))
+        );
+
+        press(&mut state, KeyCode::Char('s'));
+        update(&mut state, Action::Pick(3));
+
+        assert!(matches!(
+            &state.popup,
+            Some(Popup::Prompt { purpose: Purpose::ExportBundle(id), .. }) if id.as_str() == "c1"
+        ));
+
+        press(&mut state, KeyCode::Esc);
+        press(&mut state, KeyCode::Char('s'));
+        update(&mut state, Action::Pick(2));
+
+        assert!(matches!(
+            state.popup,
+            Some(Popup::Prompt {
+                purpose: Purpose::ChangeSource(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_pause_saves_edits_quietly_once() {
+        let mut state = auto_saving();
+        let commands = update(&mut state, Action::Idle);
+
+        assert_eq!(
+            quiet_save(&commands).map(|r| r.url.as_str()),
+            Some("http://changed/")
+        );
+
+        // the same content is not tried again, such as after a failed save
+        assert_eq!(update(&mut state, Action::Idle), Vec::new());
+
+        let written = state.request();
+
+        let workspace = state.collections[0].clone();
+
+        stored(
+            &mut state,
+            Stored {
+                workspace: Some(workspace),
+                saved: Some((node(&["create"]), written)),
+                quiet: true,
+                ..Stored::default()
+            },
+        );
+
+        assert!(!state.is_dirty());
+        assert_eq!(state.notice, None);
+
+        // a collection that does not want it is left alone
+        state.collections[0].auto_save = false;
+        type_text(&mut state, "x");
+
+        assert_eq!(update(&mut state, Action::Idle), Vec::new());
+    }
+
+    #[test]
+    fn a_pause_keeps_chords_cells_and_pop_ups_as_they_are() {
+        let mut state = auto_saving();
+
+        // a pop-up open: nothing is saved under it
+        press_key(&mut state, ctrl('e'));
+
+        assert!(state.popup.is_some());
+        assert_eq!(update(&mut state, Action::Idle), Vec::new());
+        assert!(state.popup.is_some());
+
+        press(&mut state, KeyCode::Esc);
+
+        // a key sequence half typed stays half typed
+        state.pending_keys.push(key(KeyCode::Char('g')));
+
+        assert!(quiet_save(&update(&mut state, Action::Idle)).is_some());
+        assert_eq!(state.pending_keys.len(), 1);
+
+        // a cell being edited stays open
+        state.pending_keys.clear();
+        state.focus = Focus::Request;
+        state.request_tab = RequestTab::Headers;
+        press(&mut state, KeyCode::Char('a'));
+        type_text(&mut state, "X-Id");
+        update(&mut state, Action::Idle);
+
+        assert!(state.editing_column().is_some());
+    }
+
+    #[test]
+    fn a_pause_saves_a_tab_left_with_edits() {
+        let mut state = auto_saving();
+
+        // another request opens in its own tab, CREATE waits with its edit
+        state.focus = Focus::Sidebar;
+        state.sidebar.selected = Some(node(&["users"]));
+        press(&mut state, KeyCode::Right);
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+
+        let commands = update(&mut state, Action::Idle);
+
+        assert!(matches!(
+            commands.as_slice(),
+            [Command::Store {
+                change: Change::SaveRequest { path, quiet: true, .. },
+                ..
+            }] if path == &["create"]
+        ));
+    }
+
+    #[test]
+    fn a_save_reply_finds_its_tab_after_a_switch() {
+        let mut state = auto_saving();
+        let commands = update(&mut state, Action::Idle);
+        let written = quiet_save(&commands).cloned().unwrap();
+
+        // another request opens in its own tab before the reply comes
+        state.focus = Focus::Sidebar;
+        state.sidebar.selected = Some(node(&["users"]));
+        press(&mut state, KeyCode::Right);
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+
+        assert_eq!(state.open.as_ref().map(|o| o.name.as_str()), Some("LIST"));
+
+        let workspace = state.collections[0].clone();
+
+        stored(
+            &mut state,
+            Stored {
+                workspace: Some(workspace),
+                saved: Some((node(&["create"]), written)),
+                quiet: true,
+                ..Stored::default()
+            },
+        );
+
+        assert_eq!(
+            state.open.as_ref().map(|o| o.key.clone()),
+            Some(node(&["users", "list"]))
+        );
+        assert!(!state.loses_edits());
+        assert_eq!(state.unsaved_keys(), Vec::new());
+    }
+
+    #[test]
+    fn closing_or_quitting_saves_instead_of_asking() {
+        let mut state = auto_saving();
+        let commands = press_key(&mut state, ctrl('w'));
+        let written = quiet_save(&commands).cloned().unwrap();
+
+        // the tab waits for its save, and stays when the save fails
+        assert!(state.popup.is_none());
+        assert_eq!(state.open.as_ref().map(|o| o.name.as_str()), Some("CREATE"));
+
+        update(
+            &mut state,
+            Action::Stored {
+                collection: LocalId::new("c1").unwrap(),
+                result: Err("read-only".into()),
+            },
+        );
+
+        assert!(state.is_dirty());
+        assert_eq!(state.close_after_save, None);
+
+        press_key(&mut state, ctrl('w'));
+
+        let workspace = state.collections[0].clone();
+
+        stored(
+            &mut state,
+            Stored {
+                workspace: Some(workspace),
+                saved: Some((node(&["create"]), written)),
+                quiet: true,
+                ..Stored::default()
+            },
+        );
+
+        assert!(state.open.is_none());
+
+        let mut state = auto_saving();
+        let commands = update(&mut state, Action::Quit);
+
+        assert!(state.popup.is_none());
+        assert!(!state.should_quit);
+
+        let written = quiet_save(&commands).cloned().unwrap();
+
+        // a failed save keeps curst open with the edits
+        update(
+            &mut state,
+            Action::Stored {
+                collection: LocalId::new("c1").unwrap(),
+                result: Err("read-only".into()),
+            },
+        );
+
+        assert!(!state.should_quit);
+        assert!(state.is_dirty());
+
+        update(&mut state, Action::Quit);
+
+        let workspace = state.collections[0].clone();
+
+        stored(
+            &mut state,
+            Stored {
+                workspace: Some(workspace),
+                saved: Some((node(&["create"]), written)),
+                quiet: true,
+                ..Stored::default()
+            },
+        );
 
         assert!(state.should_quit);
     }
@@ -778,6 +1082,7 @@ mod collections {
                 change: Change::SaveRequest {
                     path: vec!["create".into()],
                     request: state.request(),
+                    quiet: false,
                 },
             }]
         );
@@ -914,7 +1219,7 @@ mod collections {
             Stored {
                 workspace: Some(sample()),
                 created: Some(node(&["create"])),
-                saved: Some((node(&["create"]), written)),
+                opened: Some((node(&["create"]), written)),
                 ..Stored::default()
             },
         );

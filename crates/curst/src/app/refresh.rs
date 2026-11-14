@@ -168,7 +168,7 @@ pub(crate) fn start(state: &mut State) -> Vec<Command> {
     refresh(state, collection)
 }
 
-fn refresh(state: &mut State, collection: LocalId) -> Vec<Command> {
+pub(crate) fn refresh(state: &mut State, collection: LocalId) -> Vec<Command> {
     let Some(workspace) = state.workspace(&collection) else {
         return Vec::new();
     };
@@ -358,6 +358,11 @@ pub(crate) fn ask_source(state: &mut State) {
         return;
     };
 
+    ask_source_of(state, collection);
+}
+
+/// asks where the spec of `collection` is now
+pub(crate) fn ask_source_of(state: &mut State, collection: LocalId) {
     let location = state
         .workspace(&collection)
         .and_then(|w| w.collection.source.as_ref())

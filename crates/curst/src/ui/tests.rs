@@ -285,6 +285,34 @@ mod collections {
     }
 
     #[test]
+    fn collection_settings_with_a_long_spec_location() {
+        let mut state = with_collection();
+
+        state.collections[0].auto_save = true;
+        state.collections[0].collection.source = Some(curst_core::model::Source {
+            location:
+                "https://platform.staging.example.com/v2/docs/a/very/long/path/to/the/openapi.json"
+                    .into(),
+            ..Default::default()
+        });
+        update(&mut state, Action::CollectionSettings);
+
+        insta::assert_snapshot!(render(&state, 90, 16));
+    }
+
+    #[test]
+    fn save_dialog_with_the_list_open() {
+        let mut state = with_collection();
+
+        state.url.insert_str("http://localhost/pets");
+        update(&mut state, Action::Save);
+        update(&mut state, Action::NextTab);
+        update(&mut state, Action::Down);
+
+        insta::assert_snapshot!(render(&state, 90, 16));
+    }
+
+    #[test]
     fn environment_picker() {
         let mut state = with_collection();
 
@@ -938,6 +966,42 @@ mod mouse {
         let at = find(state, text);
 
         click(state, at)
+    }
+
+    #[test]
+    fn collection_settings_and_the_save_dialog_by_mouse() {
+        let mut state = super::collections::with_collection();
+
+        update(&mut state, crate::app::Action::CollectionSettings);
+        click_on(&mut state, "Export as a bundle file");
+
+        assert!(matches!(state.popup, Some(Popup::Prompt { .. })));
+
+        update(&mut state, crate::app::Action::ClosePopup);
+        update(&mut state, crate::app::Action::CollectionSettings);
+        click(&mut state, (0, 0));
+
+        assert!(state.popup.is_none());
+
+        // the save dialog's list: a click on the line below the name opens
+        // it, the wheel moves through it, a click picks
+        state.url.insert_str("http://localhost/pets");
+        update(&mut state, crate::app::Action::Save);
+        click_on(&mut state, "in Pets");
+
+        assert!(matches!(&state.popup, Some(Popup::SaveRequest(d)) if d.picking));
+
+        let at = find(&state, "Pets › Users");
+
+        send(&mut state, MouseEventKind::ScrollDown, at);
+        click(&mut state, at);
+
+        assert!(matches!(&state.popup, Some(Popup::SaveRequest(d)) if d.place == 1 && !d.picking));
+
+        // a click outside it loses nothing
+        click(&mut state, (0, 0));
+
+        assert!(matches!(state.popup, Some(Popup::SaveRequest(_))));
     }
 
     #[test]

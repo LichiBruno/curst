@@ -1,0 +1,20 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 90, 16)"
+---
+"┏ Collections ━━━━━━━━━┓  GET localhost/pets        Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"┃▾ Pets                ┃┌ Method ─┐┌ URL ────────────────────────────────────────────────┐"
+"┃  ▸ Users             ┃│   GET   ││http://localhost/pets                                │"
+"┃  POST CREATE         ┃└─────────┘└─────────────────────────────────────────────────────┘"
+"┃                      ┃┌ Request  Params  Headers  Body  Auth  ─────────────────────────┐"
+"┃         ┏ Save request ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓         │"
+"┃         ┃pets                                                                ┃         │"
+"┃         ┃                                                                    ┃         │"
+"┃         ┃in Pets   Tab done                                                  ┃─────────┘"
+"┃         ┃ Pets                                                               ┃─────────┐"
+"┃         ┃ Pets › Users                                                       ┃         │"
+"┃         ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛         │"
+"┃                      ┃│                                                                │"
+"┗━━━━━━━━━━━━━━━━━━━━━━┛└────────────────────────────────────────────────────────────────┘"
+" ↑↓ choose  Enter pick  Esc back                                                          "
+" Ctrl+C quit                                                                              "

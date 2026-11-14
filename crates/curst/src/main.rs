@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -30,6 +30,10 @@ use ratatui::crossterm::execute;
 
 use app::{Action, Command, Outcome, SecretChange, State};
 use session::{Job, Session};
+
+/// how long a pause in typing is before edits are saved, in the
+/// collections that save them without asking
+const IDLE_PAUSE: Duration = Duration::from_millis(800);
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -287,6 +291,11 @@ impl Runtime {
             app::update(&mut state, Action::Welcome);
         }
 
+        // when the user last did something, and whether the pause after it
+        // has yet to be reported
+        let mut last_input = Instant::now();
+        let mut idle_due = false;
+
         while !state.should_quit {
             if dirty {
                 terminal.draw(|frame| ui::view(&state, frame))?;
@@ -323,10 +332,24 @@ impl Runtime {
 
                 dirty |= !actions.is_empty();
 
+                if !actions.is_empty() {
+                    last_input = Instant::now();
+                    idle_due = true;
+                }
+
                 for action in actions {
                     for command in app::update(&mut state, action) {
                         self.execute(command, &state);
                     }
+                }
+            }
+
+            if idle_due && last_input.elapsed() >= IDLE_PAUSE {
+                idle_due = false;
+
+                for command in app::update(&mut state, Action::Idle) {
+                    dirty = true;
+                    self.execute(command, &state);
                 }
             }
 

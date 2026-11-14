@@ -92,6 +92,7 @@ impl State {
             key: key.clone(),
             name,
             baseline: self.request(),
+            tried: None,
         });
     }
 

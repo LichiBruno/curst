@@ -91,6 +91,7 @@ pub(crate) fn describe(name: &str) -> &'static str {
         "discard" => "leave without saving",
         "refresh-spec" => "refresh the collection from its spec",
         "spec-source" => "change where the collection's spec is",
+        "collection-settings" => "the settings of the collection",
         "theme" => "the next theme",
         "narrower" => "a narrower sidebar",
         "wider" => "a wider sidebar",

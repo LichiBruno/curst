@@ -386,7 +386,7 @@ pub(super) fn changed(state: &mut State, id: u64, result: Result<(), String>) ->
 
             // the files were the last of it: curst can quit now
             if std::mem::take(&mut state.quit_when_saved) {
-                super::quit(state);
+                commands.extend(super::quit(state));
             }
 
             commands
