@@ -16,7 +16,7 @@ fn requests(converted: &Converted) -> Vec<(String, String, Request)> {
 
     for item in &converted.bundle.items {
         match item {
-            BundleItem::Folder { name, items } => {
+            BundleItem::Folder { name, items, .. } => {
                 for inner in items {
                     if let BundleItem::Request { request, spec, .. } = inner {
                         let operation = spec.as_ref().unwrap().operation.clone();
@@ -108,8 +108,11 @@ fn swagger_2_becomes_a_collection() {
             KeyValue::new("species", "cat"),
         ]
     );
+    // the spec's own security goes on the collection, and the operations
+    // that say nothing of theirs inherit it
+    assert_eq!(list.auth, Auth::Inherit);
     assert_eq!(
-        list.auth,
+        shelter.bundle.auth,
         Auth::Basic {
             username: "{{username}}".into(),
             password: "{{password}}".into()
@@ -670,6 +673,98 @@ mod refreshing {
     }
 
     use crate::model::Collection;
+
+    #[test]
+    fn an_imported_spec_puts_its_security_on_the_collection() {
+        let root = tempfile::tempdir().unwrap();
+        let library = Library::new(Paths::under(root.path()));
+        let shelter = include_str!("fixtures/shelter-2.0.yaml");
+        let (dir, _) = library
+            .import_spec(converted(shelter, None), &Source::default())
+            .unwrap();
+        let collection = dir.load().unwrap().collection;
+        let basic = Auth::Basic {
+            username: "{{username}}".into(),
+            password: "{{password}}".into(),
+        };
+        let (path, request) = {
+            fn first(items: &[Item], path: &mut Vec<String>) -> Option<Request> {
+                for item in items {
+                    path.push(item.slug().to_owned());
+
+                    match item {
+                        Item::Request(saved) => return Some(saved.request.clone()),
+                        Item::Folder(folder) => {
+                            if let Some(found) = first(&folder.items, path) {
+                                return Some(found);
+                            }
+                        }
+                    }
+
+                    path.pop();
+                }
+
+                None
+            }
+
+            let mut path = Vec::new();
+            let request = first(&collection.items, &mut path).unwrap();
+
+            (path, request)
+        };
+
+        assert_eq!(collection.auth, basic);
+        assert_eq!(request.auth, Auth::Inherit);
+        assert_eq!(collection.with_inherited_auth(&path, &request).auth, basic);
+    }
+
+    #[test]
+    fn a_collection_from_before_inheritance_keeps_its_auth_on_a_refresh() {
+        let spec = r#"{
+            "openapi": "3.0.0",
+            "info": { "title": "T", "version": "1" },
+            "components": { "securitySchemes": { "b": { "type": "http", "scheme": "bearer" } } },
+            "security": [ { "b": [] } ],
+            "paths": {
+                "/a": { "get": { "responses": { "200": { "description": "ok" } } } },
+                "/b": { "get": { "responses": { "200": { "description": "ok" } } } }
+            }
+        }"#;
+        let fresh = converted(spec, None);
+        let Some(BundleItem::Request {
+            name,
+            request,
+            spec: Some(origin),
+        }) = fresh.bundle.items.first()
+        else {
+            panic!("no request");
+        };
+
+        assert!(matches!(fresh.bundle.auth, Auth::Bearer { .. }));
+
+        // as imported back then: no auth on the collection, the spec's on
+        // the request, and a spec that has changed since
+        let collection = Collection {
+            name: "T".into(),
+            items: vec![Item::Request(crate::model::SavedRequest {
+                slug: "a".into(),
+                name: name.clone(),
+                request: Request {
+                    auth: fresh.bundle.auth.clone(),
+                    ..request.clone()
+                },
+                spec: Some(crate::model::SpecOrigin {
+                    operation: origin.operation.clone(),
+                    fingerprint: "older".into(),
+                }),
+            })],
+            ..Collection::default()
+        };
+        let plan = plan(&collection, &fresh);
+
+        assert_eq!(plan.changed[0].new.auth, fresh.bundle.auth);
+        assert_eq!(plan.added[0].request.auth, fresh.bundle.auth);
+    }
 
     #[test]
     fn a_refresh_finds_what_is_new_changed_and_gone_and_applies_what_is_chosen() {

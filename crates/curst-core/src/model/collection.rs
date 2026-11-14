@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use super::{KeyValue, Request};
+use super::{Auth, KeyValue, Request};
 use crate::vars::VarName;
 
 /// a variable as one scope defines it
@@ -161,6 +161,10 @@ pub struct Folder {
     /// the display name
     pub name: String,
 
+    /// the auth its requests inherit; [`Auth::Inherit`] passes on what is
+    /// above it
+    pub auth: Auth,
+
     /// the children, in display order
     pub items: Vec<Item>,
 }
@@ -212,9 +216,98 @@ pub struct Collection {
 
     /// the spec it was imported from, to fetch it again
     pub source: Option<Source>,
+
+    /// the auth its requests and folders inherit
+    pub auth: Auth,
+
+    /// requests sent one after another, keeping values from their answers
+    pub workflows: Vec<Workflow>,
+}
+
+/// requests sent one after another, each answer giving values to keep,
+/// such as a token to log in with
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Workflow {
+    /// the name it is run under
+    pub name: String,
+
+    /// the steps, in order
+    pub steps: Vec<Step>,
+}
+
+/// one request of a workflow and what to keep from its answer
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Step {
+    /// the saved request, as a path of slugs from the top
+    pub request: Vec<String>,
+
+    /// the values kept from the answer, each as a secret variable
+    pub keep: Vec<Capture>,
+}
+
+/// a value taken from an answer into a variable
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Capture {
+    /// the variable it goes into
+    pub variable: VarName,
+
+    /// where in the answer it is
+    pub from: Extract,
+}
+
+/// where in an answer a value is
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Extract {
+    /// a path into a JSON body, such as `$.data.token` or `items[0].id`
+    Json(String),
+
+    /// a header, its name in any case
+    Header(String),
 }
 
 impl Collection {
+    /// the auth a request in the folder at `parent` inherits, with the
+    /// name of the folder or collection it comes from; [`Auth::None`] when
+    /// nothing above sets one
+    #[must_use]
+    pub fn inherited_auth(&self, parent: &[String]) -> (Auth, String) {
+        let mut found = (self.auth.clone(), self.name.clone());
+        let mut items = &self.items;
+
+        for slug in parent {
+            let Some(Item::Folder(folder)) = items.iter().find(|i| i.slug() == slug) else {
+                break;
+            };
+
+            if folder.auth != Auth::Inherit {
+                found = (folder.auth.clone(), folder.name.clone());
+            }
+
+            items = &folder.items;
+        }
+
+        if found.0 == Auth::Inherit {
+            found.0 = Auth::None;
+        }
+
+        found
+    }
+
+    /// `request` at `path` with the auth it inherits in place of
+    /// [`Auth::Inherit`]
+    #[must_use]
+    pub fn with_inherited_auth(&self, path: &[String], request: &Request) -> Request {
+        let mut request = request.clone();
+
+        if request.auth == Auth::Inherit {
+            let parent = &path[..path.len().saturating_sub(1)];
+
+            request.auth = self.inherited_auth(parent).0;
+        }
+
+        request
+    }
+
     /// the folder or request at `path`, a list of slugs from the top
     #[must_use]
     pub fn item(&self, path: &[String]) -> Option<&Item> {
@@ -272,6 +365,7 @@ mod tests {
                 Item::Folder(Folder {
                     slug: "users".into(),
                     name: "Users".into(),
+                    auth: Auth::Inherit,
                     items: vec![request("list")],
                 }),
             ],

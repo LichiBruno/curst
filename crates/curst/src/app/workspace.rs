@@ -216,7 +216,7 @@ fn add_items(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use curst_core::model::{Environment, Folder, Request, SavedRequest};
+    use curst_core::model::{Auth, Environment, Folder, Request, SavedRequest};
     use curst_core::vars::VarName;
 
     use super::*;
@@ -255,6 +255,7 @@ pub(crate) mod tests {
                     Item::Folder(Folder {
                         slug: "users".into(),
                         name: "Users".into(),
+                        auth: Auth::Inherit,
                         items: vec![request("list", Method::Get)],
                     }),
                     request("create", Method::Post),
@@ -266,6 +267,8 @@ pub(crate) mod tests {
                     variables: vec![Variable::new(VarName::new("a").unwrap(), "1")],
                 }],
                 source: None,
+                auth: Auth::None,
+                workflows: vec![],
             },
             active_environment: None,
             trusted: true,

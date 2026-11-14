@@ -107,6 +107,16 @@ impl State {
     pub(super) fn sync_cursors(&mut self) {
         let request = self.focus == Focus::Request && self.popup.is_none();
 
+        // the auth dialog shows a cursor in its selected field only
+        if let Some(super::popup::Popup::Auth(dialog)) = &mut self.popup {
+            let row = dialog.row;
+            let editor = &mut dialog.editor;
+
+            show_cursor(&mut editor.username, row == 1);
+            show_cursor(&mut editor.password, row == 2);
+            show_cursor(&mut editor.token, row == 1);
+        }
+
         show_cursor(
             &mut self.url,
             self.focus == Focus::Url && self.popup.is_none(),
@@ -126,7 +136,7 @@ impl State {
         let typing = request && self.request_tab == RequestTab::Auth && self.auth.typing;
         let selected = self.auth.selected;
         let (username, password, token) = match self.auth.kind {
-            AuthKind::None => (false, false, false),
+            AuthKind::Inherit | AuthKind::None => (false, false, false),
             AuthKind::Basic => (selected == 0, selected == 1, false),
             AuthKind::Bearer => (false, false, selected == 0),
         };
@@ -227,7 +237,7 @@ pub(super) fn edit(state: &mut State) {
         RequestTab::Body if state.body.kind != BodyKind::Form => {
             state.body.typing = Some(BodyField::Text);
         }
-        RequestTab::Auth => state.auth.typing = state.auth.kind != AuthKind::None,
+        RequestTab::Auth => state.auth.typing = state.auth.kind.field_count() > 0,
         _ => {
             if let Some(table) = state.active_table() {
                 if table.rows.is_empty() {

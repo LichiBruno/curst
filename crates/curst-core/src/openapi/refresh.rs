@@ -110,7 +110,7 @@ fn origins(
 fn generated(items: &[BundleItem], folder: Option<&str>, found: &mut Vec<Added>) {
     for item in items {
         match item {
-            BundleItem::Folder { name, items } => generated(items, Some(name), found),
+            BundleItem::Folder { name, items, .. } => generated(items, Some(name), found),
             BundleItem::Request {
                 name,
                 request,
@@ -134,6 +134,16 @@ pub fn plan(collection: &Collection, converted: &Converted) -> Plan {
 
     origins(&collection.items, &[], &mut existing);
     generated(&converted.bundle.items, None, &mut fresh);
+
+    // a collection imported before auth was inherited sets none: what the
+    // spec as a whole asks for goes on each request, as it did then
+    if collection.auth == Auth::Inherit && converted.bundle.auth != Auth::Inherit {
+        for new in &mut fresh {
+            if new.request.auth == Auth::Inherit {
+                new.request.auth = converted.bundle.auth.clone();
+            }
+        }
+    }
 
     let mut plan = Plan::default();
 
@@ -202,7 +212,8 @@ pub fn request_lines(request: &Request) -> Vec<String> {
     lines.extend(request.headers.iter().map(|h| row("header", h, ": ")));
 
     match &request.auth {
-        Auth::None => {}
+        Auth::Inherit => {}
+        Auth::None => lines.push("auth none".into()),
         Auth::Basic { username, password } => {
             lines.push(format!("auth basic {username} : {password}"));
         }

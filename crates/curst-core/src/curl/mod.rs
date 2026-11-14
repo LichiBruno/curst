@@ -731,7 +731,7 @@ pub fn emit(request: &Request) -> String {
     }
 
     match &request.auth {
-        Auth::None => {}
+        Auth::Inherit | Auth::None => {}
         Auth::Basic { username, password } => {
             parts.push(format!("-u {}", quote(&format!("{username}:{password}"))));
         }

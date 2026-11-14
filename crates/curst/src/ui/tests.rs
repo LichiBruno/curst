@@ -161,6 +161,7 @@ fn auth_and_save_prompt() {
     state.focus = crate::app::Focus::Request;
     state.request_tab = RequestTab::Auth;
     update(&mut state, Action::CycleKind);
+    update(&mut state, Action::CycleKind);
     update(&mut state, Action::Edit);
     state.auth.username.insert_str("me");
     update(&mut state, Action::NextCell);
@@ -298,6 +299,83 @@ mod collections {
         update(&mut state, Action::CollectionSettings);
 
         insta::assert_snapshot!(render(&state, 90, 16));
+    }
+
+    #[test]
+    fn auth_dialog_and_what_a_request_inherits() {
+        let mut state = with_collection();
+
+        state.collections[0].collection.auth = curst_core::model::Auth::Bearer {
+            token: "{{token}}".into(),
+        };
+        update(&mut state, Action::CollectionSettings);
+        update(&mut state, Action::ConfirmPopup);
+        update(&mut state, Action::Down);
+
+        insta::assert_snapshot!("auth_dialog", render(&state, 90, 12));
+
+        update(&mut state, Action::ClosePopup);
+        state.sidebar.selected = Some(key(&["create"]));
+        update(&mut state, Action::Edit);
+        state.focus = Focus::Request;
+        state.request_tab = crate::app::RequestTab::Auth;
+
+        insta::assert_snapshot!("auth_inherited", render(&state, 90, 20));
+    }
+
+    #[test]
+    fn a_workflow_being_edited_and_run() {
+        use curst_core::model::{Capture, Extract, Step, Workflow};
+
+        let mut state = with_collection();
+
+        state.collections[0].collection.workflows = vec![Workflow {
+            name: "Log in".into(),
+            steps: vec![
+                Step {
+                    request: vec!["create".into()],
+                    keep: vec![Capture {
+                        variable: curst_core::vars::VarName::new("token").unwrap(),
+                        from: Extract::Json("$.access_token".into()),
+                    }],
+                },
+                Step {
+                    request: vec!["users".into(), "list".into()],
+                    keep: vec![],
+                },
+            ],
+        }];
+        update(&mut state, Action::Workflows);
+        update(&mut state, Action::Edit);
+
+        insta::assert_snapshot!("workflow_editor", render(&state, 90, 16));
+
+        update(&mut state, Action::ClosePopup);
+        update(
+            &mut state,
+            Action::RunWorkflow {
+                collection: curst_core::model::LocalId::new("c1").unwrap(),
+                index: 0,
+            },
+        );
+
+        insta::assert_snapshot!("workflow_run", render(&state, 90, 12));
+
+        // the login inherits the token it is there to get: the run stops,
+        // and the whole reason shows
+        update(&mut state, Action::ClosePopup);
+        state.collections[0].collection.auth = curst_core::model::Auth::Bearer {
+            token: "{{token}}".into(),
+        };
+        update(
+            &mut state,
+            Action::RunWorkflow {
+                collection: curst_core::model::LocalId::new("c1").unwrap(),
+                index: 0,
+            },
+        );
+
+        insta::assert_snapshot!("workflow_failed", render(&state, 70, 14));
     }
 
     #[test]

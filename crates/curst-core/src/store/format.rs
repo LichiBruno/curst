@@ -5,7 +5,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Auth, Body, EnvId, KeyValue, Method, Request, Source, SpecOrigin, Variable};
+use crate::model::{
+    Auth, Body, Capture, EnvId, Extract, KeyValue, Method, Request, Source, SpecOrigin, Step,
+    Variable, Workflow,
+};
 use crate::vars::VarName;
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -71,6 +74,7 @@ pub(crate) enum BodyFile {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub(crate) enum AuthFile {
+    None,
     Basic {
         #[serde(default)]
         username: String,
@@ -82,6 +86,33 @@ pub(crate) enum AuthFile {
         #[serde(default)]
         token: String,
     },
+}
+
+impl AuthFile {
+    /// the file form of `auth`; inheriting is written as nothing, as a
+    /// file from before auth was inherited means the same
+    pub(crate) fn of(auth: &Auth) -> Option<Self> {
+        match auth {
+            Auth::Inherit => None,
+            Auth::None => Some(Self::None),
+            Auth::Basic { username, password } => Some(Self::Basic {
+                username: username.clone(),
+                password: password.clone(),
+            }),
+            Auth::Bearer { token } => Some(Self::Bearer {
+                token: token.clone(),
+            }),
+        }
+    }
+
+    pub(crate) fn into_auth(file: Option<Self>) -> Auth {
+        match file {
+            None => Auth::Inherit,
+            Some(Self::None) => Auth::None,
+            Some(Self::Basic { username, password }) => Auth::Basic { username, password },
+            Some(Self::Bearer { token }) => Auth::Bearer { token },
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -180,16 +211,7 @@ impl RequestFile {
                 fields: pairs(fields),
             }),
         };
-        let auth = match &request.auth {
-            Auth::None => None,
-            Auth::Basic { username, password } => Some(AuthFile::Basic {
-                username: username.clone(),
-                password: password.clone(),
-            }),
-            Auth::Bearer { token } => Some(AuthFile::Bearer {
-                token: token.clone(),
-            }),
-        };
+        let auth = AuthFile::of(&request.auth);
 
         Self {
             name: name.to_owned(),
@@ -225,11 +247,7 @@ impl RequestFile {
                 Body::Form(fields.into_iter().map(KeyValue::from).collect())
             }
         };
-        let auth = match self.auth {
-            None => Auth::None,
-            Some(AuthFile::Basic { username, password }) => Auth::Basic { username, password },
-            Some(AuthFile::Bearer { token }) => Auth::Bearer { token },
-        };
+        let auth = AuthFile::into_auth(self.auth);
         let request = Request {
             method,
             url: self.url,
@@ -332,6 +350,112 @@ pub(crate) struct CollectionFile {
     /// for a collection imported from a spec, where to fetch it again
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) source: Option<SourceFile>,
+
+    /// the auth its requests inherit
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) auth: Option<AuthFile>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) workflows: Vec<WorkflowFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct WorkflowFile {
+    pub(crate) name: String,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) steps: Vec<StepFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct StepFile {
+    /// the request as its path of slugs, or of names in a bundle
+    pub(crate) request: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) keep: Vec<CaptureFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct CaptureFile {
+    variable: String,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    json: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    header: Option<String>,
+}
+
+impl WorkflowFile {
+    pub(crate) fn of(workflow: &Workflow) -> Self {
+        Self {
+            name: workflow.name.clone(),
+            steps: workflow
+                .steps
+                .iter()
+                .map(|step| StepFile {
+                    request: step.request.clone(),
+                    keep: step
+                        .keep
+                        .iter()
+                        .map(|capture| {
+                            let (json, header) = match &capture.from {
+                                Extract::Json(path) => (Some(path.clone()), None),
+                                Extract::Header(name) => (None, Some(name.clone())),
+                            };
+
+                            CaptureFile {
+                                variable: capture.variable.as_str().to_owned(),
+                                json,
+                                header,
+                            }
+                        })
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    /// the workflow, or why the file does not describe one
+    pub(crate) fn into_workflow(self) -> Result<Workflow, String> {
+        let mut steps = Vec::new();
+
+        for step in self.steps {
+            let mut keep = Vec::new();
+
+            for capture in step.keep {
+                let variable = VarName::new(&capture.variable).ok_or_else(|| {
+                    format!(
+                        "the workflow {}: {:?} is not a variable name",
+                        self.name, capture.variable
+                    )
+                })?;
+                let from = match (capture.json, capture.header) {
+                    (Some(path), None) => Extract::Json(path),
+                    (None, Some(name)) => Extract::Header(name),
+                    _ => {
+                        return Err(format!(
+                            "the workflow {}: {variable} needs either json or header",
+                            self.name
+                        ));
+                    }
+                };
+
+                keep.push(Capture { variable, from });
+            }
+
+            steps.push(Step {
+                request: step.request,
+                keep,
+            });
+        }
+
+        Ok(Workflow {
+            name: self.name,
+            steps,
+        })
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -340,6 +464,10 @@ pub(crate) struct FolderFile {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) order: Vec<String>,
+
+    /// the auth its requests inherit, when it sets one
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) auth: Option<AuthFile>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -455,6 +583,8 @@ mod tests {
             order: vec![],
             variables: file.variables,
             source: None,
+            auth: None,
+            workflows: Vec::new(),
         });
         let globals = to_toml(&GlobalsFile {
             variables: variables_to_file(&[Variable {

@@ -36,10 +36,13 @@ use serde::{Deserialize, Serialize};
 
 use super::StoreError;
 use super::collection::{CollectionDir, CollectionStore};
-use super::format::{RequestFile, VariableFile, to_toml, variables_from_file, variables_to_file};
+use super::format::{
+    AuthFile, RequestFile, VariableFile, WorkflowFile, to_toml, variables_from_file,
+    variables_to_file,
+};
 use super::fs::read_regular;
 use super::library::Library;
-use crate::model::{Collection, Item, Request, SpecOrigin, Variable};
+use crate::model::{Auth, Collection, Item, Request, SpecOrigin, Variable, Workflow};
 use crate::secrets::detect;
 
 /// the version of the format this curst writes and reads
@@ -62,6 +65,14 @@ struct BundleFile {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     environments: Vec<EnvironmentFile>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth: Option<AuthFile>,
+
+    /// each step names its request by the names of its folders and its
+    /// own, as slugs are chosen anew on import
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workflows: Vec<WorkflowFile>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     items: Vec<ItemFile>,
 }
@@ -80,6 +91,9 @@ enum ItemFile {
     Folder {
         name: String,
 
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        auth: Option<AuthFile>,
+
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         items: Vec<ItemFile>,
     },
@@ -93,6 +107,9 @@ pub enum BundleItem {
     Folder {
         /// its name
         name: String,
+
+        /// the auth it passes on to its requests
+        auth: Auth,
 
         /// what it holds, in order
         items: Vec<BundleItem>,
@@ -127,6 +144,12 @@ pub struct Bundle {
     /// the folders and requests, in order
     pub items: Vec<BundleItem>,
 
+    /// the auth the collection passes on to its requests
+    pub auth: Auth,
+
+    /// the workflows, each step naming its request by names, not slugs
+    pub workflows: Vec<Workflow>,
+
     /// what was wrong but did not stop the reading, such as a secret's
     /// value written into the file
     pub warnings: Vec<String>,
@@ -138,6 +161,7 @@ fn items_to_file(items: &[Item]) -> Vec<ItemFile> {
         .map(|item| match item {
             Item::Folder(folder) => ItemFile::Folder {
                 name: folder.name.clone(),
+                auth: AuthFile::of(&folder.auth),
                 items: items_to_file(&folder.items),
             },
             Item::Request(saved) => {
@@ -145,6 +169,40 @@ fn items_to_file(items: &[Item]) -> Vec<ItemFile> {
             }
         })
         .collect()
+}
+
+/// the names along a path of slugs
+fn names_of(items: &[Item], path: &[String]) -> Option<Vec<String>> {
+    let (first, rest) = path.split_first()?;
+    let item = items.iter().find(|i| i.slug() == first)?;
+    let mut names = vec![item.name().to_owned()];
+
+    if !rest.is_empty() {
+        let Item::Folder(folder) = item else {
+            return None;
+        };
+
+        names.extend(names_of(&folder.items, rest)?);
+    }
+
+    Some(names)
+}
+
+/// the slugs along a path of names, the first of each name taken
+fn slugs_of(items: &[Item], names: &[String]) -> Option<Vec<String>> {
+    let (first, rest) = names.split_first()?;
+    let item = items.iter().find(|i| i.name() == first)?;
+    let mut slugs = vec![item.slug().to_owned()];
+
+    if !rest.is_empty() {
+        let Item::Folder(folder) = item else {
+            return None;
+        };
+
+        slugs.extend(slugs_of(&folder.items, rest)?);
+    }
+
+    Some(slugs)
 }
 
 /// the collection as bundle text; secrets keep their names only
@@ -162,10 +220,39 @@ pub fn bundle_text(collection: &Collection) -> String {
                 variables: variables_to_file(&e.variables),
             })
             .collect(),
+        auth: AuthFile::of(&collection.auth),
+        workflows: collection
+            .workflows
+            .iter()
+            .map(|workflow| {
+                let mut file = WorkflowFile::of(workflow);
+
+                for step in &mut file.steps {
+                    if let Some(names) = names_of(&collection.items, &step.request) {
+                        step.request = names;
+                    }
+                }
+
+                file
+            })
+            .collect(),
         items: items_to_file(&collection.items),
     };
 
     to_toml(&file)
+}
+
+/// the auth a folder or the collection passes on, when it holds what
+/// looks like a credential
+fn auth_credentials(auth: &Auth, place: &str, found: &mut Vec<String>) {
+    let request = Request {
+        auth: auth.clone(),
+        ..Request::default()
+    };
+
+    if let Some(finding) = detect::detect(&request).first() {
+        found.push(format!("{place} auth: {}", finding.reason.describe()));
+    }
 }
 
 /// requests under `items` that hold what looks like a credential, each
@@ -174,7 +261,10 @@ fn request_credentials(items: &[Item], path: &str, found: &mut Vec<String>) {
     for item in items {
         match item {
             Item::Folder(folder) => {
-                request_credentials(&folder.items, &format!("{path}{} › ", folder.name), found);
+                let place = format!("{path}{}", folder.name);
+
+                auth_credentials(&folder.auth, &place, found);
+                request_credentials(&folder.items, &format!("{place} › "), found);
             }
             Item::Request(saved) => {
                 if let Some(finding) = detect::detect(&saved.request).first() {
@@ -213,6 +303,7 @@ pub fn plain_credentials(collection: &Collection) -> Vec<String> {
         variables(&format!("the {}", environment.name), &environment.variables);
     }
 
+    auth_credentials(&collection.auth, "the collection", &mut found);
     request_credentials(&collection.items, "", &mut found);
 
     found
@@ -255,8 +346,9 @@ fn entries(files: Vec<ItemFile>, depth: usize) -> Result<Vec<BundleItem>, String
     files
         .into_iter()
         .map(|file| match file {
-            ItemFile::Folder { name, items } => Ok(BundleItem::Folder {
+            ItemFile::Folder { name, auth, items } => Ok(BundleItem::Folder {
                 name,
+                auth: AuthFile::into_auth(auth),
                 items: entries(items, depth + 1)?,
             }),
             ItemFile::Request(file) => {
@@ -316,11 +408,22 @@ pub fn read(path: &Path) -> Result<Bundle, StoreError> {
         environments.push((environment.name, read));
     }
 
+    let mut workflows = Vec::new();
+
+    for workflow in file.workflows {
+        match workflow.into_workflow() {
+            Ok(workflow) => workflows.push(workflow),
+            Err(message) => warnings.push(message),
+        }
+    }
+
     Ok(Bundle {
         name: file.name,
         variables: variables_read,
         environments,
         items: entries(file.items, 0).map_err(invalid)?,
+        auth: AuthFile::into_auth(file.auth),
+        workflows,
         warnings,
     })
 }
@@ -332,11 +435,16 @@ fn create_entries(
 ) -> Result<(), StoreError> {
     for entry in entries {
         match entry {
-            BundleItem::Folder { name, items } => {
+            BundleItem::Folder { name, auth, items } => {
                 let slug = dir.create_folder(parent, name)?;
                 let mut path = parent.to_vec();
 
                 path.push(slug);
+
+                if *auth != Auth::Inherit {
+                    dir.save_auth(&path, auth)?;
+                }
+
                 create_entries(dir, &path, items)?;
             }
             BundleItem::Request {
@@ -362,7 +470,34 @@ pub(crate) fn fill(dir: &CollectionDir, bundle: &Bundle) -> Result<(), StoreErro
         dir.save_environment(&environment)?;
     }
 
-    create_entries(dir, &[], &bundle.items)
+    if bundle.auth != Auth::Inherit {
+        dir.save_auth(&[], &bundle.auth)?;
+    }
+
+    create_entries(dir, &[], &bundle.items)?;
+
+    if bundle.workflows.is_empty() {
+        return Ok(());
+    }
+
+    // the steps named their requests; now they have slugs
+    let items = dir.load()?.collection.items;
+    let workflows: Vec<Workflow> = bundle
+        .workflows
+        .iter()
+        .cloned()
+        .map(|mut workflow| {
+            for step in &mut workflow.steps {
+                if let Some(slugs) = slugs_of(&items, &step.request) {
+                    step.request = slugs;
+                }
+            }
+
+            workflow
+        })
+        .collect();
+
+    dir.save_workflows(&workflows)
 }
 
 impl Library {

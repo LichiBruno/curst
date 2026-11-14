@@ -228,7 +228,7 @@ fn configure(
 
     match &request.auth {
         _ if !hop.with_credentials => {}
-        Auth::None => {}
+        Auth::Inherit | Auth::None => {}
         Auth::Basic { username, password } => {
             let mut auth = curl::easy::Auth::new();
 

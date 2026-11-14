@@ -1,7 +1,7 @@
 //! the command palette: every action and every saved request, found by
 //! typing a few of their letters
 
-use curst_core::model::{Item, Method};
+use curst_core::model::{Item, LocalId, Method};
 use ratatui_textarea::TextArea;
 
 use super::editor::{single_line, text_of};
@@ -30,6 +30,13 @@ pub(crate) enum Entry {
         /// the collection, folders and name, as `Shop › Orders › List`
         title: String,
     },
+    Workflow {
+        collection: LocalId,
+        index: usize,
+
+        /// the collection and the workflow, as `Shop › Log in`
+        title: String,
+    },
 }
 
 impl Entry {
@@ -38,6 +45,7 @@ impl Entry {
         match self {
             Self::Run(command) => format!("{} {}", command.what, command.name),
             Self::Open { method, title, .. } => format!("{title} {}", method.as_str()),
+            Self::Workflow { title, .. } => format!("{title} run workflow"),
         }
     }
 }
@@ -115,6 +123,16 @@ impl State {
                 &workspace.collection.name,
                 &mut entries,
             );
+
+            if workspace.trusted {
+                entries.extend(workspace.collection.workflows.iter().enumerate().map(
+                    |(index, workflow)| Entry::Workflow {
+                        collection: workspace.id.clone(),
+                        index,
+                        title: format!("{} › {}", workspace.collection.name, workflow.name),
+                    },
+                ));
+            }
         }
 
         let query = text_of(&palette.input);
@@ -190,6 +208,9 @@ pub(super) fn apply(
 
                     Ok(Vec::new())
                 }
+                Some(Entry::Workflow {
+                    collection, index, ..
+                }) => Err(Action::RunWorkflow { collection, index }),
                 None => {
                     state.popup = Some(Popup::Palette(palette));
 

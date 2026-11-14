@@ -17,8 +17,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use ratatui_textarea::TextArea;
 
 use crate::app::{
-    AuthKind, BodyKind, Column, Field, Focus, Hint, Hints, Layer, Popup, RequestTab, State, Target,
-    display,
+    BodyKind, Column, Field, Focus, Hint, Hints, Layer, Popup, RequestTab, State, Target, display,
 };
 use crate::theme::Theme;
 
@@ -505,7 +504,7 @@ pub(crate) fn hints(state: &State) -> Vec<Hint> {
                     .one("edit", "edit")
                     .one("row.toggle", "on/off")
                     .one("row.delete", "delete");
-            } else if state.request_tab == RequestTab::Auth && state.auth.kind != AuthKind::None
+            } else if state.request_tab == RequestTab::Auth && state.auth.kind.field_count() > 0
                 || state.request_tab == RequestTab::Body && state.body.kind != BodyKind::None
             {
                 hints.one("edit", "edit");
