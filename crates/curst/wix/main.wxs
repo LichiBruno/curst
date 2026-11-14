@@ -69,7 +69,7 @@
 
         <Package Id='*'
             Keywords='Installer'
-            Description='A terminal API client built on libcurl'
+            Description='A terminal API client built on rust'
             Manufacturer='The curst contributors'
             InstallerVersion='450'
             Languages='1033'
