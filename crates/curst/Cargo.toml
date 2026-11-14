@@ -5,6 +5,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[package.metadata.wix]
+upgrade-guid = "5516A119-AEB8-4721-A9C1-F5BAA7863E87"
+path-guid = "116C6EF4-A7AD-4F61-96ED-0E2363E6281C"
+license = false
+eula = false
 
 [dependencies]
 anyhow = "1.0.104"
@@ -12,6 +20,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 curst-core = { version = "0.1.0", path = "../curst-core" }
 ratatui = "0.30.2"
 ratatui-textarea = "0.9.4"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
 tempfile = "3.27.0"
 unicode-width = "0.2.3"
 

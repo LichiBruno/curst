@@ -1063,6 +1063,7 @@ dependencies = [
  "insta",
  "ratatui",
  "ratatui-textarea",
+ "serde_json",
  "tempfile",
  "unicode-width",
 ]

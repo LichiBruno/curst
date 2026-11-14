@@ -7,6 +7,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/LichiBruno/curst"
+authors = ["The curst contributors"]
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -38,3 +40,8 @@ opt-level = 3
 
 [profile.dev.package.chacha20poly1305]
 opt-level = 3
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"

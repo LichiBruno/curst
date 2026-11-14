@@ -3,6 +3,7 @@
 #![cfg_attr(test, allow(clippy::panic))]
 
 mod app;
+mod cli;
 mod external;
 mod session;
 mod storage;
@@ -35,19 +36,24 @@ use session::{Job, Session};
 /// collections that save them without asking
 const IDLE_PAUSE: Duration = Duration::from_millis(800);
 
+/// a terminal API client built on libcurl; with no command it opens the
+/// terminal UI
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<cli::Command>,
+
     /// seconds a request may take, 0 for no limit; overrides config.toml
-    #[arg(long, value_name = "SECONDS")]
+    #[arg(long, value_name = "SECONDS", global = true)]
     timeout: Option<u64>,
 
     /// skip the TLS certificate and host name checks
-    #[arg(short = 'k', long)]
+    #[arg(short = 'k', long, global = true)]
     insecure: bool,
 
     /// trust the certificates in this PEM file instead of the system ones
-    #[arg(long, value_name = "FILE")]
+    #[arg(long, value_name = "FILE", global = true)]
     cacert: Option<PathBuf>,
 
     /// use the standard keys, ignoring the [keys] section of config.toml
@@ -89,14 +95,34 @@ fn load_settings(paths: Option<&Paths>) -> (Settings, Vec<String>) {
         .unwrap_or_else(|err| (Settings::default(), vec![err.to_string()]))
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+fn main() -> std::process::ExitCode {
+    let mut cli = Cli::parse();
+
+    if let Some(command) = cli.command.take() {
+        let paths = Paths::from_env().ok();
+        let (settings, _) = load_settings(paths.as_ref());
+
+        return cli::main(command, cli.config(&settings));
+    }
+
+    match tui(&cli) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("curst: {err:#}");
+
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+/// the terminal UI
+fn tui(cli: &Cli) -> Result<()> {
     // without a data folder the app still opens, for one-off requests
     let library = Paths::from_env().map(Library::new);
     let paths = library.as_ref().ok().map(Library::paths);
     let (settings, warnings) = load_settings(paths);
     let executor: Arc<dyn HttpExecutor> = Arc::new(CurlExecutor::new(cli.config(&settings)));
-    let startup = Startup::new(&cli, settings, warnings, paths);
+    let startup = Startup::new(cli, settings, warnings, paths);
     let mut terminal = ratatui::try_init().context("could not start the terminal UI")?;
     let modes = Modes::on(startup.settings.mouse != Some(false));
 

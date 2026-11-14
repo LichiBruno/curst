@@ -19,7 +19,7 @@ fn describe(issues: Vec<LoadIssue>) -> Vec<String> {
 /// a collection with its local id, trust and remembered environment, plus
 /// the problems found in its files; `trust_new` is the trust it gets when
 /// this machine has never seen it
-fn open(
+pub(crate) fn open(
     library: &Library,
     dir: &CollectionDir,
     trust_new: bool,
