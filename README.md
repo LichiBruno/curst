@@ -18,7 +18,7 @@ A terminal API client built on rust: easy for newcomers, and fast for people who
 
 | | |
 |---|---|
-| npm | `npm install -g curst` |
+| npm | `npm install -g @curst/cli` |
 | macOS, Linux (shell) | `curl -LsSf https://github.com/LichiBruno/curst/releases/latest/download/curst-installer.sh \| sh` |
 | Windows (PowerShell) | `irm https://github.com/LichiBruno/curst/releases/latest/download/curst-installer.ps1 \| iex` |
 | Windows (installer) | the `.msi` on the [releases page](https://github.com/LichiBruno/curst/releases) |

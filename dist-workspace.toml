@@ -21,7 +21,9 @@ install-updater = false
 tap = "LichiBruno/homebrew-tap"
 # Publish jobs to run in CI
 publish-jobs = ["npm"]
-# The name the npm package is published under
-npm-package = "curst"
+# The name the npm package is published under, @curst/cli: npm refuses a
+# plain "curst" as too close to existing packages
+npm-package = "cli"
+npm-scope = "@curst"
 # Whether to consider the binaries in a package for distribution
 dist = true
