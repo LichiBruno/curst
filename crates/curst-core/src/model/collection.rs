@@ -293,6 +293,31 @@ impl Collection {
         found
     }
 
+    /// the paths of the requests that set an auth of their own, instead of
+    /// inheriting
+    #[must_use]
+    pub fn own_auth(&self) -> Vec<Vec<String>> {
+        fn walk(items: &[Item], path: &[String], out: &mut Vec<Vec<String>>) {
+            for item in items {
+                let mut here = path.to_vec();
+
+                here.push(item.slug().to_owned());
+
+                match item {
+                    Item::Folder(folder) => walk(&folder.items, &here, out),
+                    Item::Request(saved) if saved.request.auth != Auth::Inherit => out.push(here),
+                    Item::Request(_) => {}
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+
+        walk(&self.items, &[], &mut out);
+
+        out
+    }
+
     /// `request` at `path` with the auth it inherits in place of
     /// [`Auth::Inherit`]
     #[must_use]

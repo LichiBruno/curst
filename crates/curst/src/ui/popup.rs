@@ -343,6 +343,15 @@ fn collection_settings(state: &State, target: &NodeKey, selected: usize, frame: 
                 "Auth",
                 Some((auth_summary(state, target), theme.muted)),
             ),
+            Row::InheritAll => {
+                let own = workspace.collection.own_auth().len();
+
+                row(
+                    index,
+                    "Make every request inherit",
+                    Some((format!("{own} set their own"), theme.muted)),
+                )
+            }
             Row::Workflows => {
                 let count = workspace.collection.workflows.len();
 

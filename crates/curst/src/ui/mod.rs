@@ -518,6 +518,10 @@ pub(crate) fn hints(state: &State) -> Vec<Hint> {
                 hints.one("kind", "type");
             }
 
+            if state.request_tab == RequestTab::Auth && state.current_workspace().is_some() {
+                hints.one("share-auth", "use for the collection");
+            }
+
             if request::credential_warning(state).is_some() {
                 hints.one("make-secret", "make it a secret");
             }

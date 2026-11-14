@@ -93,6 +93,7 @@ pub(crate) fn describe(name: &str) -> &'static str {
         "spec-source" => "change where the collection's spec is",
         "collection-settings" => "the settings of the collection or folder",
         "workflows" => "the workflows of the collection",
+        "share-auth" => "use this request's auth for the whole collection",
         "theme" => "the next theme",
         "narrower" => "a narrower sidebar",
         "wider" => "a wider sidebar",
