@@ -330,7 +330,12 @@ pub(super) fn apply(state: &mut State, action: Action) {
         }
         Action::ShowTab(index) => match state.focus {
             Focus::Request => {
-                if let Some(tab) = RequestTab::ALL.get(index) {
+                // editing ends with the tab it was in, so nothing typed or
+                // pasted lands in a tab that is not showing
+                if let Some(tab) = RequestTab::ALL.get(index)
+                    && *tab != state.request_tab
+                {
+                    state.stop_editing();
                     state.request_tab = *tab;
                 }
             }
