@@ -277,6 +277,43 @@ fn form_body_uses_rows() {
 }
 
 #[test]
+fn a_paste_goes_to_the_tab_showing_after_a_click_on_another() {
+    let mut state = State {
+        focus: Focus::Request,
+        request_tab: RequestTab::Body,
+        ..State::default()
+    };
+
+    // typing in the body, then a click on the Auth tab
+    state.body.typing = Some(BodyField::Text);
+    update(&mut state, Action::PasteText("{\"a\": 1}".into()));
+
+    let auth = RequestTab::ALL
+        .iter()
+        .position(|t| *t == RequestTab::Auth)
+        .unwrap();
+
+    update(&mut state, Action::ShowTab(auth));
+
+    assert_eq!(state.body.typing, None);
+
+    // bearer, its token field, and a paste
+    update(&mut state, Action::CycleKind);
+    update(&mut state, Action::CycleKind);
+    update(&mut state, Action::CycleKind);
+    update(&mut state, Action::Edit);
+    update(&mut state, Action::PasteText("t0k".into()));
+
+    assert_eq!(
+        state.auth.auth(),
+        Auth::Bearer {
+            token: "t0k".into()
+        }
+    );
+    assert_eq!(editor::text_of(&state.body.text), "{\"a\": 1}");
+}
+
+#[test]
 fn bearer_and_basic_auth() {
     let mut state = State {
         focus: Focus::Request,

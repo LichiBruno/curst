@@ -614,19 +614,27 @@ pub(super) fn paste(state: &mut State, text: &str) -> Vec<Command> {
         Focus::Url => {
             state.url.insert_str(text);
         }
-        Focus::Request => {
-            if let Some(field) = state.body.field() {
-                field.insert_str(text);
-            } else if state.request_tab == RequestTab::Auth {
+        // the paste goes to the field of the tab that is showing
+        Focus::Request => match state.request_tab {
+            RequestTab::Auth if state.auth.typing => {
                 if let Some(field) = state.auth.selected_field() {
                     field.insert_str(text);
                 }
-            } else if let Some(table) = state.active_table()
-                && let Some((_, area)) = &mut table.editing
-            {
-                area.insert_str(text);
             }
-        }
+            RequestTab::Auth => {}
+            RequestTab::Body if state.body.kind != BodyKind::Form => {
+                if let Some(field) = state.body.field() {
+                    field.insert_str(text);
+                }
+            }
+            RequestTab::Params | RequestTab::Headers | RequestTab::Body => {
+                if let Some(table) = state.active_table()
+                    && let Some((_, area)) = &mut table.editing
+                {
+                    area.insert_str(text);
+                }
+            }
+        },
         Focus::Sidebar | Focus::Method | Focus::Response => {}
     }
 

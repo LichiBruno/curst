@@ -1126,6 +1126,7 @@ fn copy_response(state: &mut State) -> Vec<Command> {
 fn step_tab(state: &mut State, forward: bool) {
     match state.focus {
         Focus::Request => {
+            state.stop_editing();
             state.request_tab = step(&RequestTab::ALL, state.request_tab, forward);
         }
         Focus::Response => {
