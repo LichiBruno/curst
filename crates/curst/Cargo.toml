@@ -1,6 +1,6 @@
 [package]
 name = "curst"
-description = "A terminal API client built on libcurl"
+description = "A terminal API client built on rust"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
