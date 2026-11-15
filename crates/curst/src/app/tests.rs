@@ -4531,3 +4531,305 @@ mod workflows {
         assert!(matches!(state.popup, Some(Popup::WorkflowEditor(_))));
     }
 }
+
+mod vim {
+    use super::*;
+
+    /// a blank tab with the vim keys, the URL focused
+    fn vim() -> State {
+        State {
+            keymap: keymap::Keymap::vim(),
+            keys_preset: "vim".into(),
+            focus: Focus::Url,
+            ..State::default()
+        }
+    }
+
+    fn url(state: &State) -> String {
+        editor::text_of(&state.url)
+    }
+
+    fn keys(state: &mut State, keys: &str) {
+        for c in keys.chars() {
+            press(state, KeyCode::Char(c));
+        }
+    }
+
+    #[test]
+    fn the_url_types_only_in_insert_mode() {
+        let mut state = vim();
+
+        // normal mode: letters are commands, not text
+        keys(&mut state, "xjk");
+
+        assert_eq!(url(&state), "");
+        assert!(!state.vim_insert);
+
+        keys(&mut state, "i");
+        keys(&mut state, "http://h/pets");
+
+        assert_eq!(url(&state), "http://h/pets");
+
+        // Esc stops typing; motions and changes work on the text
+        press(&mut state, KeyCode::Esc);
+
+        assert!(!state.vim_insert);
+
+        keys(&mut state, "bciw");
+        keys(&mut state, "users");
+        press(&mut state, KeyCode::Esc);
+
+        assert_eq!(url(&state), "http://h/users");
+
+        keys(&mut state, "0x");
+
+        assert_eq!(url(&state), "ttp://h/users");
+
+        keys(&mut state, "u");
+
+        assert_eq!(url(&state), "http://h/users");
+
+        keys(&mut state, "A");
+        keys(&mut state, "/1");
+
+        assert_eq!(url(&state), "http://h/users/1");
+
+        press(&mut state, KeyCode::Esc);
+        keys(&mut state, "dd");
+
+        assert_eq!(url(&state), "");
+    }
+
+    #[test]
+    fn panes_are_reached_with_ctrl_and_hjkl_or_ctrl_w() {
+        let mut state = vim();
+
+        press_key(&mut state, ctrl('j'));
+
+        assert_eq!(state.focus, Focus::Request);
+
+        press_key(&mut state, ctrl('j'));
+
+        assert_eq!(state.focus, Focus::Response);
+
+        // vim's own window keys, for terminals that send Ctrl+h as
+        // Backspace
+        press_key(&mut state, ctrl('w'));
+        press(&mut state, KeyCode::Char('k'));
+
+        assert_eq!(state.focus, Focus::Request);
+
+        press_key(&mut state, ctrl('h'));
+
+        assert_eq!(state.focus, Focus::Sidebar);
+
+        press_key(&mut state, ctrl('l'));
+
+        assert_eq!(state.focus, Focus::Url);
+        assert!(!state.vim_insert);
+
+        // a jump out of a field in insert mode stops typing there
+        keys(&mut state, "i");
+        press_key(&mut state, ctrl('j'));
+
+        assert_eq!(state.focus, Focus::Request);
+        assert!(!state.vim_insert);
+
+        // :q closes the tab, as Ctrl+w does with the standard keys
+        press_key(&mut state, ctrl('t'));
+
+        assert_eq!(state.tab_count(), 2);
+
+        state.focus = Focus::Response;
+        keys(&mut state, ":q");
+
+        assert!(matches!(
+            &state.popup,
+            Some(Popup::CommandLine(input)) if editor::text_of(input) == "q"
+        ));
+
+        press(&mut state, KeyCode::Enter);
+
+        assert_eq!(state.tab_count(), 1);
+
+        // :wq on a request never saved cannot close it: it has nowhere to
+        // go yet
+        press_key(&mut state, ctrl('t'));
+        state.focus = Focus::Response;
+        keys(&mut state, ":wq");
+        press(&mut state, KeyCode::Enter);
+
+        assert_eq!(state.tab_count(), 2);
+
+        keys(&mut state, ":qa!");
+        press(&mut state, KeyCode::Enter);
+
+        assert!(state.should_quit);
+    }
+
+    #[test]
+    fn the_command_line_says_what_it_does_not_know_and_closes_like_vim() {
+        let mut state = vim();
+
+        // from normal mode in a field, too
+        keys(&mut state, ":wat");
+        press(&mut state, KeyCode::Enter);
+
+        assert!(state.popup.is_none());
+        assert_eq!(state.notice.as_deref(), Some("not a command: wat"));
+
+        // Backspace with nothing left to delete closes it, and Esc does
+        keys(&mut state, ":");
+        press(&mut state, KeyCode::Backspace);
+
+        assert!(state.popup.is_none());
+
+        keys(&mut state, ":q");
+        press(&mut state, KeyCode::Esc);
+
+        assert!(state.popup.is_none());
+        assert_eq!(state.tab_count(), 1);
+    }
+
+    #[test]
+    fn the_command_line_is_for_the_vim_keys_only() {
+        let mut state = State {
+            focus: Focus::Response,
+            ..State::default()
+        };
+
+        keys(&mut state, ":");
+
+        assert!(state.popup.is_none());
+    }
+
+    #[test]
+    fn a_cell_goes_from_insert_to_normal_to_its_row() {
+        let mut state = vim();
+
+        state.focus = Focus::Request;
+        state.request_tab = RequestTab::Headers;
+
+        // a new row, typed in
+        keys(&mut state, "o");
+
+        assert!(state.vim_insert);
+
+        keys(&mut state, "X-Idd");
+
+        // Esc: normal mode in the cell, where dd is a command
+        press(&mut state, KeyCode::Esc);
+
+        assert!(state.request_typing());
+        assert!(!state.vim_insert);
+
+        keys(&mut state, "x");
+
+        assert_eq!(
+            state
+                .headers
+                .editing
+                .as_ref()
+                .map(|(_, a)| editor::text_of(a)),
+            Some("X-Id".to_owned())
+        );
+
+        // Esc again: out of the cell, back to moving between rows
+        press(&mut state, KeyCode::Esc);
+
+        assert!(!state.request_typing());
+        assert_eq!(state.headers.rows[0].name, "X-Id");
+
+        // i edits the selected row again
+        keys(&mut state, "i");
+
+        assert!(state.request_typing() && state.vim_insert);
+    }
+
+    #[test]
+    fn the_body_moves_between_lines_in_normal_mode() {
+        let mut state = vim();
+
+        state.focus = Focus::Request;
+        state.request_tab = RequestTab::Body;
+        state.body = BodyEditor::from_body(&Body::Json("{\n  \"a\": 1\n}".into()));
+        press(&mut state, KeyCode::Enter);
+        press(&mut state, KeyCode::Esc);
+
+        assert!(state.request_typing() && !state.vim_insert);
+
+        keys(&mut state, "ggj");
+
+        assert_eq!(state.body.text.cursor().0, 1);
+
+        keys(&mut state, "dd");
+
+        assert_eq!(editor::text_of(&state.body.text), "{\n}");
+    }
+
+    #[test]
+    fn the_standard_keys_type_in_the_url_at_once() {
+        let mut state = State {
+            focus: Focus::Url,
+            ..State::default()
+        };
+
+        keys(&mut state, "xjk");
+
+        assert_eq!(url(&state), "xjk");
+    }
+}
+
+mod ex {
+    use super::*;
+    use crate::app::workspace::tests::sample;
+
+    #[test]
+    fn wq_saves_the_request_and_closes_its_tab() {
+        let mut state = State::default();
+
+        update(
+            &mut state,
+            Action::Loaded {
+                collections: vec![sample()],
+                globals: vec![],
+                problems: vec![],
+                orphans: vec![],
+            },
+        );
+        state.keymap = keymap::Keymap::vim();
+        state.keys_preset = "vim".into();
+        state.sidebar.selected = Some(NodeKey {
+            collection: LocalId::new("c1").unwrap(),
+            path: vec!["create".into()],
+        });
+        state.focus = Focus::Sidebar;
+        press(&mut state, KeyCode::Enter);
+        press_key(&mut state, ctrl('t'));
+        press_key(&mut state, ctrl('g'));
+        press(&mut state, KeyCode::Char('1'));
+
+        assert_eq!(state.tab_count(), 2);
+        assert!(state.open.is_some());
+
+        state.focus = Focus::Response;
+
+        for c in ":wq".chars() {
+            press(&mut state, KeyCode::Char(c));
+        }
+
+        let commands = press(&mut state, KeyCode::Enter);
+
+        assert!(matches!(
+            commands.as_slice(),
+            [
+                Command::Store {
+                    change: Change::SaveRequest { .. },
+                    ..
+                },
+                ..
+            ]
+        ));
+        assert_eq!(state.tab_count(), 1);
+    }
+}

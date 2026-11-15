@@ -334,7 +334,36 @@ fn draw_footer(state: &State, frame: &mut Frame, area: Rect) {
             x += width;
         }
     };
+    // with the vim keys, the command line takes the line, as in vim
+    if let Some(Popup::CommandLine(input)) = &state.popup {
+        let [colon, field_area] =
+            Layout::horizontal([Constraint::Length(1), Constraint::Fill(1)]).areas(top);
+
+        frame.render_widget(Paragraph::new(":"), colon);
+        state.region(field_area, Target::Text(Field::Popup));
+        frame.render_widget(&*field(theme, input, None), field_area);
+
+        let mut everywhere = Vec::new();
+
+        keys(&mut everywhere, bottom, global_hints(state));
+        frame.render_widget(Paragraph::new(Line::from(everywhere)), bottom);
+
+        return;
+    }
+
     let mut here: Vec<Span<'static>> = Vec::new();
+
+    // with the vim keymap, the mode of the field with the focus
+    if state.vim() && state.in_field() && state.popup.is_none() {
+        let mode = if state.vim_insert {
+            " INSERT "
+        } else {
+            " NORMAL "
+        };
+
+        here.push(Span::styled(mode, theme.key.add_modifier(Modifier::BOLD)));
+        here.push(Span::raw(" "));
+    }
 
     if let Some(pending) = state.pending_label() {
         here.push(Span::styled(format!(" {pending} … "), theme.key));
@@ -463,6 +492,15 @@ pub(crate) fn hints(state: &State) -> Vec<Hint> {
     }
 
     let mut hints = Hints::here(state);
+
+    // a vim field says first how to type in it and how to leave it
+    if state.vim() && state.in_field() {
+        if state.vim_insert {
+            hints.one("vim.normal", "normal");
+        } else {
+            hints.one("vim.insert", "insert").one("vim.leave", "leave");
+        }
+    }
 
     match state.focus {
         Focus::Sidebar => {

@@ -1,0 +1,14 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 70, 10)"
+---
+"┌ Collections ─────────┐  GET new request     Ctrl+G tabs  Ctrl+T new "
+"│no collections yet    │┌ Method ─┐┌ URL ────────────────────────────┐"
+"│press c to add one    ││   GET   ││ https://example.com/api, then En│"
+"│                      │└─────────┘└─────────────────────────────────┘"
+"│                      │┌ Request  Params  Headers  Body  Auth  ─────┐"
+"│                      │└────────────────────────────────────────────┘"
+"│                      │┏ Response  Body  Headers  Timing  Raw  ━━━━━┓"
+"└──────────────────────┘┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+":wq                                                                   "
+" Ctrl+C quit                                                          "

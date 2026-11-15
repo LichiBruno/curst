@@ -49,6 +49,8 @@ pub(super) fn draw(state: &State, popup: &Popup, frame: &mut Frame) {
     let theme = &state.theme;
 
     match popup {
+        // drawn in the footer, where vim has it
+        Popup::CommandLine(_) => {}
         Popup::Prompt { purpose, input } => prompt(state, purpose.title(), input, frame),
         Popup::Confirm { message, .. } => {
             let area = centered(frame, 60, 5);
@@ -1787,6 +1789,7 @@ pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
     let mut hints = Hints::here(state);
 
     match popup {
+        Popup::CommandLine(_) => {}
         Popup::Prompt { .. } | Popup::Passphrase { .. } => {
             hints.one("confirm", "ok").one("close", "cancel");
         }

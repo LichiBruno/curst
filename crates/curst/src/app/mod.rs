@@ -1,5 +1,6 @@
 mod autosave;
 mod collection;
+mod command;
 mod editor;
 mod fill;
 mod keymap;
@@ -15,6 +16,7 @@ mod sidebar;
 mod spec;
 mod tabs;
 mod view_model;
+mod vim;
 mod workflow;
 mod workflow_editor;
 mod workspace;
@@ -261,6 +263,10 @@ pub(crate) struct State {
     /// last of them
     pub(crate) quit_after_saves: usize,
 
+    /// with the vim keymap, whether the field with the focus types the
+    /// keys; in normal mode they move around and change its text
+    pub(crate) vim_insert: bool,
+
     /// the request whose tab closes once its save without asking is done
     pub(crate) close_after_save: Option<NodeKey>,
 
@@ -352,6 +358,7 @@ impl Default for State {
             spec_fetch: None,
             quit_when_saved: false,
             quit_after_saves: 0,
+            vim_insert: false,
             close_after_save: None,
             refresh_fetch: None,
             spec_job: None,
@@ -471,6 +478,15 @@ pub(crate) enum Action {
 
     /// the settings of the selected collection
     CollectionSettings,
+
+    /// with the vim keys, the command line at the bottom
+    CommandLine,
+
+    /// a vim key in a field
+    Vim(vim::Vim),
+
+    /// moves the focus to the pane in a direction
+    Pane(vim::Pane),
 
     /// the workflows of the selected collection
     Workflows,
@@ -957,10 +973,25 @@ pub(crate) fn update(state: &mut State, action: Action) -> Vec<Command> {
         state.notice = None;
     }
 
+    // a click in a field, or starting to edit one, types in it; any other
+    // move to another pane starts there in normal mode
+    let typing = matches!(
+        action,
+        Action::Place { .. }
+            | Action::EditCell(_)
+            | Action::Edit
+            | Action::AddRow
+            | Action::EditContentType
+    );
+    let focus = state.focus;
     let commands = match popup::apply(state, action) {
         Ok(commands) => commands,
         Err(action) => apply(state, action),
     };
+
+    if state.focus != focus || typing {
+        state.vim_insert = typing && state.in_field();
+    }
 
     state.sync_cursors();
 
@@ -974,6 +1005,9 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
 
     match action {
         Action::Quit => return quit(state),
+        Action::Vim(key) => return vim::apply(state, key),
+        Action::CommandLine => command::open(state),
+        Action::Pane(direction) => vim::pane(state, direction),
         Action::ShareAuth => collection::share_auth(state),
         Action::RunWorkflow { collection, index } => {
             return workflow::start(state, &collection, index);

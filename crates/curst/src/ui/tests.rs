@@ -988,12 +988,12 @@ fn shifted_symbols_work_however_the_terminal_reports_shift() {
         state.focus = Focus::Sidebar;
 
         let help = crate::app::action_for(&state, KeyEvent::new(KeyCode::Char('?'), modifiers));
-        let palette = crate::app::action_for(&state, KeyEvent::new(KeyCode::Char(':'), modifiers));
+        let command = crate::app::action_for(&state, KeyEvent::new(KeyCode::Char(':'), modifiers));
 
         assert!(matches!(help.as_slice(), [Action::Help]), "{help:?}");
         assert!(
-            matches!(palette.as_slice(), [Action::Palette]),
-            "{palette:?}"
+            matches!(command.as_slice(), [Action::CommandLine]),
+            "{command:?}"
         );
     }
 }
@@ -2104,4 +2104,21 @@ fn a_long_warning_in_the_preview_is_shown_whole() {
     for line in render(&state, 60, 12).lines() {
         assert!(line.chars().count() <= 62, "{line}");
     }
+}
+
+#[test]
+fn the_vim_command_line_sits_in_the_footer() {
+    let mut state = State::default();
+
+    update(&mut state, Action::FocusOn(crate::app::Focus::Response));
+    state.keymap = crate::app::Keymap::vim();
+    state.keys_preset = "vim".into();
+
+    for c in ":wq".chars() {
+        for action in crate::app::action_for(&state, key(KeyCode::Char(c))) {
+            update(&mut state, action);
+        }
+    }
+
+    insta::assert_snapshot!(render(&state, 70, 10));
 }

@@ -356,6 +356,9 @@ pub(crate) enum Popup {
     /// the workflow running, or how it went
     Run,
 
+    /// with the vim keys, the command line at the bottom
+    CommandLine(Box<TextArea<'static>>),
+
     /// a workflow being made or changed
     WorkflowEditor(Box<super::workflow_editor::WorkflowEditor>),
 
@@ -500,6 +503,7 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
         }
         Popup::Auth(dialog) => return super::collection::auth_key(state, dialog, action),
         Popup::Run => return super::workflow::run_key(state, action),
+        Popup::CommandLine(input) => return super::command::apply(state, input, action),
         Popup::Workflows {
             collection,
             selected,
@@ -510,26 +514,28 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
         Popup::Welcome { step, then } => {
             return super::preferences::welcome_key(state, step, then, action);
         }
-        Popup::Settings => match action {
-            Action::Migrate => return Ok(super::send::migrate(state)),
-            Action::NextKeys
-            | Action::NextTheme
-            | Action::SidebarNarrower
-            | Action::SidebarWider => {
-                state.popup = Some(Popup::Settings);
-
-                return Ok(super::preferences::settings(state, &action).unwrap_or_default());
-            }
-            Action::ClosePopup => {}
-            other => {
-                state.popup = Some(Popup::Settings);
-
-                return Err(other);
-            }
-        },
+        Popup::Settings => return settings_key(state, action),
     }
 
     Ok(Vec::new())
+}
+
+/// a key in Settings
+fn settings_key(state: &mut State, action: Action) -> Result<Vec<Command>, Action> {
+    match action {
+        Action::Migrate => Ok(super::send::migrate(state)),
+        Action::NextKeys | Action::NextTheme | Action::SidebarNarrower | Action::SidebarWider => {
+            state.popup = Some(Popup::Settings);
+
+            Ok(super::preferences::settings(state, &action).unwrap_or_default())
+        }
+        Action::ClosePopup => Ok(Vec::new()),
+        other => {
+            state.popup = Some(Popup::Settings);
+
+            Err(other)
+        }
+    }
 }
 
 fn confirm_prompt(
@@ -812,7 +818,9 @@ fn paste(popup: &mut Popup, text: &str) {
     let text = super::request::one_line(text);
 
     match popup {
-        Popup::Prompt { input, .. } | Popup::Passphrase { input, .. } => {
+        Popup::Prompt { input, .. }
+        | Popup::Passphrase { input, .. }
+        | Popup::CommandLine(input) => {
             input.insert_str(text);
         }
         Popup::Palette(palette) => {

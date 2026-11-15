@@ -102,6 +102,7 @@ impl State {
         self.body.form.commit();
         self.body.typing = None;
         self.auth.typing = false;
+        self.vim_insert = false;
     }
 
     pub(super) fn sync_cursors(&mut self) {

@@ -121,6 +121,7 @@ fn closes_outside(popup: &Popup) -> bool {
             | Popup::Environments { .. }
             | Popup::Variables(_)
             | Popup::CollectionSettings { .. }
+            | Popup::CommandLine(_)
     )
 }
 

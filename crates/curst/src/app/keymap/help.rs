@@ -20,6 +20,43 @@ pub(crate) struct Section {
     pub(crate) rows: Vec<Row>,
 }
 
+/// what the vim keymap's own actions do
+fn describe_vim(name: &str) -> &'static str {
+    match name {
+        "pane.left" => "the pane to the left",
+        "pane.down" => "the pane below",
+        "pane.up" => "the pane above",
+        "pane.right" => "the pane to the right",
+        "vim.insert" => "type before the cursor",
+        "vim.append" => "type after the cursor",
+        "vim.insert-start" => "type at the start of the line",
+        "vim.append-end" => "type at the end of the line",
+        "vim.normal" => "stop typing, keep the field",
+        "vim.leave" => "leave the field",
+        "vim.left" => "one character left",
+        "vim.right" => "one character right",
+        "vim.up" => "the line or row above",
+        "vim.down" => "the line or row below",
+        "vim.word" => "the next word",
+        "vim.back" => "the word before",
+        "vim.word-end" => "the end of the word",
+        "vim.line-start" => "the start of the line",
+        "vim.first-char" => "the first character of the line",
+        "vim.line-end" => "the end of the line",
+        "vim.delete-char" => "delete the character",
+        "vim.delete-back" => "delete the character before",
+        "vim.delete-to-end" => "delete to the end of the line",
+        "vim.change-to-end" => "change to the end of the line",
+        "vim.delete-line" => "delete the line",
+        "vim.change-line" => "change the line",
+        "vim.delete-word" => "delete the word",
+        "vim.change-word" => "change the rest of the word",
+        "vim.change-inner-word" => "change the word",
+        "vim.undo" => "undo",
+        _ => "",
+    }
+}
+
 /// what an action does, for the help and the command palette
 pub(crate) fn describe(name: &str) -> &'static str {
     match name {
@@ -94,6 +131,8 @@ pub(crate) fn describe(name: &str) -> &'static str {
         "collection-settings" => "the settings of the collection or folder",
         "workflows" => "the workflows of the collection",
         "share-auth" => "use this request's auth for the whole collection",
+        "command-line" => "the command line, for :q, :w and the rest",
+        _ if name.starts_with("pane.") || name.starts_with("vim.") => describe_vim(name),
         "theme" => "the next theme",
         "narrower" => "a narrower sidebar",
         "wider" => "a wider sidebar",

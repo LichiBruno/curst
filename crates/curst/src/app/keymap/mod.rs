@@ -109,10 +109,19 @@ pub(crate) enum Layer {
 
     /// the requests to choose a workflow step's from
     WorkflowPick,
+
+    /// with the vim keymap, a field in normal mode
+    VimNormal,
+
+    /// with the vim keymap, a field being typed in
+    VimInsert,
+
+    /// with the vim keymap, the command line
+    CommandLine,
 }
 
 impl Layer {
-    pub(crate) const ALL: [Self; 41] = [
+    pub(crate) const ALL: [Self; 44] = [
         Self::Always,
         Self::Global,
         Self::Panes,
@@ -154,6 +163,9 @@ impl Layer {
         Self::WorkflowEditor,
         Self::WorkflowTyping,
         Self::WorkflowPick,
+        Self::VimNormal,
+        Self::VimInsert,
+        Self::CommandLine,
     ];
 
     /// the name used in `config.toml`, as in `"sidebar.rename" = "r"`
@@ -200,6 +212,9 @@ impl Layer {
             Self::WorkflowEditor => "workflow-editor",
             Self::WorkflowTyping => "workflow-typing",
             Self::WorkflowPick => "workflow-pick",
+            Self::VimNormal => "vim-normal",
+            Self::VimInsert => "vim-insert",
+            Self::CommandLine => "command-line",
         }
     }
 
@@ -247,6 +262,9 @@ impl Layer {
             Self::WorkflowEditor => "a workflow being edited",
             Self::WorkflowTyping => "a workflow field being edited",
             Self::WorkflowPick => "the request of a workflow step",
+            Self::VimNormal => "a field in normal mode (vim)",
+            Self::VimInsert => "a field in insert mode (vim)",
+            Self::CommandLine => "the command line (vim)",
         }
     }
 
@@ -343,6 +361,13 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         "collection-settings" => Action::CollectionSettings,
         "workflows" => Action::Workflows,
         "share-auth" => Action::ShareAuth,
+        "command-line" => Action::CommandLine,
+        _ if name.starts_with("vim.") => {
+            return super::vim::Vim::named(&name["vim.".len()..]).map(Action::Vim);
+        }
+        _ if name.starts_with("pane.") => {
+            return super::vim::Pane::named(&name["pane.".len()..]).map(Action::Pane);
+        }
         "palette" => Action::Palette,
         "keys" => Action::NextKeys,
         "narrower" => Action::SidebarNarrower,
@@ -572,6 +597,7 @@ pub(crate) fn layers(state: &State) -> (Vec<Layer>, bool) {
             Popup::Auth(dialog) if dialog.row > 0 => (L::AuthTyping, true),
             Popup::Auth(_) => (L::AuthDialog, false),
             Popup::Run => (L::Run, false),
+            Popup::CommandLine(_) => (L::CommandLine, true),
             Popup::Workflows { .. } => (L::Workflows, false),
             Popup::WorkflowEditor(editor) if editor.picking.is_some() => (L::WorkflowPick, false),
             Popup::WorkflowEditor(editor) if editor.current().typing() => (L::WorkflowTyping, true),
@@ -581,7 +607,7 @@ pub(crate) fn layers(state: &State) -> (Vec<Layer>, bool) {
         return (vec![L::Always, layer], text);
     }
 
-    match state.focus {
+    let (mut layers, mut text) = match state.focus {
         Focus::Url => (vec![L::Always, L::Url, L::Global], true),
         Focus::Request if state.request_typing() => {
             let body =
@@ -613,7 +639,20 @@ pub(crate) fn layers(state: &State) -> (Vec<Layer>, bool) {
             ],
             false,
         ),
+    };
+
+    // with the vim keymap a field types only in insert mode; in normal
+    // mode its keys move around and change the text
+    if state.vim() && state.in_field() {
+        if state.vim_insert {
+            layers.insert(1, L::VimInsert);
+        } else {
+            layers.insert(1, L::VimNormal);
+            text = false;
+        }
     }
+
+    (layers, text)
 }
 
 /// the actions a key press stands for: usually one, none for an unbound
