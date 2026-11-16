@@ -2,3 +2,5 @@
 *.profraw
 *.profdata
 /lcov.info
+/site/.wrangler/
+/site/node_modules/

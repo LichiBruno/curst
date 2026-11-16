@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;600&display=swap">
+<link rel="stylesheet" href="../public/style.css">
+<style>
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; background: var(--paper); }
+  .card { display: grid; grid-template-rows: auto 1fr; gap: 34px; padding: 56px 64px 0; height: 630px; }
+  .top { display: flex; justify-content: space-between; align-items: flex-end; }
+  h1 { font-size: 54px; }
+  .mark { font-size: 26px; }
+  .url { color: var(--soft); font: 400 22px/1 var(--mono); }
+  .term { --size: 16.6px; border-radius: 12px 12px 0 0; border-bottom: 0; overflow: hidden; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="top">
+    <div><span class="mark">curst</span><h1 style="margin-top:22px">The API client<br>that stays in your terminal.</h1></div>
+    <span class="url">curst.sh</span>
+  </div>
+  <pre class="term" style="--cols:104"  role="img" aria-label="curst: hero"><span class="f-gray">┌ Collections ──────</span><span class="f-cyan"> staging </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
+<span class="f-gray">│▾ </span><span class="b">Shop</span>                      <span class="f-gray">│┌ Method ─┐┌ List orders ────────────────────────────────────────────────┐</span>
+<span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">││</span>{{base_url}}/orders                                          <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▾ </span>orders                  <span class="f-gray">│└─────────┘└─────────────────────────────────────────────────────────────┘</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span><span class="f-cyan u">List orders</span>        <span class="f-gray">│┌ Request </span><span class="f-screen k-gray"> Params </span><span class="f-gray"> Headers  Body  Auth  ─────────────────────────────────┐</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>Get order          <span class="f-gray">││</span>     <span class="f-gray b">Parameter</span>                 <span class="f-gray b">Value</span>                                    <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-yellow">POST </span>Create order       <span class="f-gray">││</span>[x]  status                    paid                                     <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-red">DEL  </span>Cancel order       <span class="f-gray">││</span>[x]  limit                     2                                        <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▾ </span>products                <span class="f-gray">││</span>                                                                        <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>Search products    <span class="f-gray">││</span>                                                                        <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-blue">PUT  </span>Update product     <span class="f-gray">││</span>                                                                        <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▸ </span>customers               <span class="f-gray">││</span>                                                                        <span class="f-gray">│</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│└────────────────────────────────────────────────────────────────────────┘</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┏ Response </span><span class="f-screen k-cyan"> Body </span><span class="f-cyan"> Headers  Timing  Raw  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>{                                                                       <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>  "items": [                                                            <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>    {                                                                   <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "id": "ord_7Hq2",                                                 <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "status": "paid",                                                 <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "total": 129.5,                                                   <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "currency": "EUR",                                                <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "customer": {                                                     <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>        "id": "cus_41",                                                 <span class="f-cyan">┃</span>
+<span class="f-gray">└────────────────────────────┘</span><span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="f-green"> 200 · 142.0 ms · 282 B </span><span class="f-cyan">┛</span>
+<span class="b"> ←→ </span><span class="f-gray">tab </span><span class="b"> ↑↓ </span><span class="f-gray">scroll </span><span class="b"> s </span><span class="f-gray">save </span><span class="b"> y </span><span class="f-gray">copy body </span>
+<span class="b"> Ctrl+R </span><span class="f-gray">send </span><span class="b"> Ctrl+S </span><span class="f-gray">save </span><span class="b"> Ctrl+E </span><span class="f-gray">environments </span><span class="b"> Ctrl+O </span><span class="f-gray">settings </span><span class="b"> Ctrl+P </span><span class="f-gray">commands </span><span class="b"> F1 </span><span class="f-gray">help </span><span class="b"> Ctrl+C </span><span class="f-gray">quit </span></pre>
+</div>
+</body>
+</html>

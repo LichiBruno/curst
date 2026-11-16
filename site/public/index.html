@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>curst, an API client for the terminal</title>
+<meta name="description" content="A fast terminal API client. Collections in plain TOML you can commit, secrets in your keychain that go only where you say, OpenAPI import, login workflows and a headless runner for CI.">
+<link rel="canonical" href="https://curst.sh/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://curst.sh/">
+<meta property="og:title" content="curst, an API client for the terminal">
+<meta property="og:description" content="Collections in plain files. Secrets in your keychain. No account, no cloud.">
+<meta property="og:image" content="https://curst.sh/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#f4f2ec" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121314" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="bar">
+  <a class="mark" href="/">curst</a>
+  <nav>
+    <a href="https://github.com/LichiBruno/curst/tree/main/docs">Docs</a>
+    <a href="https://github.com/LichiBruno/curst/releases">Releases</a>
+    <a href="https://github.com/LichiBruno/curst">GitHub</a>
+  </nav>
+</header>
+
+<main>
+
+<section class="hero">
+  <h1>The API client<br>that stays in your terminal.</h1>
+  <p class="lede">Send requests, keep them as plain files next to your code, and keep the secrets out of them. No account, no cloud, no telemetry.</p>
+
+  <div class="install" data-install>
+    <div class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" data-cmd="npm install -g @curst/cli">npm</button>
+      <button role="tab" aria-selected="false" data-cmd="curl -LsSf https://github.com/LichiBruno/curst/releases/latest/download/curst-installer.sh | sh">macOS / Linux</button>
+      <button role="tab" aria-selected="false" data-cmd="irm https://github.com/LichiBruno/curst/releases/latest/download/curst-installer.ps1 | iex">Windows</button>
+    </div>
+    <div class="cmd">
+      <code><span class="prompt">$</span> <span data-cmd-text>npm install -g @curst/cli</span></code>
+      <button class="copy" data-copy>copy</button>
+    </div>
+  </div>
+
+  <p class="links">
+    <a href="https://github.com/LichiBruno/curst">github.com/LichiBruno/curst</a>
+    <span class="sep">·</span>
+    <a href="https://github.com/LichiBruno/curst/releases">MIT, macOS, Linux, Windows</a>
+  </p>
+</section>
+
+<figure class="screen wide">
+<!-- frame:hero --><pre class="term" style="--cols:104" role="img" aria-label="curst: hero"><span class="f-gray">┌ Collections ──────</span><span class="f-cyan"> staging </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
+<span class="f-gray">│▾ </span><span class="b">Shop</span>                      <span class="f-gray">│┌ Method ─┐┌ List orders ────────────────────────────────────────────────┐</span>
+<span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">││</span>{{base_url}}/orders                                          <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▾ </span>orders                  <span class="f-gray">│└─────────┘└─────────────────────────────────────────────────────────────┘</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span><span class="f-cyan u">List orders</span>        <span class="f-gray">│┌ Request </span><span class="f-screen k-gray"> Params </span><span class="f-gray"> Headers  Body  Auth  ─────────────────────────────────┐</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>Get order          <span class="f-gray">││</span>     <span class="f-gray b">Parameter</span>                 <span class="f-gray b">Value</span>                                    <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-yellow">POST </span>Create order       <span class="f-gray">││</span>[x]  status                    paid                                     <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-red">DEL  </span>Cancel order       <span class="f-gray">││</span>[x]  limit                     2                                        <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▾ </span>products                <span class="f-gray">││</span>                                                                        <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>Search products    <span class="f-gray">││</span>                                                                        <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-blue">PUT  </span>Update product     <span class="f-gray">││</span>                                                                        <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▸ </span>customers               <span class="f-gray">││</span>                                                                        <span class="f-gray">│</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│└────────────────────────────────────────────────────────────────────────┘</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┏ Response </span><span class="f-screen k-cyan"> Body </span><span class="f-cyan"> Headers  Timing  Raw  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>{                                                                       <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>  "items": [                                                            <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>    {                                                                   <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "id": "ord_7Hq2",                                                 <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "status": "paid",                                                 <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "total": 129.5,                                                   <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "currency": "EUR",                                                <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "customer": {                                                     <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>        "id": "cus_41",                                                 <span class="f-cyan">┃</span>
+<span class="f-gray">└────────────────────────────┘</span><span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="f-green"> 200 · 142.0 ms · 282 B </span><span class="f-cyan">┛</span>
+<span class="b"> ←→ </span><span class="f-gray">tab </span><span class="b"> ↑↓ </span><span class="f-gray">scroll </span><span class="b"> s </span><span class="f-gray">save </span><span class="b"> y </span><span class="f-gray">copy body </span>
+<span class="b"> Ctrl+R </span><span class="f-gray">send </span><span class="b"> Ctrl+S </span><span class="f-gray">save </span><span class="b"> Ctrl+E </span><span class="f-gray">environments </span><span class="b"> Ctrl+O </span><span class="f-gray">settings </span><span class="b"> Ctrl+P </span><span class="f-gray">commands </span><span class="b"> F1 </span><span class="f-gray">help </span><span class="b"> Ctrl+C </span><span class="f-gray">quit </span></pre><!-- /frame -->
+  <figcaption>A collection, an environment, and the answer. Every key that works is in the footer.</figcaption>
+</figure>
+
+<section class="feature" id="files">
+  <div class="label">01 &nbsp;Files</div>
+  <div class="body">
+    <h2>Your requests are files you can read.</h2>
+    <p>One request per TOML file, a folder per folder. Diff them, review them, commit them. Put a <code>.curst/</code> folder in a project and the whole team opens the same collection. It stays untrusted until you say so, so a repository can never send your secrets anywhere.</p>
+    <div class="code-pair">
+<pre class="code"><span class="c">collections/shop/</span>
+  collection.toml
+  environments/
+    staging.toml
+    production.toml
+  orders/
+    folder.toml
+    <b>list-orders.toml</b>
+    create-order.toml</pre>
+<pre class="code"><span class="c"># orders/list-orders.toml</span>
+name = <span class="s">"List orders"</span>
+method = <span class="s">"GET"</span>
+url = <span class="s">"{{base_url}}/orders"</span>
+
+[[params]]
+name = <span class="s">"status"</span>
+value = <span class="s">"paid"</span></pre>
+    </div>
+  </div>
+</section>
+
+<section class="feature" id="secrets">
+  <div class="label">02 &nbsp;Secrets</div>
+  <div class="body">
+    <h2>Secrets go where you say, and nowhere else.</h2>
+    <p>Values live in the OS keychain or in a file encrypted with a passphrase, never in the collection. Each secret is approved for an origin, so a token for staging is not sent to production by accident, and a redirect elsewhere stops instead of carrying it along. A credential typed in as plain text is flagged; one key turns it into a secret.</p>
+  </div>
+</section>
+
+<figure class="screen wide">
+<!-- frame:approve --><pre class="term" style="--cols:104" role="img" aria-label="curst: approve"><span class="f-gray">┌ Collections ───</span><span class="f-cyan"> production </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
+<span class="f-gray">│▾ </span><span class="b">Shop</span>                      <span class="f-gray">│┌ Method ─┐┌ List orders ────────────────────────────────────────────────┐</span>
+<span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">││</span>{{base_url}}/orders                                          <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▾ </span>orders                  <span class="f-gray">│└─────────┘└─────────────────────────────────────────────────────────────┘</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span><span class="f-cyan u">List orders</span>        <span class="f-gray">│┌ Request </span><span class="f-screen k-gray"> Params </span><span class="f-gray"> Headers  Body  Auth  ─────────────────────────────────┐</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>Get order          <span class="f-gray">││</span>     <span class="f-gray b">Parameter</span>                 <span class="f-gray b">Value</span>                                    <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-yellow">POST </span>Create <span class="f-cyan">┏ Send secrets? ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>                <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-red">DEL  </span>Cancel <span class="f-cyan">┃</span>This request would send these secrets for the first time to         <span class="f-cyan">┃</span>                <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▾ </span>products    <span class="f-cyan">┃</span><span class="b">https://api.shop.dev</span>                                                <span class="f-cyan">┃</span>                <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>Search <span class="f-cyan">┃</span>                                                                    <span class="f-cyan">┃</span><span class="f-gray">────────────────┘</span>
+<span class="f-gray">│</span>    <span class="f-blue">PUT  </span>Update <span class="f-cyan">┃</span>token (environment)                                                 <span class="f-cyan">┃━━━━━━━━━━━━━━━━┓</span>
+<span class="f-gray">│</span>  <span class="f-gray">▸ </span>customers   <span class="f-cyan">┃</span>                                                                    <span class="f-cyan">┃</span>                <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                <span class="f-cyan">┃</span><span class="b"> y </span>send them there, now and later   <span class="b"> n </span>don't send                   <span class="f-cyan">┃</span>                <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                <span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span>                <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "id": "ord_7Hq2",                                                 <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "status": "paid",                                                 <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>      "total": 129.5,                                                   <span class="f-cyan">┃</span>
+<span class="f-gray">└────────────────────────────┘</span><span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="f-green"> 200 · 142.0 ms · 282 B </span><span class="f-cyan">┛</span>
+<span class="b"> y </span><span class="f-gray">send </span><span class="b"> n </span><span class="f-gray">don't send </span>
+<span class="b"> Ctrl+C </span><span class="f-gray">quit </span></pre><!-- /frame -->
+  <figcaption>The first time a token would go to a new origin, curst asks.</figcaption>
+</figure>
+
+<section class="feature" id="import">
+  <div class="label">03 &nbsp;Import</div>
+  <div class="body">
+    <h2>Point it at a spec, or at the docs page.</h2>
+    <p>OpenAPI 3.0, 3.1 and Swagger 2.0, from a file, a folder or a URL. Give it a Swagger UI or Redoc page and curst finds the spec behind it. Tags become folders, servers become environments, security schemes become auth. When the spec changes, <kbd>u</kbd> shows what is new, what changed and what is gone, and you pick what to take. A curl command pastes in too.</p>
+  </div>
+</section>
+
+<figure class="screen wide">
+<!-- frame:import --><pre class="term" style="--cols:104" role="img" aria-label="curst: import"><span class="f-gray">┌ Collections ───────────────┐ </span><span class="f-screen k-ink b"> GET new request </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
+<span class="f-gray">│▾ </span><span class="b u">Shop</span>                      <span class="f-gray">│┌ Method ─┐</span><span class="f-cyan">┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+<span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">│</span><span class="f-cyan">┃</span><span class="f-gray"> https://example.com/api, then Enter to send</span>                 <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>  <span class="f-gray">▸ </span>orders                  <span class="f-gray">│└─────────┘</span><span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span>
+<span class="f-gray">│</span>  <span class="f-gray">▸ </span>products                <span class="f-gray">│┌ Request </span><span class="f-screen k-gray"> Params </span><span class="f-gray"> Headers  Body  Auth  ─────────────────────────────────┐</span>
+<span class="f-gray">│</span>  <span class="f-gray">▸ </span>cu<span class="f-cyan">┏ Import Store ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>      <span class="f-gray">│</span>
+<span class="f-gray">│</span>      <span class="f-cyan">┃</span><span class="b">4 requests in 1 folder, from https://api.shop.dev/docs</span>                                  <span class="f-cyan">┃</span>      <span class="f-gray">│</span>
+<span class="f-gray">│</span>      <span class="f-cyan">┃</span>2 servers, an environment each, each holding the variables                              <span class="f-cyan">┃</span>      <span class="f-gray">│</span>
+<span class="f-gray">│</span>      <span class="f-cyan">┃</span>secrets to fill in after: x_api_key, access_token, token                                <span class="f-cyan">┃</span><span class="f-gray">──────┘</span>
+<span class="f-gray">│</span>      <span class="f-cyan">┃</span>                                                                                        <span class="f-cyan">┃</span><span class="f-gray">──────┐</span>
+<span class="f-gray">│</span>      <span class="f-cyan">┃</span>1 example value looked like a credential and was left out:                              <span class="f-cyan">┃</span>      <span class="f-gray">│</span>
+<span class="f-gray">│</span>      <span class="f-cyan">┃</span><span class="f-gray">  List orders: access_token, the name suggests a credential</span>                             <span class="f-cyan">┃</span>      <span class="f-gray">│</span>
+<span class="f-gray">│</span>      <span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span>      <span class="f-gray">│</span>
+<span class="f-gray">│</span>                            <span class="f-gray">││</span>                                                                        <span class="f-gray">│</span>
+<span class="f-gray">│</span>                            <span class="f-gray">││</span>                                                                        <span class="f-gray">│</span>
+<span class="f-gray">└────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘</span>
+<span class="b"> Enter </span><span class="f-gray">import </span><span class="b"> ↑↓ </span><span class="f-gray">scroll </span><span class="b"> Esc </span><span class="f-gray">cancel </span>
+<span class="b"> Ctrl+C </span><span class="f-gray">quit </span></pre><!-- /frame -->
+  <figcaption>A preview before anything is written. Example values that look like credentials are left out.</figcaption>
+</figure>
+
+<section class="feature" id="workflows">
+  <div class="label">04 &nbsp;Auth</div>
+  <div class="body">
+    <h2>Log in once. Every request after uses it.</h2>
+    <p>Set auth on a collection or folder and its requests inherit it. A workflow sends a few requests in order and keeps values from the answers: log in, keep <code>$.access_token</code> as <code>{{token}}</code>, and the next request carries it.</p>
+  </div>
+</section>
+
+<figure class="screen wide">
+<!-- frame:workflow --><pre class="term" style="--cols:104" role="img" aria-label="curst: workflow"><span class="f-gray">┌ Collections ──────</span><span class="f-cyan"> staging </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
+<span class="f-gray">│▾ </span><span class="b">Shop</span>                      <span class="f-gray">│┌ Method ─┐┌ List orders ────────────────────────────────────────────────┐</span>
+<span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">││</span>{{base_url}}/orders                                          <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▾ </span>orders                  <span class="f-gray">│└─────────┘└─────────────────────────────────────────────────────────────┘</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span><span class="f-cyan u">List orders</span>        <span class="f-gray">│┌ Request </span><span class="f-screen k-gray"> Params </span><span class="f-gray"> Headers  Body  Auth  ─────────────────────────────────┐</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>Get order          <span class="f-gray">││</span>     <span class="f-gray b">Parameter</span>                 <span class="f-gray b">Value</span>                                    <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-yellow">POST </span>Cr<span class="f-cyan">┏ Log in ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>           <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-red">DEL  </span>Ca<span class="f-cyan">┃</span><span class="f-green"> 200 </span>Log in<span class="f-gray">  → {{token}}</span>                                                      <span class="f-cyan">┃</span>           <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▾ </span>product<span class="f-cyan">┃</span><span class="f-gray">   · </span>List orders                                                              <span class="f-cyan">┃</span><span class="f-gray">───────────┘</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>Se<span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛━━━━━━━━━━━┓</span>
+<span class="f-gray">│</span>    <span class="f-blue">PUT  </span>Update product     <span class="f-gray">│</span><span class="f-cyan">┃</span>{                                                                       <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>  <span class="f-gray">▸ </span>customers               <span class="f-gray">│</span><span class="f-cyan">┃</span>  "items": [                                                            <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>                            <span class="f-gray">│</span><span class="f-cyan">┃</span>    {                                                                   <span class="f-cyan">┃</span>
+<span class="f-gray">└────────────────────────────┘</span><span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="f-green"> 200 · 142.0 ms · 282 B </span><span class="f-cyan">┛</span>
+<span class="b"> Esc </span><span class="f-gray">close </span>
+<span class="b"> Ctrl+C </span><span class="f-gray">quit </span></pre><!-- /frame -->
+  <figcaption>A workflow mid-run: the login answered, its token kept.</figcaption>
+</figure>
+
+<section class="feature" id="cli">
+  <div class="label">05 &nbsp;Headless</div>
+  <div class="body">
+    <h2>The same requests, from a script or CI.</h2>
+    <p><code>curst run</code> sends a saved request with its variables, inherited auth and secrets. The body goes to stdout, so it pipes; the status goes to stderr; the exit code tells you what happened.</p>
+<pre class="code"><span class="prompt">$</span> curst run shop/orders/list-orders --env staging | jq <span class="s">'.items[0].id'</span>
+<span class="c">HTTP/2 200 · 142 ms</span>
+<span class="s">"ord_7Hq2"</span></pre>
+    <dl class="codes">
+      <div><dt>0</dt><dd>answered 1xx, 2xx or 3xx</dd></div>
+      <div><dt>1</dt><dd>answered 4xx or 5xx</dd></div>
+      <div><dt>2</dt><dd>no such request, an undefined variable, a secret not approved</dd></div>
+      <div><dt>3</dt><dd>not sent: the connection failed or timed out</dd></div>
+    </dl>
+  </div>
+</section>
+
+<section class="feature" id="keys">
+  <div class="label">06 &nbsp;Keys</div>
+  <div class="body">
+    <h2>Easy on day one. Fast on day one hundred.</h2>
+    <p><kbd>Ctrl</kbd>+<kbd>P</kbd> finds every action and every saved request. The footer always shows the keys that work where you are, and the mouse works too. Prefer vim? Switch the preset and curst turns modal, with <code>hjkl</code>, <code>gg</code>, <code>ciw</code> and <code>:wq</code>. Every key can be rebound in <code>config.toml</code>, and themes are a few lines of TOML.</p>
+  </div>
+</section>
+
+<figure class="screen wide">
+<!-- frame:palette --><pre class="term" style="--cols:104" role="img" aria-label="curst: palette"><span class="f-gray">┌ Collections ───────────────┐ </span><span class="f-screen k-ink b"> GET new request </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
+<span class="f-gray">│▾ </span><span class="b u">Shop</span>                      <span class="f-gray">│┌ Method ─┐</span><span class="f-cyan">┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+<span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">│</span><span class="f-cyan">┃</span><span class="f-gray"> https://example.com/api, then Enter to send</span>                 <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>  <span class="f-gray">▾ </span>orders                  <span class="f-gray">│└─────────┘</span><span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>List o<span class="f-cyan">┏ Commands and requests ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span><span class="f-gray">───────────────┐</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>Get or<span class="f-cyan">┃</span>orders<span class="f-screen k-ink"> </span>                                                               <span class="f-cyan">┃</span>               <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-yellow">POST </span>Create<span class="f-cyan">┃</span><span class="f-screen k-ink"> GET     Shop › orders › List orders                             </span><span class="f-screen k-gray">open </span><span class="f-cyan">┃</span>               <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-red">DEL  </span>Cancel<span class="f-cyan">┃</span> GET     Shop › orders › Get order                               <span class="f-gray">open </span><span class="f-cyan">┃</span>               <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▸ </span>products   <span class="f-cyan">┃</span> POST    Shop › orders › Create order                            <span class="f-gray">open </span><span class="f-cyan">┃</span><span class="f-gray">───────────────┘</span>
+<span class="f-gray">│</span>  <span class="f-gray">▸ </span>customers  <span class="f-cyan">┃</span> DELETE  Shop › orders › Cancel order                            <span class="f-gray">open </span><span class="f-cyan">┃</span><span class="f-gray">───────────────┐</span>
+<span class="f-gray">│</span>               <span class="f-cyan">┃</span> the settings of the collection or folder  <span class="f-gray">global.collection-settings </span><span class="f-cyan">┃</span>               <span class="f-gray">│</span>
+<span class="f-gray">│</span>               <span class="f-cyan">┃</span> GET     Shop › products › Search products                       <span class="f-gray">open </span><span class="f-cyan">┃</span>               <span class="f-gray">│</span>
+<span class="f-gray">│</span>               <span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span>               <span class="f-gray">│</span>
+<span class="f-gray">└────────────────────────────┘└────────────────────────────────────────────────────────────────────────┘</span>
+<span class="b"> ↑↓ </span><span class="f-gray">choose </span><span class="b"> Enter </span><span class="f-gray">run </span><span class="b"> Esc </span><span class="f-gray">close </span>
+<span class="b"> Ctrl+C </span><span class="f-gray">quit </span></pre><!-- /frame -->
+  <figcaption>The palette, a few letters in.</figcaption>
+</figure>
+
+<figure class="screen wide">
+<!-- frame:vim --><pre class="term" style="--cols:104" role="img" aria-label="curst: vim"><span class="f-gray">┌ Collections ──────</span><span class="f-cyan"> staging </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                               <span class="f-gray"> Ctrl+G tabs  Ctrl+T new </span>
+<span class="f-gray">│▾ </span><span class="b">Shop</span>                      <span class="f-gray">│┌ Method ─┐┌ List orders ────────────────────────────────────────────────┐</span>
+<span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">││</span>{{base_url}}/orders                                          <span class="f-gray">│</span>
+<span class="f-gray">│</span>  <span class="f-gray">▾ </span>orders                  <span class="f-gray">│└─────────┘└─────────────────────────────────────────────────────────────┘</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span><span class="f-cyan u">List orders</span>        <span class="f-gray">│┌ Request </span><span class="f-screen k-gray"> Params </span><span class="f-gray"> Headers  Body  Auth  ─────────────────────────────────┐</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>Get order          <span class="f-gray">││</span>     <span class="f-gray b">Parameter</span>                 <span class="f-gray b">Value</span>                                    <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-yellow">POST </span>Create order       <span class="f-gray">││</span>[x]  status                    paid                                     <span class="f-gray">│</span>
+<span class="f-gray">│</span>    <span class="f-red">DEL  </span>Cancel order       <span class="f-gray">│└────────────────────────────────────────────────────────────────────────┘</span>
+<span class="f-gray">│</span>  <span class="f-gray">▾ </span>products                <span class="f-gray">│</span><span class="f-cyan">┏ Response </span><span class="f-screen k-cyan"> Body </span><span class="f-cyan"> Headers  Timing  Raw  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
+<span class="f-gray">│</span>    <span class="f-green">GET  </span>Search products    <span class="f-gray">│</span><span class="f-cyan">┃</span>{                                                                       <span class="f-cyan">┃</span>
+<span class="f-gray">│</span>    <span class="f-blue">PUT  </span>Update product     <span class="f-gray">│</span><span class="f-cyan">┃</span>  "items": [                                                            <span class="f-cyan">┃</span>
+<span class="f-gray">└────────────────────────────┘</span><span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span><span class="f-green"> 200 · 142.0 ms · 282 B </span><span class="f-cyan">┛</span>
+:wq<span class="f-screen k-ink"> </span>
+<span class="b"> Ctrl+C </span><span class="f-gray">quit </span></pre><!-- /frame -->
+  <figcaption>The vim preset, with its command line in the footer.</figcaption>
+</figure>
+
+<section class="closing">
+  <h2>Try it on any URL.</h2>
+  <pre class="code"><span class="prompt">$</span> npm install -g @curst/cli
+<span class="prompt">$</span> curst</pre>
+  <p>Type <code>https://httpbin.org/get</code>, press <kbd>Enter</kbd>. Then read <a href="https://github.com/LichiBruno/curst#a-two-minute-tour">the two-minute tour</a>.</p>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="cols">
+    <div>
+      <a class="mark" href="/">curst</a>
+      <p>MIT licensed. No account, no cloud, no telemetry.</p>
+    </div>
+    <nav>
+      <a href="https://github.com/LichiBruno/curst/blob/main/docs/collections.md">Collections</a>
+      <a href="https://github.com/LichiBruno/curst/blob/main/docs/secrets.md">Secrets and trust</a>
+      <a href="https://github.com/LichiBruno/curst/blob/main/docs/auth-and-workflows.md">Auth and workflows</a>
+      <a href="https://github.com/LichiBruno/curst/blob/main/docs/openapi.md">OpenAPI</a>
+      <a href="https://github.com/LichiBruno/curst/blob/main/docs/cli.md">Command line</a>
+      <a href="https://github.com/LichiBruno/curst/blob/main/docs/config.md">Keys and themes</a>
+    </nav>
+  </div>
+  <p class="credit">Made by <a href="https://lisandro.me">lisandro.me</a></p>
+</footer>
+
+<script>
+  const install = document.querySelector('[data-install]')
+  const text = install.querySelector('[data-cmd-text]')
+  const copy = install.querySelector('[data-copy]')
+
+  install.querySelectorAll('[data-cmd]').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      install.querySelectorAll('[data-cmd]').forEach((t) => t.setAttribute('aria-selected', t === tab))
+      text.textContent = tab.dataset.cmd
+      copy.textContent = 'copy'
+    })
+  })
+
+  copy.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(text.textContent)
+      copy.textContent = 'copied'
+    } catch {
+      copy.textContent = 'select it'
+    }
+  })
+</script>
+</body>
+</html>

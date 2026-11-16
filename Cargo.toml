@@ -8,6 +8,7 @@ edition = "2024"
 rust-version = "1.100"
 license = "MIT"
 repository = "https://github.com/LichiBruno/curst"
+homepage = "https://curst.sh"
 authors = ["The curst contributors"]
 
 [workspace.lints.rust]
