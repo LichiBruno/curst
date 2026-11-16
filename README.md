@@ -12,7 +12,9 @@ A terminal API client built on rust: easy for newcomers, and fast for people who
 - **Auth** set once on a collection or folder, inherited by its requests.
   **Workflows** log in, keep the token, and send the next request with it.
 - **Headless:** `curst run` sends a saved request from a script or CI.
-- No account, no cloud, no telemetry, no update check.
+- No account, no cloud, no telemetry. It looks for new versions only if you
+  turn that on in Settings, and then only reads GitHub's latest release,
+  once a day.
 
 ## Install
 

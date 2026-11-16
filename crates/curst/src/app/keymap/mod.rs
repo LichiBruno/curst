@@ -362,6 +362,7 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         "workflows" => Action::Workflows,
         "share-auth" => Action::ShareAuth,
         "command-line" => Action::CommandLine,
+        "updates" => Action::ToggleUpdates,
         _ if name.starts_with("vim.") => {
             return super::vim::Vim::named(&name["vim.".len()..]).map(Action::Vim);
         }

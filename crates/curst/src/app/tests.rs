@@ -4833,3 +4833,38 @@ mod ex {
         assert_eq!(state.tab_count(), 1);
     }
 }
+
+mod updates {
+    use super::*;
+
+    #[test]
+    fn settings_turn_it_on_and_off_and_show_what_was_found() {
+        let mut state = State {
+            check_updates: Some(false),
+            ..State::default()
+        };
+
+        press_key(&mut state, ctrl('o'));
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u')),
+            [Command::SaveCheckUpdates(true), Command::CheckUpdates]
+        );
+        assert_eq!(
+            press(&mut state, KeyCode::Char('u')),
+            [Command::SaveCheckUpdates(false)]
+        );
+        assert!(matches!(state.popup, Some(Popup::Settings)));
+
+        update(
+            &mut state,
+            Action::UpdateFound("curst 9.0.0 is out: brew upgrade curst".into()),
+        );
+
+        assert_eq!(
+            state.newer.as_deref(),
+            Some("curst 9.0.0 is out: brew upgrade curst")
+        );
+        assert_eq!(state.notice, state.newer);
+    }
+}

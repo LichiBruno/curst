@@ -376,6 +376,13 @@ pub(crate) fn run(
         | Command::ImportBundle(_)
         | Command::ReadSpec { .. }
         | Command::ImportSpec(_) => transfer(library, collections, command),
+        Command::SaveCheckUpdates(check) => {
+            let path = library.paths().config_file();
+
+            curst_core::store::Settings::set_check_updates(&path, check)
+                .err()
+                .map(|err| Action::Notice(format!("settings not saved: {err}")))
+        }
         Command::SaveSidebarWidth(width) => {
             let path = library.paths().config_file();
 
@@ -400,6 +407,7 @@ pub(crate) fn run(
                 .map(|err| Action::Notice(format!("settings not saved: {err}")))
         }
         Command::Send { .. }
+        | Command::CheckUpdates
         | Command::SendStep { .. }
         | Command::CancelStep
         | Command::Cancel

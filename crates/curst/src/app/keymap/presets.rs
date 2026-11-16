@@ -144,6 +144,7 @@ pub(super) const STANDARD: &[Row] = &[
     (L::Settings, "theme", &["t"]),
     (L::Settings, "narrower", &["-"]),
     (L::Settings, "wider", &["+", "="]),
+    (L::Settings, "updates", &["u"]),
     (L::Settings, "close", &["esc", "q"]),
     (L::Approve, "confirm", &["y", "Y"]),
     (L::Approve, "close", &["n", "N", "esc"]),

@@ -1354,10 +1354,16 @@ fn settings(state: &State, frame: &mut Frame) {
         key_span(state, Layer::Settings, "wider"),
         Span::styled("wider", theme.muted),
     ]);
-    let lines = vec![
+    let (updates, switch) = if state.check_updates == Some(true) {
+        ("checked daily", "stop")
+    } else {
+        ("not checked", "check daily")
+    };
+    let mut lines = vec![
         row("Keys", state.keys_preset.clone(), "keys", "next preset"),
         row("Theme", state.theme.name.clone(), "theme", "next theme"),
         sidebar.clone(),
+        row("Updates", updates.into(), "updates", switch),
         Line::from(""),
         Line::from(vec![
             Span::raw(format!("{:<9}", "Secrets")),
@@ -1374,14 +1380,32 @@ fn settings(state: &State, frame: &mut Frame) {
             theme.muted,
         )),
     ];
-    let area = centered(frame, 80, 10);
+
+    if let Some(newer) = &state.newer {
+        lines.insert(
+            4,
+            Line::from(vec![
+                Span::raw(" ".repeat(9)),
+                Span::styled(newer.clone(), theme.success),
+            ]),
+        );
+    }
+
+    let area = centered(frame, 80, u16::try_from(lines.len() + 2).unwrap_or(12));
     let inner = area.inner(Margin::new(1, 1));
 
     frame.render_widget(Clear, area);
     state.region(area, Target::Popup);
 
     // each setting's line changes it; the sidebar's keys are buttons
-    for (row, name) in [(0, "keys"), (1, "theme"), (5, "migrate")] {
+    let migrate = if state.newer.is_some() { 7 } else { 6 };
+
+    for (row, name) in [
+        (0, "keys"),
+        (1, "theme"),
+        (3, "updates"),
+        (migrate, "migrate"),
+    ] {
         line_region(state, inner, row, Target::Run(name.to_owned()));
     }
 
@@ -1817,6 +1841,7 @@ pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
                 .one("keys", "keys")
                 .one("theme", "theme")
                 .pair("narrower", "wider", "sidebar")
+                .one("updates", "updates")
                 .one("migrate", "move secrets")
                 .one("close", "close");
         }

@@ -78,10 +78,22 @@ pub struct Settings {
 
     /// how many megabytes of a response body are kept in memory
     pub http_max_body_mb: Option<u64>,
+
+    /// whether to look once a day for a new version; `None` until the user
+    /// is asked
+    pub check_updates: Option<bool>,
 }
 
 /// the known top-level keys and sections
-const KNOWN: [&str; 6] = ["theme", "mouse", "sidebar_width", "keys", "http", "secrets"];
+const KNOWN: [&str; 7] = [
+    "theme",
+    "mouse",
+    "sidebar_width",
+    "check_updates",
+    "keys",
+    "http",
+    "secrets",
+];
 
 /// the narrowest and widest the sidebar can be set to
 pub const SIDEBAR_WIDTHS: std::ops::RangeInclusive<u16> = 16..=60;
@@ -163,6 +175,7 @@ impl Settings {
 
         settings.theme = string(root.get("theme"), "theme", &mut warnings);
         settings.mouse = flag(root.get("mouse"), "mouse", &mut warnings);
+        settings.check_updates = flag(root.get("check_updates"), "check_updates", &mut warnings);
         settings.sidebar_width =
             number(root.get("sidebar_width"), "sidebar_width", 0, &mut warnings).and_then(|n| {
                 let width = u16::try_from(n).ok().filter(|w| SIDEBAR_WIDTHS.contains(w));
@@ -304,6 +317,14 @@ impl Settings {
     pub fn set_keys_preset(path: &Path, preset: &str) -> Result<(), StoreError> {
         Self::set(path, &["keys", "preset"], Some(preset.into()))
     }
+
+    /// records whether to look for new versions
+    ///
+    /// # Errors
+    /// when the file cannot be read, parsed or written
+    pub fn set_check_updates(path: &Path, check: bool) -> Result<(), StoreError> {
+        Self::set(path, &["check_updates"], Some(check.into()))
+    }
 }
 
 #[cfg(test)]
@@ -329,6 +350,7 @@ mod tests {
             r#"theme = "light"
 mouse = false
 sidebar_width = 40
+check_updates = true
 
 [keys]
 preset = "vim"
@@ -365,6 +387,7 @@ backend = "encrypted-file"
                 ],
                 http_timeout: Some(0),
                 http_max_body_mb: Some(50),
+                check_updates: Some(true),
             }
         );
     }
@@ -434,6 +457,7 @@ backend = "vault"
         Settings::set_theme(&path, "dark").unwrap();
         Settings::set_keys_preset(&path, "standard").unwrap();
         Settings::set_sidebar_width(&path, 36).unwrap();
+        Settings::set_check_updates(&path, false).unwrap();
 
         let (settings, _) = Settings::load(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -442,6 +466,7 @@ backend = "vault"
         assert_eq!(settings.keys_preset.as_deref(), Some("standard"));
         assert_eq!(settings.secrets_backend, None);
         assert_eq!(settings.sidebar_width, Some(36));
+        assert_eq!(settings.check_updates, Some(false));
         assert!(text.contains("# my settings"), "{text}");
         assert!(text.contains("# bright"), "{text}");
 

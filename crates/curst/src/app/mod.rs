@@ -15,6 +15,7 @@ mod send;
 mod sidebar;
 mod spec;
 mod tabs;
+mod updates;
 mod view_model;
 mod vim;
 mod workflow;
@@ -267,6 +268,12 @@ pub(crate) struct State {
     /// keys; in normal mode they move around and change its text
     pub(crate) vim_insert: bool,
 
+    /// whether to look for new versions once a day; `None` until asked
+    pub(crate) check_updates: Option<bool>,
+
+    /// a newer version, as told, with how to get it
+    pub(crate) newer: Option<String>,
+
     /// the request whose tab closes once its save without asking is done
     pub(crate) close_after_save: Option<NodeKey>,
 
@@ -359,6 +366,8 @@ impl Default for State {
             quit_when_saved: false,
             quit_after_saves: 0,
             vim_insert: false,
+            check_updates: None,
+            newer: None,
             close_after_save: None,
             refresh_fetch: None,
             spec_job: None,
@@ -481,6 +490,12 @@ pub(crate) enum Action {
 
     /// with the vim keys, the command line at the bottom
     CommandLine,
+
+    /// turns looking for new versions on or off
+    ToggleUpdates,
+
+    /// a newer version is out, as told, with how to get it
+    UpdateFound(String),
 
     /// a vim key in a field
     Vim(vim::Vim),
@@ -931,6 +946,12 @@ pub(crate) enum Command {
     /// writes how wide the sidebar is at most to `config.toml`
     SaveSidebarWidth(u16),
 
+    /// writes whether to look for new versions to `config.toml`
+    SaveCheckUpdates(bool),
+
+    /// looks for a new version, at most once a day
+    CheckUpdates,
+
     /// writes the keymap preset, the theme or both to `config.toml`; what
     /// is `None` stays as it is in the file
     SavePreferences {
@@ -1228,6 +1249,7 @@ fn report(state: &mut State, action: Action) -> Vec<Command> {
             workflow::needs_approval(state, id, *approval);
         }
         Action::StepAnswered { id, result } => return workflow::answered(state, id, *result),
+        Action::UpdateFound(news) => updates::found(state, news),
 
         Action::Responded { id, mut result } if state.in_flight != Some(id) => {
             if let Ok(view) = result.as_mut() {
@@ -1402,6 +1424,7 @@ fn reported(action: &Action) -> bool {
             | Action::NeedsApproval { .. }
             | Action::StepNeedsApproval { .. }
             | Action::StepAnswered { .. }
+            | Action::UpdateFound(_)
             | Action::Approved { .. }
             | Action::SecretsChanged { .. }
             | Action::Migrated { .. }
