@@ -132,6 +132,7 @@ pub(crate) fn describe(name: &str) -> &'static str {
         "workflows" => "the workflows of the collection",
         "share-auth" => "use this request's auth for the whole collection",
         "command-line" => "the command line, for :q, :w and the rest",
+        "updates" => "look for new versions, or stop",
         _ if name.starts_with("pane.") || name.starts_with("vim.") => describe_vim(name),
         "theme" => "the next theme",
         "narrower" => "a narrower sidebar",

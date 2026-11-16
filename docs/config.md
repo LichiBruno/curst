@@ -9,6 +9,7 @@ used. curst keeps your comments and layout when it writes the file.
 theme = "dark"            # dark, light, mono, or one of your themes
 mouse = true
 sidebar_width = 30        # columns, 16 to 60
+check_updates = true      # look for new versions once a day
 
 [keys]
 preset = "standard"       # or "vim"
@@ -24,6 +25,15 @@ max_body_mb = 10          # how much of a response is kept in memory
 [secrets]
 backend = "keychain"      # or "encrypted-file"
 ```
+
+## New versions
+
+curst can look for new versions; it is off until you turn it on with **u**
+in Settings, or `check_updates = true`. Then it reads GitHub's latest
+release at most once a day, in the background; nothing about you or your
+collections goes with the request, and with no network it says nothing. A
+new version is told once, with the command that updates curst the way you
+installed it, and Settings shows it too.
 
 ## Keys
 

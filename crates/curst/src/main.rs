@@ -9,6 +9,7 @@ mod session;
 mod storage;
 mod theme;
 mod ui;
+mod update;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -209,6 +210,7 @@ impl Startup {
         state.key_bindings.clone_from(&self.key_bindings);
         state.theme = self.theme.clone();
         state.sidebar_width = self.settings.sidebar_width;
+        state.check_updates = self.settings.check_updates;
         state.themes.clone_from(&self.themes);
 
         if !state.themes.iter().any(|t| t.name == self.theme.name) {
@@ -317,9 +319,7 @@ impl Runtime {
             app::update(&mut state, Action::Notice(message));
         }
 
-        if setup.first_run {
-            app::update(&mut state, Action::Welcome);
-        }
+        self.first_steps(&mut state, setup);
 
         // when the user last did something, and whether the pause after it
         // has yet to be reported
@@ -432,6 +432,39 @@ impl Runtime {
                 .results
                 .send(Action::Notice("secrets need a data folder".into()));
         }
+    }
+
+    /// the welcome on a first run; then a look for a new version, when
+    /// Settings has it on
+    fn first_steps(&mut self, state: &mut State, setup: &Startup) {
+        if setup.first_run {
+            app::update(state, Action::Welcome);
+        }
+
+        if state.check_updates == Some(true) {
+            self.execute(Command::CheckUpdates, state);
+        }
+    }
+
+    /// looks for a new version on a worker, saying so when there is one;
+    /// a failure says nothing
+    fn check_updates(&mut self) {
+        let Ok(library) = &self.library else {
+            return;
+        };
+
+        let file = update::Cache::file(&library.paths().data_dir);
+        let executor = Arc::clone(&self.executor);
+        let results = self.results.clone();
+
+        self.workers.retain(|worker| !worker.is_finished());
+        self.workers.push(thread::spawn(move || {
+            let exe = std::env::current_exe().unwrap_or_default();
+
+            if let Some(news) = update::check(executor.as_ref(), &file, update::now(), &exe) {
+                let _ = results.send(Action::UpdateFound(news));
+            }
+        }));
     }
 
     /// puts `text` on the clipboard: through the terminal, and locally
@@ -689,6 +722,7 @@ impl Runtime {
                 self.load_spec(id, collection, source, &secrets, untrusted);
             }
             Command::Copy(text) => self.copy(text),
+            Command::CheckUpdates => self.check_updates(),
             Command::ChangeSecrets { id, changes } => {
                 // a secret of an untrusted collection is never stored
                 let untrusted = changes.iter().any(|change| {

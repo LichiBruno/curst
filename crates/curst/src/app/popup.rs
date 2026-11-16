@@ -524,6 +524,11 @@ pub(crate) fn apply(state: &mut State, action: Action) -> Result<Vec<Command>, A
 fn settings_key(state: &mut State, action: Action) -> Result<Vec<Command>, Action> {
     match action {
         Action::Migrate => Ok(super::send::migrate(state)),
+        Action::ToggleUpdates => {
+            state.popup = Some(Popup::Settings);
+
+            Ok(super::updates::toggle(state))
+        }
         Action::NextKeys | Action::NextTheme | Action::SidebarNarrower | Action::SidebarWider => {
             state.popup = Some(Popup::Settings);
 
