@@ -168,6 +168,14 @@ h1 {
   letter-spacing: -0.035em;
 }
 
+.kicker {
+  display: block;
+  margin-bottom: 22px;
+  color: var(--faint);
+  font: 400 14px/1.4 var(--mono);
+  letter-spacing: 0;
+}
+
 .lede {
   max-width: 600px;
   margin: 26px 0 36px;
@@ -392,6 +400,48 @@ h2 {
 }
 
 #cli {
+  margin-bottom: 120px;
+}
+
+/* questions */
+
+.faq {
+  border-top: 1px solid var(--rule);
+}
+
+.faq details {
+  border-bottom: 1px solid var(--rule);
+}
+
+.faq summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 0;
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+}
+
+.faq summary::-webkit-details-marker {
+  display: none;
+}
+
+.faq summary::after {
+  content: "+";
+  color: var(--accent);
+  font-family: var(--mono);
+}
+
+.faq details[open] summary::after {
+  content: "−";
+}
+
+.faq details p {
+  margin: -4px 0 18px;
+}
+
+#faq {
   margin-bottom: 120px;
 }
 
