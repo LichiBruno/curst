@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "curst"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1070,7 +1070,7 @@ dependencies = [
 
 [[package]]
 name = "curst-core"
-version = "0.1.1"
+version = "0.2.0"
 dependencies = [
  "age",
  "apple-native-keyring-store",
