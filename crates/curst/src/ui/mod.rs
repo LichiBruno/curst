@@ -590,3 +590,6 @@ pub(crate) fn hints(state: &State) -> Vec<Hint> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod site_frames;
