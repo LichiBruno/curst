@@ -3,15 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>curst, an API client for the terminal</title>
-<meta name="description" content="A fast terminal API client. Collections in plain TOML you can commit, secrets in your keychain that go only where you say, OpenAPI import, login workflows and a headless runner for CI.">
+<title>curst: a terminal API client in Rust, a curl and Postman alternative</title>
+<meta name="description" content="curst is a free, open source TUI API client written in Rust. Send HTTP requests from your terminal, import curl commands and OpenAPI specs, and keep secrets in your keychain.">
+<meta name="keywords" content="curst, curl TUI, curl CLI, rust TUI, terminal API client, TUI HTTP client, rust HTTP client, Postman alternative, Insomnia alternative, REST client, OpenAPI client, ratatui">
+<meta name="robots" content="index, follow">
 <link rel="canonical" href="https://curst.sh/">
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="curst">
 <meta property="og:url" content="https://curst.sh/">
-<meta property="og:title" content="curst, an API client for the terminal">
-<meta property="og:description" content="Collections in plain files. Secrets in your keychain. No account, no cloud.">
+<meta property="og:title" content="curst: a terminal API client in Rust">
+<meta property="og:description" content="A free, open source TUI for HTTP APIs. Like curl, with collections, environments and secrets that stay in your keychain.">
 <meta property="og:image" content="https://curst.sh/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="curst running in a terminal, showing a collection and a JSON response">
 <meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="curst: a terminal API client in Rust">
+<meta name="twitter:description" content="A free, open source TUI for HTTP APIs. Like curl, with collections, environments and secrets that stay in your keychain.">
+<meta name="twitter:image" content="https://curst.sh/og.png">
+<meta name="twitter:image:alt" content="curst running in a terminal, showing a collection and a JSON response">
 <meta name="theme-color" content="#f4f2ec" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#121314" media="(prefers-color-scheme: dark)">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
@@ -19,6 +29,87 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
 <link rel="stylesheet" href="/style.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "name": "curst",
+      "url": "https://curst.sh/",
+      "description": "A free, open source terminal API client (TUI) written in Rust. Send HTTP requests, import curl commands and OpenAPI specs, keep collections as plain TOML files and secrets in the OS keychain.",
+      "applicationCategory": "DeveloperApplication",
+      "applicationSubCategory": "API client",
+      "operatingSystem": "macOS, Linux, Windows",
+      "programmingLanguage": "Rust",
+      "license": "https://opensource.org/licenses/MIT",
+      "isAccessibleForFree": true,
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "downloadUrl": "https://github.com/LichiBruno/curst/releases",
+      "installUrl": "https://www.npmjs.com/package/@curst/cli",
+      "codeRepository": "https://github.com/LichiBruno/curst",
+      "screenshot": "https://curst.sh/og.png",
+      "keywords": "curl TUI, curl CLI, rust TUI, terminal API client, Postman alternative, REST client, OpenAPI",
+      "author": { "@type": "Person", "name": "Lisandro Bruno", "url": "https://lisandro.me" }
+    },
+    {
+      "@type": "SoftwareSourceCode",
+      "name": "curst",
+      "codeRepository": "https://github.com/LichiBruno/curst",
+      "programmingLanguage": "Rust",
+      "license": "https://opensource.org/licenses/MIT"
+    }
+  ]
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Is curst a curl alternative?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It sends HTTP requests like curl does, and it keeps them. Import a curl command and it becomes a saved request; press C on any request to copy it back out as a curl command. From scripts, curst run sends a saved request the way you would call curl, body to stdout and status to stderr."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is it a Postman or Insomnia alternative?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes, for the terminal. Collections, folders, environments, variables, inherited auth, login workflows and OpenAPI import, without an account or a cloud. A collection is a folder of TOML files, so sharing one is a commit or a single exported bundle."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What is it written in?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Rust, with a TUI drawn by ratatui. It ships as one binary for macOS, Linux and Windows, and installs with npm, a shell script, PowerShell or an MSI."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is it free?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. curst is free and open source under the MIT license. There is no account, no paid tier and no telemetry."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it work over SSH or on a server?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes, it runs in any terminal. Where there is no OS keychain, such as an SSH session on a Linux server, secrets go in a file encrypted with a passphrase instead."
+      }
+    }
+  ]
+}
+</script>
 </head>
 <body>
 
@@ -34,8 +125,8 @@
 <main>
 
 <section class="hero">
-  <h1>The API client<br>that stays in your terminal.</h1>
-  <p class="lede">Send requests, keep them as plain files next to your code, and keep the secrets out of them. No account, no cloud, no telemetry.</p>
+  <h1><span class="kicker">curst, a TUI API client written in Rust</span>The API client<br>that stays in your terminal.</h1>
+  <p class="lede">Like curl, with a memory. Send HTTP requests from a fast Rust TUI, keep them as plain files next to your code, and keep the secrets out of them. No account, no cloud, no telemetry.</p>
 
   <div class="install" data-install>
     <div class="tabs" role="tablist">
@@ -57,7 +148,7 @@
 </section>
 
 <figure class="screen wide">
-<!-- frame:hero --><pre class="term" style="--cols:104" role="img" aria-label="curst: hero"><span class="f-gray">┌ Collections ──────</span><span class="f-cyan"> staging </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
+<!-- frame:hero --><pre class="term" style="--cols:104" role="img" aria-label="curst, a Rust TUI API client, with a Shop collection in the sidebar and a GET request answered with JSON"><span class="f-gray">┌ Collections ──────</span><span class="f-cyan"> staging </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
 <span class="f-gray">│▾ </span><span class="b">Shop</span>                      <span class="f-gray">│┌ Method ─┐┌ List orders ────────────────────────────────────────────────┐</span>
 <span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">││</span>{{base_url}}/orders                                          <span class="f-gray">│</span>
 <span class="f-gray">│</span>  <span class="f-gray">▾ </span>orders                  <span class="f-gray">│└─────────┘└─────────────────────────────────────────────────────────────┘</span>
@@ -122,7 +213,7 @@ value = <span class="s">"paid"</span></pre>
 </section>
 
 <figure class="screen wide">
-<!-- frame:approve --><pre class="term" style="--cols:104" role="img" aria-label="curst: approve"><span class="f-gray">┌ Collections ───</span><span class="f-cyan"> production </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
+<!-- frame:approve --><pre class="term" style="--cols:104" role="img" aria-label="curst asking before it sends a secret token to a new host"><span class="f-gray">┌ Collections ───</span><span class="f-cyan"> production </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
 <span class="f-gray">│▾ </span><span class="b">Shop</span>                      <span class="f-gray">│┌ Method ─┐┌ List orders ────────────────────────────────────────────────┐</span>
 <span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">││</span>{{base_url}}/orders                                          <span class="f-gray">│</span>
 <span class="f-gray">│</span>  <span class="f-gray">▾ </span>orders                  <span class="f-gray">│└─────────┘└─────────────────────────────────────────────────────────────┘</span>
@@ -154,7 +245,7 @@ value = <span class="s">"paid"</span></pre>
 </section>
 
 <figure class="screen wide">
-<!-- frame:import --><pre class="term" style="--cols:104" role="img" aria-label="curst: import"><span class="f-gray">┌ Collections ───────────────┐ </span><span class="f-screen k-ink b"> GET new request </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
+<!-- frame:import --><pre class="term" style="--cols:104" role="img" aria-label="curst previewing an OpenAPI spec before importing it as a collection"><span class="f-gray">┌ Collections ───────────────┐ </span><span class="f-screen k-ink b"> GET new request </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
 <span class="f-gray">│▾ </span><span class="b u">Shop</span>                      <span class="f-gray">│┌ Method ─┐</span><span class="f-cyan">┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">│</span><span class="f-cyan">┃</span><span class="f-gray"> https://example.com/api, then Enter to send</span>                 <span class="f-cyan">┃</span>
 <span class="f-gray">│</span>  <span class="f-gray">▸ </span>orders                  <span class="f-gray">│└─────────┘</span><span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span>
@@ -184,7 +275,7 @@ value = <span class="s">"paid"</span></pre>
 </section>
 
 <figure class="screen wide">
-<!-- frame:workflow --><pre class="term" style="--cols:104" role="img" aria-label="curst: workflow"><span class="f-gray">┌ Collections ──────</span><span class="f-cyan"> staging </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
+<!-- frame:workflow --><pre class="term" style="--cols:104" role="img" aria-label="a curst workflow logging in and keeping the access token for the next request"><span class="f-gray">┌ Collections ──────</span><span class="f-cyan"> staging </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
 <span class="f-gray">│▾ </span><span class="b">Shop</span>                      <span class="f-gray">│┌ Method ─┐┌ List orders ────────────────────────────────────────────────┐</span>
 <span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">││</span>{{base_url}}/orders                                          <span class="f-gray">│</span>
 <span class="f-gray">│</span>  <span class="f-gray">▾ </span>orders                  <span class="f-gray">│└─────────┘└─────────────────────────────────────────────────────────────┘</span>
@@ -229,7 +320,7 @@ value = <span class="s">"paid"</span></pre>
 </section>
 
 <figure class="screen wide">
-<!-- frame:palette --><pre class="term" style="--cols:104" role="img" aria-label="curst: palette"><span class="f-gray">┌ Collections ───────────────┐ </span><span class="f-screen k-ink b"> GET new request </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
+<!-- frame:palette --><pre class="term" style="--cols:104" role="img" aria-label="the curst command palette finding saved requests"><span class="f-gray">┌ Collections ───────────────┐ </span><span class="f-screen k-ink b"> GET new request </span>                 <span class="f-gray"> Ctrl+G tabs  Ctrl+T new  Ctrl+W close </span>
 <span class="f-gray">│▾ </span><span class="b u">Shop</span>                      <span class="f-gray">│┌ Method ─┐</span><span class="f-cyan">┏ URL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓</span>
 <span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">│</span><span class="f-cyan">┃</span><span class="f-gray"> https://example.com/api, then Enter to send</span>                 <span class="f-cyan">┃</span>
 <span class="f-gray">│</span>  <span class="f-gray">▾ </span>orders                  <span class="f-gray">│└─────────┘</span><span class="f-cyan">┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛</span>
@@ -249,7 +340,7 @@ value = <span class="s">"paid"</span></pre>
 </figure>
 
 <figure class="screen wide">
-<!-- frame:vim --><pre class="term" style="--cols:104" role="img" aria-label="curst: vim"><span class="f-gray">┌ Collections ──────</span><span class="f-cyan"> staging </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                               <span class="f-gray"> Ctrl+G tabs  Ctrl+T new </span>
+<!-- frame:vim --><pre class="term" style="--cols:104" role="img" aria-label="curst with the vim keymap and its command line"><span class="f-gray">┌ Collections ──────</span><span class="f-cyan"> staging </span><span class="f-gray">┐ </span><span class="f-screen k-ink b"> GET List orders </span>                               <span class="f-gray"> Ctrl+G tabs  Ctrl+T new </span>
 <span class="f-gray">│▾ </span><span class="b">Shop</span>                      <span class="f-gray">│┌ Method ─┐┌ List orders ────────────────────────────────────────────────┐</span>
 <span class="f-gray">│</span>  <span class="f-yellow">POST </span>Log in               <span class="f-gray">││</span>   <span class="b">GET</span>   <span class="f-gray">││</span>{{base_url}}/orders                                          <span class="f-gray">│</span>
 <span class="f-gray">│</span>  <span class="f-gray">▾ </span>orders                  <span class="f-gray">│└─────────┘└─────────────────────────────────────────────────────────────┘</span>
@@ -265,6 +356,35 @@ value = <span class="s">"paid"</span></pre>
 <span class="b"> Ctrl+C </span><span class="f-gray">quit </span></pre><!-- /frame -->
   <figcaption>The vim preset, with its command line in the footer.</figcaption>
 </figure>
+
+<section class="feature" id="faq">
+  <div class="label">07 &nbsp;Questions</div>
+  <div class="body">
+    <h2>A curl you can keep, a Postman without the cloud.</h2>
+    <div class="faq">
+      <details>
+        <summary>Is curst a curl alternative?</summary>
+        <p>It sends HTTP requests like curl does, and it keeps them. Import a curl command and it becomes a saved request; press C on any request to copy it back out as a curl command. From scripts, <code>curst run</code> sends a saved request the way you would call curl, body to stdout and status to stderr.</p>
+      </details>
+      <details>
+        <summary>Is it a Postman or Insomnia alternative?</summary>
+        <p>Yes, for the terminal. Collections, folders, environments, variables, inherited auth, login workflows and OpenAPI import, without an account or a cloud. A collection is a folder of TOML files, so sharing one is a commit or a single exported bundle.</p>
+      </details>
+      <details>
+        <summary>What is it written in?</summary>
+        <p>Rust, with a TUI drawn by ratatui. It ships as one binary for macOS, Linux and Windows, and installs with npm, a shell script, PowerShell or an MSI.</p>
+      </details>
+      <details>
+        <summary>Is it free?</summary>
+        <p>Yes. curst is free and open source under the MIT license. There is no account, no paid tier and no telemetry.</p>
+      </details>
+      <details>
+        <summary>Does it work over SSH or on a server?</summary>
+        <p>Yes, it runs in any terminal. Where there is no OS keychain, such as an SSH session on a Linux server, secrets go in a file encrypted with a passphrase instead.</p>
+      </details>
+    </div>
+  </div>
+</section>
 
 <section class="closing">
   <h2>Try it on any URL.</h2>

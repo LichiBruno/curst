@@ -520,7 +520,7 @@ fn page() -> PathBuf {
 }
 
 /// draws the screen and puts it in the page between its markers
-fn frame(name: &str, state: &State, width: u16, height: u16) {
+fn frame(name: &str, label: &str, state: &State, width: u16, height: u16) {
     let buffer = buffer(state, width, height);
 
     println!("{name}:\n{}", plain(&buffer));
@@ -535,7 +535,7 @@ fn frame(name: &str, state: &State, width: u16, height: u16) {
         + open.len();
     let end = start + text[start..].find(close).unwrap();
     let content = format!(
-        "<pre class=\"term\" style=\"--cols:{width}\" role=\"img\" aria-label=\"curst: {name}\">{}</pre>",
+        "<pre class=\"term\" style=\"--cols:{width}\" role=\"img\" aria-label=\"{label}\">{}</pre>",
         html(&buffer)
     );
     let updated = format!("{}{content}{}", &text[..start], &text[end..]);
@@ -546,10 +546,46 @@ fn frame(name: &str, state: &State, width: u16, height: u16) {
 #[test]
 #[ignore = "writes the website's screens"]
 fn site_frames() {
-    frame("hero", &hero(), 104, 26);
-    frame("approve", &approve(), 104, 20);
-    frame("import", &import(), 104, 18);
-    frame("workflow", &workflow(), 104, 16);
-    frame("palette", &palette(), 104, 16);
-    frame("vim", &vim(), 104, 14);
+    frame(
+        "hero",
+        "curst, a Rust TUI API client, with a Shop collection in the sidebar and a GET request answered with JSON",
+        &hero(),
+        104,
+        26,
+    );
+    frame(
+        "approve",
+        "curst asking before it sends a secret token to a new host",
+        &approve(),
+        104,
+        20,
+    );
+    frame(
+        "import",
+        "curst previewing an OpenAPI spec before importing it as a collection",
+        &import(),
+        104,
+        18,
+    );
+    frame(
+        "workflow",
+        "a curst workflow logging in and keeping the access token for the next request",
+        &workflow(),
+        104,
+        16,
+    );
+    frame(
+        "palette",
+        "the curst command palette finding saved requests",
+        &palette(),
+        104,
+        16,
+    );
+    frame(
+        "vim",
+        "curst with the vim keymap and its command line",
+        &vim(),
+        104,
+        14,
+    );
 }
