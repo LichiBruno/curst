@@ -569,6 +569,16 @@ pub(crate) enum Action {
     Paste,
     MoveUp,
     MoveDown,
+
+    /// copies the selected rows next to themselves
+    Duplicate,
+
+    /// moves the selection, the row it leaves staying selected
+    SelectUp,
+    SelectDown,
+
+    /// starts or ends a range of selected rows
+    Select,
     Trust,
 
     /// trust a new folder and give it the secrets of orphan number n
@@ -798,6 +808,16 @@ pub(crate) enum Change {
     },
     Delete {
         path: Vec<String>,
+    },
+
+    /// copies each item next to itself; one that fails does not stop the rest
+    Duplicate {
+        paths: Vec<Vec<String>>,
+    },
+
+    /// deletes each item; one that fails does not stop the rest
+    DeleteMany {
+        paths: Vec<Vec<String>>,
     },
     RenameCollection(String),
     DeleteCollection,
@@ -1078,17 +1098,7 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         Action::NextTab | Action::PreviousTab => step_tab(state, matches!(action, Action::NextTab)),
         Action::NextMethod => state.method = state.method.next(),
         Action::PreviousMethod => state.method = state.method.previous(),
-        Action::Up
-        | Action::Down
-        | Action::Top
-        | Action::Bottom
-        | Action::Left
-        | Action::Right
-        | Action::Edit
-            if state.focus == Focus::Sidebar =>
-        {
-            return sidebar::apply(state, &action);
-        }
+        _ if sidebar::handles(state, &action) => return sidebar::apply(state, &action),
         Action::Up
         | Action::Down
         | Action::PageUp
@@ -1107,16 +1117,6 @@ fn apply(state: &mut State, action: Action) -> Vec<Command> {
         | Action::CycleKind => request::change(state, &action),
         Action::Type(key) => request::type_key(state, key),
         Action::OpenSave => open_save(state),
-        Action::NewRequest
-        | Action::NewFolder
-        | Action::NewCollection
-        | Action::Rename
-        | Action::DeleteItem
-        | Action::Cut
-        | Action::Paste
-        | Action::MoveUp
-        | Action::MoveDown
-        | Action::Trust => return sidebar::apply(state, &action),
         // reports went to `report`, and these only mean something in a pop-up
         _ => {}
     }

@@ -363,7 +363,10 @@ pub(super) fn apply(state: &mut State, action: Action) {
                 table.edit(column);
             }
         }
-        Action::SelectNode(key) => state.sidebar.selected = Some(key),
+        Action::SelectNode(key) => {
+            state.sidebar.selected = Some(key);
+            state.sidebar.anchor = None;
+        }
         Action::Place { field, row, col } => request::place(state, field, row, col),
         Action::ScrollResponse(lines) => request::scroll_response(state, lines),
         _ => {}

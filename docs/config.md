@@ -51,6 +51,8 @@ keys if a binding locks you out.
 - **Moving around:** `h` `j` `k` `l` move in the sidebar, between a pane's
   tabs and rows, and through the response; `gg` and `G` go to the top and
   bottom.
+- **Selecting:** `V` in the sidebar starts selecting rows and `j` `k` extend
+  it; then a single `d` deletes, `D` copies, and `V` or Esc stops.
 - **Panes:** `Ctrl+h/j/k/l` move to the pane on the left, below, above or on
   the right. Many terminals send `Ctrl+h` as Backspace, so vim's own
   `Ctrl+w h/j/k/l` work too.

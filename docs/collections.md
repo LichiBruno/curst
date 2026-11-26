@@ -30,6 +30,18 @@ A request's file name is a slug of its name (`List orders` →
 children in `order`, which the sidebar follows. A file you add by hand appears
 at the end. Renaming or moving an item in curst renames or moves its file.
 
+**D** in the sidebar copies the request or folder under the cursor as
+"<name> copy", right after it. A copy of a request imported from a spec is no
+longer tied to the spec, so refreshing changes only the original, and
+workflows keep pointing at the original. **K** and **J** move an item up and
+down.
+
+**Shift+↑** and **Shift+↓** select several rows, and the arrows then move the
+end of the selection. With rows selected, **D** copies them, **d** deletes
+them after one question, Enter opens each request in its own tab, and Esc
+clears the selection. A folder takes what is inside it along. Collections are
+never copied, and are deleted only one at a time.
+
 ## A `.curst/` folder in a project
 
 Run curst in a folder that holds a `.curst/` directory and that collection

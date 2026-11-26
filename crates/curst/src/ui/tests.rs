@@ -286,6 +286,29 @@ mod collections {
     }
 
     #[test]
+    fn sidebar_with_a_range_selected() {
+        for vim in [false, true] {
+            let mut state = with_collection();
+
+            if vim {
+                state.keymap = crate::app::Keymap::vim();
+            }
+
+            state.focus = Focus::Sidebar;
+            state.sidebar.expanded.insert(key(&["users"]));
+            state.sidebar.anchor = Some(key(&["users"]));
+            state.sidebar.selected = Some(key(&["create"]));
+
+            let name = if vim { "vim" } else { "standard" };
+
+            insta::assert_snapshot!(
+                format!("sidebar_with_a_range_selected_{name}"),
+                render(&state, 100, 12)
+            );
+        }
+    }
+
+    #[test]
     fn collection_settings_with_a_long_spec_location() {
         let mut state = with_collection();
 

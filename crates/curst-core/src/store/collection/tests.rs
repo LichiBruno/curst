@@ -849,3 +849,133 @@ fn an_api_key_keeps_its_name_and_place() {
     assert!(text.contains("kind = \"api_key\""), "{text}");
     assert!(text.contains("in = \"query\""), "{text}");
 }
+
+#[test]
+fn a_duplicate_is_a_named_copy_right_after_its_source() {
+    use crate::model::{Step, Workflow};
+
+    let (_dir, store) = new_collection();
+    let spec = SpecOrigin {
+        operation: "GET /pets".into(),
+        fingerprint: "a1".into(),
+    };
+
+    store
+        .create_request(&[], "First", &get("http://h/1"))
+        .unwrap();
+    store
+        .create_from_spec(&[], "List", &get("http://h/pets"), Some(&spec))
+        .unwrap();
+    store
+        .create_request(&[], "Last", &get("http://h/3"))
+        .unwrap();
+
+    let workflow = Workflow {
+        name: "w".into(),
+        steps: vec![Step {
+            request: path(&["list"]),
+            keep: Vec::new(),
+        }],
+    };
+
+    store
+        .save_workflows(std::slice::from_ref(&workflow))
+        .unwrap();
+
+    let copy = store.duplicate(&path(&["list"])).unwrap();
+
+    assert_eq!(copy, "list-copy");
+    assert_eq!(top(&store), ["first", "list", "list-copy", "last"]);
+
+    let again = store.duplicate(&path(&["list"])).unwrap();
+
+    assert_eq!(again, "list-copy-2");
+    assert_eq!(
+        top(&store),
+        ["first", "list", "list-copy-2", "list-copy", "last"]
+    );
+
+    let collection = store.load().unwrap().collection;
+    let Some(Item::Request(copied)) = collection.item(&path(&["list-copy"])) else {
+        panic!("no copy");
+    };
+    let Some(Item::Request(original)) = collection.item(&path(&["list"])) else {
+        panic!("no original");
+    };
+
+    assert_eq!(copied.name, "List copy");
+    assert_eq!(copied.request, original.request);
+
+    // only the original stays tied to its spec, and workflows keep
+    // pointing at it
+    assert_eq!(copied.spec, None);
+    assert_eq!(original.spec, Some(spec));
+    assert_eq!(collection.workflows, [workflow]);
+}
+
+#[test]
+fn a_duplicated_folder_copies_everything_inside_it() {
+    let (_dir, store) = new_collection();
+    let users = store.create_folder(&[], "Users").unwrap();
+    let admin = store
+        .create_folder(std::slice::from_ref(&users), "Admin")
+        .unwrap();
+    let auth = Auth::Bearer {
+        token: "{{token}}".into(),
+    };
+
+    store.save_auth(&path(&["users"]), &auth).unwrap();
+    store
+        .create_request(&path(&["users"]), "B", &get("http://h/b"))
+        .unwrap();
+    store
+        .create_request(&path(&["users"]), "A", &get("http://h/a"))
+        .unwrap();
+    store
+        .create_request(&[users.clone(), admin], "Root", &get("http://h/root"))
+        .unwrap();
+    store
+        .create_request(&[], "After", &get("http://h/z"))
+        .unwrap();
+
+    let copy = store.duplicate(std::slice::from_ref(&users)).unwrap();
+
+    assert_eq!(copy, "users-copy");
+    assert_eq!(top(&store), ["users/", "users-copy/", "after"]);
+
+    let collection = store.load().unwrap().collection;
+    let (Some(Item::Folder(original)), Some(Item::Folder(copied))) = (
+        collection.item(&path(&["users"])),
+        collection.item(&path(&["users-copy"])),
+    ) else {
+        panic!("no folders");
+    };
+
+    assert_eq!(copied.name, "Users copy");
+    assert_eq!(copied.auth, auth);
+    assert_eq!(copied.items, original.items);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_folder_holding_a_link_is_not_duplicated() {
+    let (dir, store) = new_collection();
+    let outside = dir.path().join("outside.toml");
+
+    fs::write(&outside, "name = \"Outside\"\nurl = \"leak\"").unwrap();
+    store.create_folder(&[], "Sub").unwrap();
+    store
+        .create_request(&path(&["sub"]), "Real", &get("r"))
+        .unwrap();
+    std::os::unix::fs::symlink(&outside, store.root().join("sub/stolen.toml")).unwrap();
+
+    assert!(matches!(
+        store.duplicate(&path(&["sub"])),
+        Err(StoreError::Invalid(_))
+    ));
+    assert!(!store.root().join("sub-copy").exists());
+    assert!(matches!(
+        store.duplicate(&path(&["missing"])),
+        Err(StoreError::NotFound(_))
+    ));
+}

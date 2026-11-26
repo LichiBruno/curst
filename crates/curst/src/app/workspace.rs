@@ -131,6 +131,9 @@ pub(crate) struct Row {
 #[derive(Debug, Default)]
 pub(crate) struct Sidebar {
     pub(crate) selected: Option<NodeKey>,
+
+    /// the other end of a range of rows, which runs to `selected`
+    pub(crate) anchor: Option<NodeKey>,
     pub(crate) expanded: HashSet<NodeKey>,
     pub(crate) cut: Option<NodeKey>,
 }
@@ -139,8 +142,25 @@ impl Sidebar {
     /// follows a rename or move everywhere a key is kept
     pub(crate) fn rebase(&mut self, from: &NodeKey, to: &NodeKey) {
         self.selected = self.selected.as_ref().map(|k| k.rebased(from, to));
+        self.anchor = self.anchor.as_ref().map(|k| k.rebased(from, to));
         self.cut = self.cut.as_ref().map(|k| k.rebased(from, to));
         self.expanded = self.expanded.iter().map(|k| k.rebased(from, to)).collect();
+    }
+
+    /// the rows from the anchor to the selected row, in the order shown;
+    /// the selected row alone without an anchor, or when the anchor is
+    /// hidden
+    pub(crate) fn range(&self, rows: &[Row]) -> Vec<Row> {
+        let position = |key: &Option<NodeKey>| {
+            key.as_ref()
+                .and_then(|k| rows.iter().position(|r| r.key == *k))
+        };
+        let Some(end) = position(&self.selected) else {
+            return Vec::new();
+        };
+        let start = position(&self.anchor).unwrap_or(end);
+
+        rows[start.min(end)..=start.max(end)].to_vec()
     }
 }
 
@@ -294,6 +314,7 @@ pub(crate) mod tests {
 
         let mut sidebar = Sidebar {
             selected: Some(inside.clone()),
+            anchor: Some(folder.clone()),
             expanded: HashSet::from([folder.clone()]),
             cut: Some(inside),
         };
@@ -301,6 +322,7 @@ pub(crate) mod tests {
         sidebar.rebase(&folder, &renamed);
 
         assert_eq!(sidebar.selected, Some(key("c1", &["z", "b"])));
+        assert_eq!(sidebar.anchor, Some(renamed.clone()));
         assert_eq!(sidebar.cut, Some(key("c1", &["z", "b"])));
         assert!(sidebar.expanded.contains(&renamed));
     }
@@ -330,6 +352,44 @@ pub(crate) mod tests {
         assert_eq!(all[3].kind, RowKind::Request(Method::Post));
         assert_eq!(all[1].kind, RowKind::Folder);
         assert!(all[1].expanded);
+    }
+
+    #[test]
+    fn a_range_runs_between_the_anchor_and_the_selection() {
+        let workspaces = [sample()];
+        let expanded = HashSet::from([key("c1", &[]), key("c1", &["users"])]);
+        let all = rows(&workspaces, &expanded);
+        let names = |sidebar: &Sidebar| {
+            sidebar
+                .range(&all)
+                .into_iter()
+                .map(|r| r.name)
+                .collect::<Vec<_>>()
+        };
+        let mut sidebar = Sidebar {
+            selected: Some(key("c1", &["create"])),
+            ..Sidebar::default()
+        };
+
+        assert_eq!(names(&sidebar), ["CREATE"]);
+
+        // either way round, in the order shown
+        sidebar.anchor = Some(key("c1", &["users"]));
+
+        assert_eq!(names(&sidebar), ["Users", "LIST", "CREATE"]);
+
+        sidebar.anchor = sidebar.selected.replace(key("c1", &["users"]));
+
+        assert_eq!(names(&sidebar), ["Users", "LIST", "CREATE"]);
+
+        // an anchor that is no longer shown leaves the selected row
+        sidebar.anchor = Some(key("c1", &["gone"]));
+
+        assert_eq!(names(&sidebar), ["Users"]);
+
+        sidebar.selected = None;
+
+        assert_eq!(names(&sidebar), Vec::<String>::new());
     }
 
     #[test]

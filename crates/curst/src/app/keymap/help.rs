@@ -97,6 +97,10 @@ pub(crate) fn describe(name: &str) -> &'static str {
         "paste" => "paste what was cut",
         "move-up" => "move up",
         "move-down" => "move down",
+        "duplicate" => "duplicate",
+        "select-up" => "select up too",
+        "select-down" => "select down too",
+        "select" => "select several rows, or stop",
         "trust" => "trust a collection, or not",
         "environments" => "environments",
         "settings" => "settings",
@@ -277,9 +281,12 @@ pub(crate) struct Command {
 }
 
 /// moving around and answering pop-ups: the palette leaves these to keys
-const NOT_COMMANDS: [&str; 18] = [
+const NOT_COMMANDS: [&str; 21] = [
     "up",
     "down",
+    "select-up",
+    "select-down",
+    "select",
     "left",
     "right",
     "page-up",

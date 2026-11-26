@@ -37,10 +37,91 @@ fn no_collection(state: &mut State) {
     state.notice = Some(super::no_collection(state));
 }
 
+/// whether `action` is the sidebar's: its own actions anywhere, and
+/// moving, opening and Esc while it has the focus
+pub(crate) fn handles(state: &State, action: &Action) -> bool {
+    let moving = matches!(
+        action,
+        Action::Up
+            | Action::Down
+            | Action::Top
+            | Action::Bottom
+            | Action::Left
+            | Action::Right
+            | Action::Edit
+            | Action::ClosePopup
+    );
+
+    (moving && state.focus == super::Focus::Sidebar)
+        || matches!(
+            action,
+            Action::NewRequest
+                | Action::NewFolder
+                | Action::NewCollection
+                | Action::Rename
+                | Action::DeleteItem
+                | Action::Cut
+                | Action::Paste
+                | Action::MoveUp
+                | Action::MoveDown
+                | Action::Duplicate
+                | Action::SelectUp
+                | Action::SelectDown
+                | Action::Select
+                | Action::Trust
+        )
+}
+
 pub(crate) fn apply(state: &mut State, action: &Action) -> Vec<Command> {
+    // moving keeps a range, so it grows and shrinks with the selection
     match action {
         Action::Up | Action::Down | Action::Top | Action::Bottom => select(state, action),
+        Action::SelectUp | Action::SelectDown => {
+            if state.sidebar.anchor.is_none() {
+                state.sidebar.anchor.clone_from(&state.sidebar.selected);
+            }
+
+            let step = if matches!(action, Action::SelectUp) {
+                Action::Up
+            } else {
+                Action::Down
+            };
+
+            select(state, &step);
+        }
+        Action::Select => {
+            state.sidebar.anchor = match state.sidebar.anchor {
+                Some(_) => None,
+                None => state.sidebar.selected.clone(),
+            };
+        }
+        Action::ClosePopup => state.sidebar.anchor = None,
+        _ => {
+            let commands = act(state, action);
+
+            state.sidebar.anchor = None;
+
+            return commands;
+        }
+    }
+
+    Vec::new()
+}
+
+fn act(state: &mut State, action: &Action) -> Vec<Command> {
+    let range = selection(state);
+
+    match action {
+        Action::Edit if range.len() > 1 => {
+            for row in range {
+                if matches!(row.kind, RowKind::Request(_)) {
+                    super::tabs::open_request(state, &row.key);
+                }
+            }
+        }
         Action::Right | Action::Edit => open(state, matches!(action, Action::Edit)),
+        Action::Duplicate => return duplicate(state, &range),
+        Action::DeleteItem if range.len() > 1 => delete_range(state, &range),
         Action::Left => close(state),
         Action::NewRequest | Action::NewFolder => {
             let Some(parent) = target_folder(state) else {
@@ -127,6 +208,100 @@ pub(crate) fn apply(state: &mut State, action: &Action) -> Vec<Command> {
     }
 
     Vec::new()
+}
+
+/// the selected rows: a range, or the selected row alone
+fn selection(state: &State) -> Vec<Row> {
+    state.sidebar.range(&visible(state))
+}
+
+/// the folders and requests of `rows`, without what lies inside a folder
+/// among them, which goes with that folder
+fn items_of(rows: &[Row]) -> Vec<Row> {
+    let folders: Vec<&NodeKey> = rows
+        .iter()
+        .filter(|r| r.kind == RowKind::Folder)
+        .map(|r| &r.key)
+        .collect();
+
+    rows.iter()
+        .filter(|r| r.kind != RowKind::Collection)
+        .filter(|r| !folders.iter().any(|f| **f != r.key && r.key.is_within(f)))
+        .cloned()
+        .collect()
+}
+
+/// one store change per collection, for the paths of `keys` in order
+fn per_collection(keys: &[NodeKey], change: fn(Vec<Vec<String>>) -> Change) -> Vec<Command> {
+    let mut grouped: Vec<(LocalId, Vec<Vec<String>>)> = Vec::new();
+
+    for key in keys {
+        match grouped.iter_mut().find(|(c, _)| *c == key.collection) {
+            Some((_, paths)) => paths.push(key.path.clone()),
+            None => grouped.push((key.collection.clone(), vec![key.path.clone()])),
+        }
+    }
+
+    grouped
+        .into_iter()
+        .map(|(collection, paths)| Command::Store {
+            collection,
+            change: change(paths),
+        })
+        .collect()
+}
+
+fn duplicate(state: &mut State, range: &[Row]) -> Vec<Command> {
+    let keys: Vec<NodeKey> = items_of(range).into_iter().map(|r| r.key).collect();
+
+    if keys.is_empty() {
+        state.notice = Some("select a folder or request to duplicate".into());
+
+        return Vec::new();
+    }
+
+    per_collection(&keys, |paths| Change::Duplicate { paths })
+}
+
+fn counted(n: usize, one: &str) -> String {
+    if n == 1 {
+        format!("1 {one}")
+    } else {
+        format!("{n} {one}s")
+    }
+}
+
+/// asks once before deleting the folders and requests of a range;
+/// collections are deleted only one at a time
+fn delete_range(state: &mut State, range: &[Row]) {
+    let items = items_of(range);
+    let folders = items.iter().filter(|r| r.kind == RowKind::Folder).count();
+    let requests = items.len() - folders;
+    let what = match (requests, folders) {
+        (0, 0) => {
+            state.notice = Some("collections are deleted one at a time".into());
+
+            return;
+        }
+        (r, 0) => counted(r, "request"),
+        (0, f) => format!("{} and everything in them", counted(f, "folder")),
+        (r, f) => format!(
+            "{} and {} with everything in them",
+            counted(r, "request"),
+            counted(f, "folder")
+        ),
+    };
+    let keys = items.into_iter().map(|r| r.key).collect();
+
+    state.popup = Some(Popup::confirm(
+        format!("Delete {what}?"),
+        Pending::DeleteMany(keys),
+    ));
+}
+
+/// the store changes that delete `keys`, one per collection
+pub(crate) fn delete_many(keys: &[NodeKey]) -> Vec<Command> {
+    per_collection(keys, |paths| Change::DeleteMany { paths })
 }
 
 fn select(state: &mut State, action: &Action) {

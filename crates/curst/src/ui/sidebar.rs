@@ -23,7 +23,21 @@ fn method_tag(method: Method) -> &'static str {
 pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
     let theme = &state.theme;
     let focused = state.focus == Focus::Sidebar;
-    let mut block = pane(theme, Line::from(" Collections "), focused);
+    let rows = rows(&state.collections, &state.sidebar.expanded);
+    let range = if state.sidebar.anchor.is_some() {
+        state.sidebar.range(&rows)
+    } else {
+        Vec::new()
+    };
+    let title = if range.is_empty() {
+        Line::from(" Collections ")
+    } else {
+        Line::from(vec![
+            Span::raw(" Collections "),
+            Span::styled(format!("{} selected ", range.len()), theme.accent),
+        ])
+    };
+    let mut block = pane(theme, title, focused);
 
     if let Some(name) = state.current_workspace().and_then(|w| w.environment_name()) {
         block = block.title(
@@ -36,7 +50,6 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
     state.region(area, Target::Pane(Focus::Sidebar));
     frame.render_widget(block, area);
 
-    let rows = rows(&state.collections, &state.sidebar.expanded);
     let dim = theme.muted;
 
     if rows.is_empty() {
@@ -104,12 +117,17 @@ pub(super) fn draw(state: &State, frame: &mut Frame, area: Rect) {
                 style = style.add_modifier(Modifier::DIM | Modifier::ITALIC);
             }
 
-            if Some(index) == selected {
+            if Some(index) == selected || range.iter().any(|r| r.key == row.key) {
                 style = if focused {
                     style.patch(theme.selected)
                 } else {
                     style.add_modifier(Modifier::UNDERLINED)
                 };
+            }
+
+            // the end of a range that moves stays told apart
+            if Some(index) == selected && range.len() > 1 && focused {
+                style = style.add_modifier(Modifier::UNDERLINED);
             }
 
             spans.push(Span::styled(display(&row.name), style));
