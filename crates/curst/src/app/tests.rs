@@ -1585,13 +1585,13 @@ mod collections {
         state.sidebar.selected = Some(node(&["users"]));
 
         assert_eq!(
-            press_key(&mut state, shift(KeyCode::Down)),
+            press(&mut state, KeyCode::Char('J')),
             [store(Change::Reorder {
                 path: vec!["users".into()],
                 index: 1,
             })]
         );
-        assert_eq!(press_key(&mut state, shift(KeyCode::Up)), Vec::new());
+        assert_eq!(press(&mut state, KeyCode::Char('K')), Vec::new());
 
         state.sidebar.selected = Some(node(&[]));
         press(&mut state, KeyCode::Char('r'));
@@ -1616,6 +1616,259 @@ mod collections {
             press(&mut state, KeyCode::Enter),
             [Command::CreateCollection("New".into())]
         );
+    }
+
+    fn paths(list: &[&[&str]]) -> Vec<Vec<String>> {
+        list.iter()
+            .map(|p| p.iter().map(|s| (*s).to_owned()).collect())
+            .collect()
+    }
+
+    fn store_all(change: Change) -> Vec<Command> {
+        vec![Command::Store {
+            collection: LocalId::new("c1").unwrap(),
+            change,
+        }]
+    }
+
+    #[test]
+    fn duplicating_copies_the_row_or_the_range() {
+        let mut state = with_collection();
+
+        state.sidebar.selected = Some(node(&["create"]));
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char('D')),
+            store_all(Change::Duplicate {
+                paths: paths(&[&["create"]]),
+            })
+        );
+
+        // a collection is not copied, alone or in a range
+        state.sidebar.selected = Some(node(&[]));
+
+        assert_eq!(press(&mut state, KeyCode::Char('D')), Vec::new());
+        assert_eq!(
+            state.notice.as_deref(),
+            Some("select a folder or request to duplicate")
+        );
+
+        press_key(&mut state, shift(KeyCode::Down));
+        press_key(&mut state, shift(KeyCode::Down));
+
+        assert_eq!(state.sidebar.anchor, Some(node(&[])));
+        assert_eq!(state.sidebar.selected, Some(node(&["create"])));
+        assert_eq!(
+            press(&mut state, KeyCode::Char('D')),
+            store_all(Change::Duplicate {
+                paths: paths(&[&["users"], &["create"]]),
+            })
+        );
+        assert_eq!(state.sidebar.anchor, None);
+
+        // what lies inside a selected folder goes with the folder
+        state.sidebar.expanded.insert(node(&["users"]));
+        state.sidebar.selected = Some(node(&["users"]));
+        press_key(&mut state, shift(KeyCode::Down));
+
+        assert_eq!(
+            press(&mut state, KeyCode::Char('D')),
+            store_all(Change::Duplicate {
+                paths: paths(&[&["users"]]),
+            })
+        );
+
+        // the copy comes back selected
+        stored(
+            &mut state,
+            Stored {
+                workspace: Some(sample()),
+                created: Some(node(&["users"])),
+                ..Stored::default()
+            },
+        );
+
+        assert_eq!(state.sidebar.selected, Some(node(&["users"])));
+    }
+
+    #[test]
+    fn a_range_is_deleted_after_one_question() {
+        let mut state = with_collection();
+
+        state.sidebar.selected = Some(node(&[]));
+        press_key(&mut state, shift(KeyCode::Down));
+        press_key(&mut state, shift(KeyCode::Down));
+        press(&mut state, KeyCode::Char('d'));
+
+        let Some(Popup::Confirm { message, .. }) = &state.popup else {
+            panic!("no question: {:?}", state.popup);
+        };
+
+        assert_eq!(
+            message,
+            "Delete 1 request and 1 folder with everything in them?"
+        );
+        assert_eq!(press(&mut state, KeyCode::Esc), Vec::new());
+        assert!(state.popup.is_none());
+
+        state.sidebar.selected = Some(node(&["users"]));
+        press_key(&mut state, shift(KeyCode::Down));
+        press(&mut state, KeyCode::Char('d'));
+
+        assert_eq!(
+            press(&mut state, KeyCode::Enter),
+            store_all(Change::DeleteMany {
+                paths: paths(&[&["users"], &["create"]]),
+            })
+        );
+
+        // a range of collections alone asks nothing
+        state.sidebar.selected = Some(node(&[]));
+        press(&mut state, KeyCode::Char('V'));
+        press_key(&mut state, shift(KeyCode::Up));
+        press(&mut state, KeyCode::Char('d'));
+
+        assert!(matches!(
+            state.popup,
+            Some(Popup::Confirm {
+                pending: Pending::Delete(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_range_opens_its_requests_and_esc_clears_it() {
+        let mut state = with_collection();
+
+        state.sidebar.expanded.insert(node(&["users"]));
+        state.sidebar.selected = Some(node(&["users"]));
+        press_key(&mut state, shift(KeyCode::Down));
+        press_key(&mut state, shift(KeyCode::Down));
+
+        let names = |state: &State| {
+            state
+                .sidebar
+                .range(&rows(&state.collections, &state.sidebar.expanded))
+                .into_iter()
+                .map(|r| r.name)
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(names(&state), ["Users", "LIST", "CREATE"]);
+
+        // plain arrows move the end of the range
+        press(&mut state, KeyCode::Up);
+
+        assert_eq!(names(&state), ["Users", "LIST"]);
+
+        press(&mut state, KeyCode::Down);
+        press(&mut state, KeyCode::Enter);
+
+        assert_eq!(state.tab_count(), 2);
+        assert_eq!(state.open.as_ref().map(|o| o.name.as_str()), Some("CREATE"));
+        assert_eq!(state.sidebar.anchor, None);
+
+        state.focus = Focus::Sidebar;
+        press_key(&mut state, shift(KeyCode::Up));
+        press(&mut state, KeyCode::Esc);
+
+        assert_eq!(state.sidebar.anchor, None);
+        assert_eq!(state.sidebar.selected, Some(node(&["users", "list"])));
+    }
+
+    #[test]
+    fn vim_selects_with_v_and_deletes_with_one_d() {
+        let mut state = with_collection();
+
+        state.keymap = keymap::Keymap::vim();
+        state.sidebar.selected = Some(node(&["users"]));
+        press(&mut state, KeyCode::Char('V'));
+        press(&mut state, KeyCode::Char('j'));
+
+        assert_eq!(state.sidebar.anchor, Some(node(&["users"])));
+        assert_eq!(state.sidebar.selected, Some(node(&["create"])));
+
+        press(&mut state, KeyCode::Char('d'));
+
+        assert!(matches!(
+            state.popup,
+            Some(Popup::Confirm {
+                pending: Pending::DeleteMany(_),
+                ..
+            })
+        ));
+
+        press(&mut state, KeyCode::Esc);
+        state.sidebar.selected = Some(node(&["users"]));
+        press(&mut state, KeyCode::Char('V'));
+        press(&mut state, KeyCode::Char('V'));
+
+        assert_eq!(state.sidebar.anchor, None);
+
+        // without a range, a single d waits for the second
+        press(&mut state, KeyCode::Char('d'));
+
+        assert!(state.popup.is_none());
+
+        press(&mut state, KeyCode::Char('d'));
+
+        assert!(matches!(
+            state.popup,
+            Some(Popup::Confirm {
+                pending: Pending::Delete(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn duplicate_and_range_keys_can_be_rebound() {
+        let mut state = with_collection();
+        let (keymap, warnings) = keymap::Keymap::from_settings(
+            None,
+            &[
+                ("sidebar.duplicate".into(), vec!["y".into()]),
+                ("sidebar-selection.delete".into(), vec!["X".into()]),
+            ],
+        );
+
+        assert_eq!(warnings, Vec::<String>::new());
+
+        state.keymap = keymap;
+        state.sidebar.selected = Some(node(&["create"]));
+
+        assert_eq!(press(&mut state, KeyCode::Char('D')), Vec::new());
+        assert_eq!(
+            press(&mut state, KeyCode::Char('y')),
+            store_all(Change::Duplicate {
+                paths: paths(&[&["create"]]),
+            })
+        );
+
+        let shown = |state: &State, label: &str| {
+            crate::ui::hints(state)
+                .into_iter()
+                .find(|h| h.label == label)
+                .map(|h| h.key)
+        };
+
+        assert_eq!(shown(&state, "duplicate").as_deref(), Some("y"));
+
+        press_key(&mut state, shift(KeyCode::Up));
+
+        assert_eq!(shown(&state, "delete").as_deref(), Some("X"));
+        assert_eq!(shown(&state, "clear").as_deref(), Some("Esc"));
+
+        press(&mut state, KeyCode::Char('X'));
+
+        assert!(matches!(
+            state.popup,
+            Some(Popup::Confirm {
+                pending: Pending::DeleteMany(_),
+                ..
+            })
+        ));
     }
 
     #[test]

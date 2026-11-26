@@ -61,6 +61,9 @@ impl Purpose {
 #[derive(Debug)]
 pub(crate) enum Pending {
     Delete(NodeKey),
+
+    /// the folders and requests of a range of the sidebar
+    DeleteMany(Vec<NodeKey>),
     DeleteEnvironment(LocalId, EnvId),
     /// quitting, with the pop-up to show again on no
     Quit(Option<Box<Popup>>),
@@ -642,6 +645,7 @@ fn run_pending(state: &mut State, pending: Pending) -> Vec<Command> {
                 change,
             }]
         }
+        Pending::DeleteMany(keys) => super::sidebar::delete_many(&keys),
         Pending::DeleteEnvironment(collection, id) => vec![Command::Store {
             collection,
             change: Change::DeleteEnvironment(id),

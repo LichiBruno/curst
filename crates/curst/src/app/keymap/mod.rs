@@ -39,6 +39,10 @@ pub(crate) enum Layer {
     Url,
     Method,
     Sidebar,
+
+    /// the sidebar while a range of rows is selected, tried before
+    /// `Sidebar`
+    SidebarSelection,
     Request,
 
     /// a one-line field of the request pane
@@ -121,7 +125,7 @@ pub(crate) enum Layer {
 }
 
 impl Layer {
-    pub(crate) const ALL: [Self; 44] = [
+    pub(crate) const ALL: [Self; 45] = [
         Self::Always,
         Self::Global,
         Self::Panes,
@@ -129,6 +133,7 @@ impl Layer {
         Self::Url,
         Self::Method,
         Self::Sidebar,
+        Self::SidebarSelection,
         Self::Request,
         Self::RequestTyping,
         Self::BodyTyping,
@@ -178,6 +183,7 @@ impl Layer {
             Self::Url => "url",
             Self::Method => "method",
             Self::Sidebar => "sidebar",
+            Self::SidebarSelection => "sidebar-selection",
             Self::Request => "request",
             Self::RequestTyping => "request-typing",
             Self::BodyTyping => "body-typing",
@@ -228,6 +234,7 @@ impl Layer {
             Self::Url => "the URL",
             Self::Method => "the method",
             Self::Sidebar => "the sidebar",
+            Self::SidebarSelection => "the sidebar with rows selected",
             Self::Request => "the request pane",
             Self::RequestTyping => "a request field being edited",
             Self::BodyTyping => "the body being edited",
@@ -293,6 +300,10 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         return Some(Action::Reattach(index));
     }
 
+    if let Some(action) = sidebar_action(name) {
+        return Some(action);
+    }
+
     Some(match name {
         "quit" => Action::Quit,
         "send" => Action::Send,
@@ -322,16 +333,6 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         "kind" => Action::CycleKind,
         "save-body" => Action::OpenSave,
         "follow" => Action::Follow,
-        "new-request" => Action::NewRequest,
-        "new-folder" => Action::NewFolder,
-        "new-collection" => Action::NewCollection,
-        "rename" => Action::Rename,
-        "delete" => Action::DeleteItem,
-        "cut" => Action::Cut,
-        "paste" => Action::Paste,
-        "move-up" => Action::MoveUp,
-        "move-down" => Action::MoveDown,
-        "trust" => Action::Trust,
         "environments" => Action::Environments,
         "settings" => Action::Settings,
         "make-secret" => Action::MakeSecret,
@@ -376,6 +377,27 @@ pub(crate) fn action(name: &str) -> Option<Action> {
         "theme" => Action::NextTheme,
         "backend.keychain" => Action::Choose(Backend::Keychain),
         "backend.file" => Action::Choose(Backend::EncryptedFile),
+        _ => return None,
+    })
+}
+
+/// the actions that change the collections in the sidebar
+fn sidebar_action(name: &str) -> Option<Action> {
+    Some(match name {
+        "new-request" => Action::NewRequest,
+        "new-folder" => Action::NewFolder,
+        "new-collection" => Action::NewCollection,
+        "rename" => Action::Rename,
+        "delete" => Action::DeleteItem,
+        "cut" => Action::Cut,
+        "paste" => Action::Paste,
+        "move-up" => Action::MoveUp,
+        "move-down" => Action::MoveDown,
+        "duplicate" => Action::Duplicate,
+        "select-up" => Action::SelectUp,
+        "select-down" => Action::SelectDown,
+        "select" => Action::Select,
+        "trust" => Action::Trust,
         _ => return None,
     })
 }
@@ -623,6 +645,16 @@ pub(crate) fn layers(state: &State) -> (Vec<Layer>, bool) {
 
             (vec![L::Always, layer, L::Global], true)
         }
+        Focus::Sidebar if state.sidebar.anchor.is_some() => (
+            vec![
+                L::Always,
+                L::SidebarSelection,
+                L::Sidebar,
+                L::Panes,
+                L::Global,
+            ],
+            false,
+        ),
         Focus::Sidebar => (vec![L::Always, L::Sidebar, L::Panes, L::Global], false),
         Focus::Method => (vec![L::Always, L::Method, L::Panes, L::Global], false),
         Focus::Request => (

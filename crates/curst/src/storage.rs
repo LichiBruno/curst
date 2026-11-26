@@ -505,6 +505,8 @@ fn store(library: &Library, workspace: &Workspace, change: Change) -> Result<Sto
         }
         Change::Reorder { path, index } => dir.reorder(&path, index)?,
         Change::Delete { path } => dir.delete(&path)?,
+        Change::Duplicate { paths } => duplicate_all(&dir, &workspace.id, paths, &mut stored),
+        Change::DeleteMany { paths } => delete_all(&dir, paths, &mut stored.problems),
         // a folder curst did not make keeps its name; only the display
         // name changes
         Change::RenameCollection(name) => {
@@ -559,9 +561,48 @@ fn store(library: &Library, workspace: &Workspace, change: Change) -> Result<Sto
         workspace.auto_save,
         workspace.managed,
     ));
-    stored.problems = describe(loaded.issues);
+    stored.problems.extend(describe(loaded.issues));
 
     Ok(stored)
+}
+
+/// copies each item, noting the ones that fail rather than stopping; the
+/// first copy is selected
+fn duplicate_all(
+    dir: &CollectionDir,
+    collection: &LocalId,
+    paths: Vec<Vec<String>>,
+    stored: &mut Stored,
+) {
+    for path in paths {
+        match dir.duplicate(&path) {
+            Ok(slug) => {
+                stored.created.get_or_insert_with(|| {
+                    let mut copy = path.clone();
+
+                    copy.pop();
+                    copy.push(slug);
+
+                    NodeKey {
+                        collection: collection.clone(),
+                        path: copy,
+                    }
+                });
+            }
+            Err(err) => stored
+                .problems
+                .push(format!("{} not copied: {err}", path.join("/"))),
+        }
+    }
+}
+
+/// deletes each item, noting the ones that fail rather than stopping
+fn delete_all(dir: &CollectionDir, paths: Vec<Vec<String>>, failed: &mut Vec<String>) {
+    for path in paths {
+        if let Err(err) = dir.delete(&path) {
+            failed.push(format!("{} not deleted: {err}", path.join("/")));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1372,6 +1413,70 @@ mod tests {
 
         assert!(deleted.workspace.is_none());
         assert_eq!(loaded(&library).0, Vec::new());
+    }
+
+    #[test]
+    fn batches_go_on_past_an_item_that_fails() {
+        let (_dir, library) = library();
+        let dir = library.create_collection("Pets").unwrap();
+        let (pets, _) = open(&library, &dir, true).unwrap();
+
+        dir.create_folder(&[], "Users").unwrap();
+        dir.create_request(&path(&["users"]), "List", &Request::default())
+            .unwrap();
+        dir.create_request(&[], "Create", &Request::default())
+            .unwrap();
+
+        let copied = change(
+            &library,
+            &pets,
+            Change::Duplicate {
+                paths: vec![path(&["nope"]), path(&["users"]), path(&["users", "list"])],
+            },
+        );
+        let slugs = |stored: &Stored| -> Vec<String> {
+            let collection = &stored.workspace.as_ref().unwrap().collection;
+
+            collection
+                .items
+                .iter()
+                .map(|i| i.slug().to_owned())
+                .collect()
+        };
+
+        assert_eq!(slugs(&copied), ["users", "users-copy", "create"]);
+        assert_eq!(copied.created.unwrap().path, path(&["users-copy"]));
+        assert_eq!(copied.problems.len(), 1);
+        assert!(
+            copied.problems[0].starts_with("nope not copied"),
+            "{:?}",
+            copied.problems
+        );
+
+        let users = copied
+            .workspace
+            .as_ref()
+            .unwrap()
+            .collection
+            .item(&path(&["users"]));
+        let Some(Item::Folder(users)) = users else {
+            panic!("no folder");
+        };
+        let inside: Vec<_> = users.items.iter().map(Item::slug).collect();
+
+        assert_eq!(inside, ["list", "list-copy"]);
+
+        let deleted = change(
+            &library,
+            &pets,
+            Change::DeleteMany {
+                paths: vec![path(&["users-copy"]), path(&["nope"]), path(&["create"])],
+            },
+        );
+
+        assert_eq!(slugs(&deleted), ["users"]);
+        assert_eq!(deleted.problems.len(), 1);
+        assert!(deleted.problems[0].starts_with("nope not deleted"));
     }
 
     #[test]

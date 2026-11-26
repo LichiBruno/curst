@@ -1,0 +1,16 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 100, 12)"
+---
+"┏ Collections 3 selected ━━━━┓  GET new request               Ctrl+G tabs  Ctrl+T new  Ctrl+W close "
+"┃▾ Pets                      ┃┌ Method ─┐┌ URL ────────────────────────────────────────────────────┐"
+"┃  ▾ Users                   ┃│   GET   ││ https://example.com/api, then Enter to send             │"
+"┃    GET  LIST               ┃└─────────┘└─────────────────────────────────────────────────────────┘"
+"┃  POST CREATE               ┃┌ Request  Params  Headers  Body  Auth  ─────────────────────────────┐"
+"┃                            ┃│no query parameters, press a to add one                             │"
+"┃                            ┃└────────────────────────────────────────────────────────────────────┘"
+"┃                            ┃┌ Response  Body  Headers  Timing  Raw  ─────────────────────────────┐"
+"┃                            ┃│no response yet, type a URL and press Enter                         │"
+"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛└────────────────────────────────────────────────────────────────────┘"
+" Enter open  D duplicate  d delete  Esc clear                                                       "
+" Ctrl+R send  Ctrl+S save  Ctrl+E environments  Ctrl+P commands  F1 help  Ctrl+C quit               "

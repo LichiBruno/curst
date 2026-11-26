@@ -148,6 +148,16 @@ pub trait CollectionStore: Send + Sync {
     /// when there is nothing at `path` or the order cannot be written
     fn reorder(&self, path: &[String], index: usize) -> Result<(), StoreError>;
 
+    /// copies a request, or a folder with everything in it, as
+    /// "<name> copy" right after it, and returns the copy's slug; copies
+    /// are not tied to a spec, so a refresh changes only the original
+    ///
+    /// # Errors
+    /// when there is nothing at `path`, a link or special file lies inside
+    /// it, or a file cannot be written; a folder copied only partly is
+    /// removed again
+    fn duplicate(&self, path: &[String]) -> Result<String, StoreError>;
+
     /// deletes a request, or a folder with everything in it
     ///
     /// # Errors
@@ -430,6 +440,48 @@ impl CollectionDir {
                 auth: None,
             }),
         }
+    }
+
+    /// writes a copy of the request file `from` at `to`, named `name` when
+    /// given, without its spec origin
+    fn copy_request(from: &Path, to: &Path, name: Option<&str>) -> Result<(), StoreError> {
+        let mut file: RequestFile = read_file(from)?;
+
+        if let Some(name) = name {
+            name.clone_into(&mut file.name);
+        }
+
+        file.spec = None;
+
+        write_atomic(to, to_toml(&file).as_bytes())
+    }
+
+    /// copies everything inside the folder `from` into the new folder
+    /// `to`; a link or special file stops the copy
+    fn copy_tree(from: &Path, to: &Path) -> Result<(), StoreError> {
+        fs::create_dir(to).map_err(|e| StoreError::io(to, e))?;
+
+        if let Some(text) = read_regular(&from.join(FOLDER_FILE))? {
+            write_atomic(&to.join(FOLDER_FILE), text.as_bytes())?;
+        }
+
+        let order = Self::folder_file(from)?.order;
+        let (children, refused) = Self::children(from, false, &order)?;
+
+        if let Some(name) = refused.first() {
+            return Err(not_plain(&from.join(name)));
+        }
+
+        for (name, kind) in children {
+            let source = from.join(&name);
+
+            match kind {
+                Kind::Request => Self::copy_request(&source, &to.join(&name), None)?,
+                Kind::Folder => Self::copy_tree(&source, &to.join(&name))?,
+            }
+        }
+
+        Ok(())
     }
 
     fn write_order(&self, parent: &[String], order: Vec<String>) -> Result<(), StoreError> {
@@ -922,6 +974,54 @@ impl CollectionStore for CollectionDir {
         order.insert(index.min(order.len()), name);
 
         self.write_order(parent, order)
+    }
+
+    fn duplicate(&self, path: &[String]) -> Result<String, StoreError> {
+        let item = self.locate(path)?;
+        let parent = &path[..path.len() - 1];
+        let mut order = self.order_of(parent)?;
+        let source = item.path();
+        let name = match item.kind {
+            Kind::Request => read_file::<RequestFile>(&source)?.name,
+            Kind::Folder => Self::folder_file(&source)?.name,
+        };
+        let name = if name.is_empty() {
+            format!("{} copy", item.slug)
+        } else {
+            format!("{name} copy")
+        };
+        let slug = Self::free_slug(&item.parent, parent.is_empty(), &name, None);
+        let target = item.parent.join(entry(item.kind, &slug));
+
+        match item.kind {
+            Kind::Request => Self::copy_request(&source, &target, Some(&name))?,
+            Kind::Folder => {
+                let copied = Self::copy_tree(&source, &target).and_then(|()| {
+                    let mut file = Self::folder_file(&target)?;
+
+                    file.name.clone_from(&name);
+
+                    write_atomic(&target.join(FOLDER_FILE), to_toml(&file).as_bytes())
+                });
+
+                if let Err(err) = copied {
+                    // a copy that went only partly is not left behind
+                    let _ = fs::remove_dir_all(&target);
+
+                    return Err(err);
+                }
+            }
+        }
+
+        let place = order
+            .iter()
+            .position(|listed| *listed == item.entry())
+            .map_or(order.len(), |i| i + 1);
+
+        order.insert(place, entry(item.kind, &slug));
+        self.write_order(parent, order)?;
+
+        Ok(slug)
     }
 
     fn delete(&self, path: &[String]) -> Result<(), StoreError> {

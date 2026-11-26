@@ -503,6 +503,13 @@ pub(crate) fn hints(state: &State) -> Vec<Hint> {
     }
 
     match state.focus {
+        Focus::Sidebar if state.sidebar.anchor.is_some() => {
+            hints
+                .one("edit", "open")
+                .one("duplicate", "duplicate")
+                .one("delete", "delete")
+                .one("close", "clear");
+        }
         Focus::Sidebar => {
             hints
                 .one("edit", "open")
@@ -510,6 +517,7 @@ pub(crate) fn hints(state: &State) -> Vec<Hint> {
                 .one("new-folder", "folder")
                 .one("new-collection", "collection")
                 .one("rename", "rename")
+                .one("duplicate", "duplicate")
                 .one("delete", "delete")
                 .pair("cut", "paste", "move")
                 .one("collection-settings", "collection settings");
