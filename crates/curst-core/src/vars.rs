@@ -5,11 +5,22 @@
 //! reported as cyclic
 
 use std::collections::BTreeSet;
-use std::fmt;
+use std::fmt::{self, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::model::{Auth, Body, KeyValue, Request, Variable};
 
 const MAX_NAME: usize = 128;
+
+/// the variables curst fills in itself, each with what it gives; a name
+/// starts with `$`, which no variable that is defined can
+pub const BUILT_IN: [(&str, &str); 5] = [
+    ("$uuid", "uuid v4"),
+    ("$timestamp", "unix seconds"),
+    ("$timestamp_ms", "unix milliseconds"),
+    ("$iso_timestamp", "iso 8601 utc"),
+    ("$random_int", "0 to 1000"),
+];
 
 /// a variable name: ASCII letters, digits, `_`, `-` and `.`
 ///
@@ -35,6 +46,30 @@ impl VarName {
                 .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
 
         valid.then(|| Self(name.to_owned()))
+    }
+
+    /// a built-in variable's name, such as `$uuid`, or `None` for any
+    /// other text
+    ///
+    /// ```
+    /// use curst_core::vars::VarName;
+    ///
+    /// assert!(VarName::built_in("$uuid").is_some());
+    /// assert!(VarName::built_in("$nope").is_none());
+    /// assert!(VarName::new("$uuid").is_none());
+    /// ```
+    #[must_use]
+    pub fn built_in(name: &str) -> Option<Self> {
+        BUILT_IN
+            .iter()
+            .any(|(built_in, _)| *built_in == name)
+            .then(|| Self(name.to_owned()))
+    }
+
+    /// a name a template can hold: a variable's or a built-in one's
+    #[must_use]
+    pub fn template(name: &str) -> Option<Self> {
+        Self::new(name).or_else(|| Self::built_in(name))
     }
 
     /// a name made from any text, such as a header or parameter name:
@@ -81,6 +116,9 @@ pub enum Origin {
 
     /// the global variables
     Global,
+
+    /// the values curst fills in for one send
+    BuiltIn,
 }
 
 /// what a lookup found for a name
@@ -109,6 +147,113 @@ pub trait SecretValues {
     fn secret(&self, origin: Origin, name: &VarName) -> Option<&str>;
 }
 
+/// the values of the built-in variables for one send: made once, so every
+/// place a name appears in gets the same value
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Generated {
+    values: [String; BUILT_IN.len()],
+}
+
+impl Generated {
+    /// values for now, from the system's clock and randomness
+    ///
+    /// # Errors
+    ///
+    /// when the system gives no randomness
+    pub fn new() -> Result<Self, String> {
+        let mut random = [0; 20];
+
+        getrandom::fill(&mut random).map_err(|e| format!("no randomness: {e}"))?;
+
+        Ok(Self::from_parts(SystemTime::now(), random))
+    }
+
+    /// values for `now`, the uuid and the number made from `random`
+    ///
+    /// ```
+    /// use std::time::{Duration, UNIX_EPOCH};
+    /// use curst_core::vars::{Generated, VarName};
+    ///
+    /// let now = UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
+    /// let values = Generated::from_parts(now, [0; 20]);
+    /// let get = |name| values.get(&VarName::built_in(name).unwrap());
+    ///
+    /// assert_eq!(get("$timestamp"), Some("1700000000"));
+    /// assert_eq!(get("$iso_timestamp"), Some("2023-11-14T22:13:20.123Z"));
+    /// assert_eq!(get("$uuid"), Some("00000000-0000-4000-8000-000000000000"));
+    /// ```
+    #[must_use]
+    pub fn from_parts(now: SystemTime, random: [u8; 20]) -> Self {
+        let since = now.duration_since(UNIX_EPOCH).unwrap_or_default();
+        let [uuid @ .., a, b, c, d] = random;
+        let number = u32::from_le_bytes([a, b, c, d]) % 1001;
+
+        Self {
+            values: [
+                uuid_v4(uuid),
+                since.as_secs().to_string(),
+                since.as_millis().to_string(),
+                iso(since.as_secs(), since.subsec_millis()),
+                number.to_string(),
+            ],
+        }
+    }
+
+    /// the value of the built-in variable `name`
+    #[must_use]
+    pub fn get(&self, name: &VarName) -> Option<&str> {
+        BUILT_IN
+            .iter()
+            .position(|(built_in, _)| *built_in == name.as_str())
+            .map(|index| self.values[index].as_str())
+    }
+}
+
+/// a version 4 uuid from 16 random bytes
+fn uuid_v4(mut bytes: [u8; 16]) -> String {
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    let hex = bytes.iter().fold(String::new(), |mut hex, b| {
+        let _ = write!(hex, "{b:02x}");
+
+        hex
+    });
+
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
+/// `seconds` after the epoch as an ISO 8601 time in UTC, to the millisecond
+fn iso(seconds: u64, millis: u32) -> String {
+    let (days, rest) = (seconds / 86_400, seconds % 86_400);
+
+    // days to a date in the proleptic gregorian calendar, after Howard
+    // Hinnant's civil_from_days, with eras of 400 years starting in march
+    let z = days + 719_468;
+    let era = z / 146_097;
+    let doe = z % 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + u64::from(month <= 2);
+
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+        rest / 3600,
+        rest % 3600 / 60,
+        rest % 60
+    )
+}
+
 /// the three scopes, searched in order: environment, collection, global
 #[derive(Clone, Copy, Default)]
 pub struct Scopes<'a> {
@@ -124,10 +269,21 @@ pub struct Scopes<'a> {
     /// the values of secret variables; without it every secret is
     /// unavailable
     pub secrets: Option<&'a dyn SecretValues>,
+
+    /// the built-in variables' values; without them they are not defined
+    pub generated: Option<&'a Generated>,
 }
 
 impl Lookup for Scopes<'_> {
     fn find(&self, name: &VarName) -> Option<Found<'_>> {
+        if let Some(value) = self.generated.and_then(|g| g.get(name)) {
+            return Some(Found {
+                value: Some(value),
+                origin: Origin::BuiltIn,
+                secret: false,
+            });
+        }
+
         let scopes = [
             (Origin::Environment, self.environment),
             (Origin::Collection, self.collection),
@@ -170,13 +326,24 @@ pub struct Resolution {
 
     /// variables whose value leads back to themselves, left as written
     pub cyclic: BTreeSet<VarName>,
+
+    /// names with a `$` that are not built in, such as `$nope`, left as
+    /// written
+    pub unknown: BTreeSet<String>,
 }
 
 impl Resolution {
     /// whether every variable was replaced
     #[must_use]
     pub fn is_complete(&self) -> bool {
-        self.missing.is_empty() && self.unavailable.is_empty() && self.cyclic.is_empty()
+        self.unavailable.is_empty() && !self.blocked()
+    }
+
+    /// whether something no secret value can fix is left: a variable not
+    /// defined, one that refers to itself, or an unknown built-in one
+    #[must_use]
+    pub fn blocked(&self) -> bool {
+        !self.missing.is_empty() || !self.cyclic.is_empty() || !self.unknown.is_empty()
     }
 }
 
@@ -225,16 +392,29 @@ fn expand(
             return result;
         };
 
+        let inner = after[..close].trim();
+        let written = &rest[open..open + 2 + close + 2];
+
+        // a `$` name that is not built in is reported, never sent as it is
+        if let Some(own) = inner.strip_prefix('$')
+            && VarName::new(own).is_some()
+            && VarName::built_in(inner).is_none()
+        {
+            out.unknown.insert(inner.to_owned());
+            result.push_str(written);
+            rest = &after[close + 2..];
+
+            continue;
+        }
+
         // not a name: keep one brace and look again from the next one, so
         // `{{{a}}}` still finds `{{a}}`
-        let Some(name) = VarName::new(after[..close].trim()) else {
+        let Some(name) = VarName::template(inner) else {
             result.push('{');
             rest = &rest[open + 1..];
 
             continue;
         };
-
-        let written = &rest[open..open + 2 + close + 2];
 
         rest = &after[close + 2..];
 
@@ -444,6 +624,7 @@ mod tests {
             collection: &collection,
             global: &global,
             secrets: None,
+            generated: None,
         };
         let mut out = Resolution::default();
 
@@ -590,6 +771,135 @@ mod tests {
         assert_eq!(resolved.headers, [off.clone()]);
         assert_eq!(resolved.params, [off]);
         assert_eq!(out, Resolution::default());
+    }
+
+    fn at(millis: u64, random: [u8; 20]) -> Generated {
+        Generated::from_parts(
+            UNIX_EPOCH + std::time::Duration::from_millis(millis),
+            random,
+        )
+    }
+
+    fn built_in(generated: &Generated, text: &str) -> String {
+        generated
+            .get(&VarName::built_in(text).unwrap())
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn built_in_names_are_reserved() {
+        for (name, _) in BUILT_IN {
+            assert!(VarName::new(name).is_none());
+            assert_eq!(VarName::template(name), VarName::built_in(name));
+        }
+
+        assert!(VarName::built_in("uuid").is_none());
+        assert!(VarName::template("$nope").is_none());
+        assert_eq!(VarName::template("plain"), VarName::new("plain"));
+    }
+
+    #[test]
+    fn times_are_written_in_utc() {
+        let iso = |millis| built_in(&at(millis, [0; 20]), "$iso_timestamp");
+
+        assert_eq!(iso(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(iso(951_782_400_000), "2000-02-29T00:00:00.000Z");
+        assert_eq!(iso(4_107_542_399_999), "2100-02-28T23:59:59.999Z");
+        assert_eq!(iso(1_795_686_600_007), "2026-11-26T09:50:00.007Z");
+
+        let values = at(1_795_686_600_007, [0; 20]);
+
+        assert_eq!(built_in(&values, "$timestamp"), "1795686600");
+        assert_eq!(built_in(&values, "$timestamp_ms"), "1795686600007");
+
+        // a clock set before the epoch gives the epoch
+        let early = Generated::from_parts(UNIX_EPOCH - std::time::Duration::from_secs(1), [0; 20]);
+
+        assert_eq!(built_in(&early, "$timestamp"), "0");
+    }
+
+    #[test]
+    fn uuids_are_version_4_and_numbers_stay_in_range() {
+        let ones = at(0, [0xff; 20]);
+
+        assert_eq!(
+            built_in(&ones, "$uuid"),
+            "ffffffff-ffff-4fff-bfff-ffffffffffff"
+        );
+        assert_eq!(
+            built_in(&ones, "$random_int"),
+            (u32::MAX % 1001).to_string()
+        );
+
+        let mut random = [0; 20];
+
+        random[16..].copy_from_slice(&1000_u32.to_le_bytes());
+
+        assert_eq!(built_in(&at(0, random), "$random_int"), "1000");
+
+        random[16..].copy_from_slice(&1001_u32.to_le_bytes());
+
+        assert_eq!(built_in(&at(0, random), "$random_int"), "0");
+
+        let fresh = Generated::new().unwrap();
+        let uuid = built_in(&fresh, "$uuid");
+
+        assert_eq!(uuid.len(), 36);
+        assert_eq!(&uuid[14..15], "4");
+        assert_ne!(uuid, built_in(&Generated::new().unwrap(), "$uuid"));
+    }
+
+    #[test]
+    fn a_built_in_value_is_the_same_everywhere_in_a_request() {
+        let mut random = [7; 20];
+
+        random[0] = 1;
+
+        let generated = at(1_000, random);
+        let uuid = built_in(&generated, "$uuid");
+        let vars = [var("id", "<{{ $uuid }}>")];
+        let scopes = Scopes {
+            environment: &vars,
+            generated: Some(&generated),
+            ..Scopes::default()
+        };
+        let request = Request {
+            url: "http://h/{{$uuid}}?at={{$timestamp}}".into(),
+            headers: vec![KeyValue::new("x-id", "{{id}}")],
+            body: Body::Json("{\"id\":\"{{$uuid}}\"}".into()),
+            auth: Auth::Bearer {
+                token: "{{$uuid}}".into(),
+            },
+            ..Request::default()
+        };
+
+        let (resolved, out) = resolve_request(&request, &scopes);
+
+        assert_eq!(resolved.url, format!("http://h/{uuid}?at=1"));
+        assert_eq!(
+            resolved.headers,
+            [KeyValue::new("x-id", format!("<{uuid}>"))]
+        );
+        assert_eq!(resolved.body, Body::Json(format!("{{\"id\":\"{uuid}\"}}")));
+        assert_eq!(resolved.auth, Auth::Bearer { token: uuid });
+        assert!(out.is_complete());
+        assert!(out.secrets.is_empty());
+    }
+
+    #[test]
+    fn unknown_and_ungenerated_built_ins_block() {
+        let (text, out) = run("{{$nope}} {{ $uuid }} {{$}} {{$a b}}", &[]);
+
+        assert_eq!(text, "{{$nope}} {{ $uuid }} {{$}} {{$a b}}");
+        assert_eq!(out.unknown, BTreeSet::from(["$nope".to_owned()]));
+        assert_eq!(
+            out.missing,
+            BTreeSet::from([VarName::built_in("$uuid").unwrap()])
+        );
+        assert!(out.blocked());
+        assert!(!out.is_complete());
+        assert!(!Resolution::default().blocked());
     }
 
     proptest! {

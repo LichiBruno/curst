@@ -10,7 +10,9 @@ use std::collections::{BTreeSet, HashMap};
 use curst_core::model::{Body, EnvId, LocalId, Request};
 use curst_core::secrets::{Approval, Secret, SecretKey};
 use curst_core::store::Backend;
-use curst_core::vars::{Origin, Resolution, Scopes, SecretValues, VarName, resolve_request};
+use curst_core::vars::{
+    Generated, Origin, Resolution, Scopes, SecretValues, VarName, resolve_request,
+};
 
 use super::popup::{Popup, VariablesEditor};
 use super::{
@@ -18,6 +20,15 @@ use super::{
 };
 
 const OPENING: &str = "opening secrets…";
+
+/// a request on its way, as typed, with the built-in values it goes with:
+/// they stay the same until it is sent, through a wait for secrets, an
+/// approval and the redirect it is followed to
+#[derive(Debug, Clone)]
+pub(crate) struct Outgoing {
+    pub(crate) request: Request,
+    pub(crate) generated: Generated,
+}
 
 /// secret values fetched this session, read through the scope they belong to
 struct Values<'a> {
@@ -64,8 +75,16 @@ pub(super) fn send(state: &mut State) -> Vec<Command> {
     }
 
     let request = state.with_inherited_auth(request);
+    let generated = match Generated::new() {
+        Ok(generated) => generated,
+        Err(err) => {
+            state.notice = Some(format!("not sent: {err}"));
 
-    send_request(state, request)
+            return Vec::new();
+        }
+    };
+
+    send_request(state, Outgoing { request, generated })
 }
 
 /// resolves and sends `request`, or asks for what is missing first
@@ -90,11 +109,12 @@ pub(super) enum Resolved {
 }
 
 /// resolves `request` with the variables of `workspace`, which should be
-/// trusted, and the globals
+/// trusted, the globals and the built-in values of `generated`
 pub(super) fn resolve_in(
     state: &State,
     request: &Request,
     workspace: Option<&Workspace>,
+    generated: &Generated,
 ) -> Resolved {
     let collection = workspace.map(|w| &w.id);
     let environment = workspace.and_then(|w| {
@@ -112,13 +132,14 @@ pub(super) fn resolve_in(
         collection: workspace.map_or(&[], |w| w.collection.variables.as_slice()),
         global: &state.globals,
         secrets: Some(&values),
+        generated: Some(generated),
     };
     let (resolved, resolution) = resolve_request(request, &scopes);
     let key = |(origin, name): &(Origin, VarName)| {
         SecretKey::for_variable(*origin, collection, environment, name.clone())
     };
 
-    if !resolution.missing.is_empty() || !resolution.cyclic.is_empty() {
+    if resolution.blocked() {
         let mut notice = not_sent(workspace, &resolution);
 
         if let Some(hint) = where_they_are(state, workspace, &resolution.missing) {
@@ -158,11 +179,12 @@ pub(super) fn resolve_in(
     }
 }
 
-pub(super) fn send_request(state: &mut State, request: Request) -> Vec<Command> {
+pub(super) fn send_request(state: &mut State, outgoing: Outgoing) -> Vec<Command> {
     // an untrusted collection lends no variables, even to a new request
     let workspace = state.current_workspace().filter(|w| w.trusted);
+    let resolved = resolve_in(state, &outgoing.request, workspace, &outgoing.generated);
 
-    let (resolved, secrets) = match resolve_in(state, &request, workspace) {
+    let (resolved, secrets) = match resolved {
         Resolved::Ready { request, secrets } => (request, secrets),
         Resolved::Blocked(notice) => {
             state.notice = Some(notice);
@@ -174,7 +196,7 @@ pub(super) fn send_request(state: &mut State, request: Request) -> Vec<Command> 
         // the request goes once they are stored
         Resolved::Empty(empty, notice) => {
             state.notice = Some(notice);
-            super::fill::open(state, empty, Some(request));
+            super::fill::open(state, empty, Some(outgoing));
 
             return Vec::new();
         }
@@ -182,7 +204,7 @@ pub(super) fn send_request(state: &mut State, request: Request) -> Vec<Command> 
             state.next_id += 1;
             state.waiting = Some(Waiting {
                 id: state.next_id,
-                then: Then::Send(request),
+                then: Then::Send(outgoing),
             });
             state.notice = Some(OPENING.into());
 
@@ -202,7 +224,7 @@ pub(super) fn send_request(state: &mut State, request: Request) -> Vec<Command> 
     state.next_id += 1;
     state.in_flight = Some(state.next_id);
     state.waiting = None;
-    state.last_sent = Some(request);
+    state.last_sent = Some(outgoing);
 
     // the request is on its way, so the wait for secrets is over
     if state.notice.as_deref() == Some(OPENING) {
@@ -296,6 +318,15 @@ fn not_sent(workspace: Option<&Workspace>, resolution: &Resolution) -> String {
         ));
     }
 
+    if !resolution.unknown.is_empty() {
+        let names = resolution.unknown.iter().map(|n| format!("{{{{{n}}}}}"));
+
+        reasons.push(format!(
+            "{} not built in",
+            names.collect::<Vec<_>>().join(", ")
+        ));
+    }
+
     format!("not sent: {}", reasons.join("; "))
 }
 
@@ -303,7 +334,7 @@ fn not_sent(workspace: Option<&Workspace>, resolution: &Resolution) -> String {
 fn retry(state: &mut State, id: Option<u64>) -> Vec<Command> {
     match state.waiting.take() {
         Some(waiting) if id.is_none_or(|id| id == waiting.id) => match waiting.then {
-            Then::Send(request) => send_request(state, request),
+            Then::Send(outgoing) => send_request(state, outgoing),
             Then::Workflow => super::workflow::step(state),
             Then::Kept { changes, files } => super::workflow::store_values(state, changes, files),
             Then::Spec(job) => super::spec::run(state, job),
@@ -337,16 +368,16 @@ pub(super) fn change_secrets(
 pub(super) fn change_secrets_then_send(
     state: &mut State,
     changes: Vec<SecretChange>,
-    request: Option<Request>,
+    outgoing: Option<Outgoing>,
 ) -> Vec<Command> {
-    save_secrets(state, changes, Vec::new(), request)
+    save_secrets(state, changes, Vec::new(), outgoing)
 }
 
 fn save_secrets(
     state: &mut State,
     changes: Vec<SecretChange>,
     files: Vec<Command>,
-    send: Option<Request>,
+    send: Option<Outgoing>,
 ) -> Vec<Command> {
     if changes.is_empty() {
         return files;
@@ -384,8 +415,8 @@ pub(super) fn changed(state: &mut State, id: u64, result: Result<(), String>) ->
 
             let mut commands = files;
 
-            if let Some(request) = send {
-                commands.extend(send_request(state, request));
+            if let Some(outgoing) = send {
+                commands.extend(send_request(state, outgoing));
             }
 
             // the files were the last of it: curst can quit now
@@ -481,10 +512,10 @@ pub(super) fn needs_approval(state: &mut State, id: u64, approval: Approval) {
 
     state.in_flight = None;
 
-    if let Some(request) = state.last_sent.clone() {
+    if let Some(outgoing) = state.last_sent.clone() {
         state.waiting = Some(Waiting {
             id,
-            then: Then::Send(request),
+            then: Then::Send(outgoing),
         });
         state.popup = Some(Popup::Approve(approval));
     }
@@ -519,16 +550,17 @@ pub(super) fn follow(state: &mut State) -> Vec<Command> {
         method: stopped.method,
         url: stopped.url.clone(),
         params: Vec::new(),
-        headers: last.headers.clone(),
+        headers: last.request.headers.clone(),
         body: if stopped.keeps_body {
-            last.body.clone()
+            last.request.body.clone()
         } else {
             Body::None
         },
-        auth: last.auth.clone(),
+        auth: last.request.auth.clone(),
     };
+    let generated = last.generated.clone();
 
-    send_request(state, request)
+    send_request(state, Outgoing { request, generated })
 }
 
 /// gives a secret's value back to the variable editor, as a plain value;

@@ -453,6 +453,29 @@ mod collections {
     }
 
     #[test]
+    fn variable_editor_built_in_tab() {
+        for vim in [false, true] {
+            let mut state = with_collection();
+
+            if vim {
+                state.keymap = crate::app::Keymap::vim();
+            }
+
+            update(&mut state, Action::Environments);
+            update(&mut state, Action::Down);
+            update(&mut state, Action::EditVariables);
+            update(&mut state, Action::ShowTab(3));
+
+            let name = if vim { "vim" } else { "standard" };
+
+            insta::assert_snapshot!(
+                format!("variable_editor_built_in_{name}"),
+                render(&state, 80, 14)
+            );
+        }
+    }
+
+    #[test]
     fn names_from_files_cannot_reach_the_terminal() {
         let mut state = with_collection();
 

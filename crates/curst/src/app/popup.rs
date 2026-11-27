@@ -5,10 +5,10 @@
 
 use std::path::PathBuf;
 
-use curst_core::model::{EnvId, Environment, LocalId, Request, Variable};
+use curst_core::model::{EnvId, Environment, KeyValue, LocalId, Request, Variable};
 use curst_core::secrets::detect::Place;
 use curst_core::secrets::{Approval, Secret, SecretKey};
-use curst_core::vars::VarName;
+use curst_core::vars::{BUILT_IN, VarName};
 use ratatui_textarea::TextArea;
 
 use super::editor::{Column, Row, Table, masked, single_line, text_of};
@@ -85,9 +85,13 @@ pub(crate) enum VarTab {
     Environment,
     Collection,
     Globals,
+
+    /// the variables curst fills in itself, which are only listed
+    BuiltIn,
 }
 
 impl VarTab {
+    /// the tabs whose variables can be changed
     pub(crate) const ALL: [Self; 3] = [Self::Environment, Self::Collection, Self::Globals];
 
     pub(crate) fn label(self) -> &'static str {
@@ -95,6 +99,7 @@ impl VarTab {
             Self::Environment => "Environment",
             Self::Collection => "Collection",
             Self::Globals => "Globals",
+            Self::BuiltIn => "Built in",
         }
     }
 
@@ -103,6 +108,7 @@ impl VarTab {
             Self::Environment => 0,
             Self::Collection => 1,
             Self::Globals => 2,
+            Self::BuiltIn => 3,
         }
     }
 }
@@ -114,8 +120,8 @@ pub(crate) struct VariablesEditor {
     pub(crate) collection: LocalId,
     pub(crate) environment: Option<Environment>,
     pub(crate) tab: VarTab,
-    pub(crate) tables: [Table; 3],
-    baseline: [Vec<Row>; 3],
+    pub(crate) tables: [Table; 4],
+    baseline: [Vec<Row>; 4],
 }
 
 impl VariablesEditor {
@@ -129,6 +135,10 @@ impl VariablesEditor {
             Table::from_variables(environment.as_ref().map_or(&[], |e| e.variables.as_slice())),
             Table::from_variables(collection_vars),
             Table::from_variables(globals),
+            Table {
+                fixed: true,
+                ..Table::from_pairs(&BUILT_IN.map(|(name, what)| KeyValue::new(name, what)))
+            },
         ];
         let baseline = tables.each_ref().map(|t| t.rows.clone());
         let tab = if environment.is_some() {
@@ -147,11 +157,12 @@ impl VariablesEditor {
     }
 
     /// the tabs shown: the environment one only when an environment is
-    /// being edited
+    /// being edited, and the built-in variables last
     pub(crate) fn tabs(&self) -> Vec<VarTab> {
         VarTab::ALL
             .into_iter()
             .filter(|t| *t != VarTab::Environment || self.environment.is_some())
+            .chain([VarTab::BuiltIn])
             .collect()
     }
 
@@ -187,6 +198,7 @@ impl VariablesEditor {
                 name,
             }),
             VarTab::Globals => Some(SecretKey::Global { name }),
+            VarTab::BuiltIn => None,
         }
     }
 
@@ -1053,6 +1065,24 @@ fn variables(
     mut editor: Box<VariablesEditor>,
     action: Action,
 ) -> Result<Vec<Command>, Action> {
+    let changes_rows = matches!(
+        action,
+        Action::Type(_)
+            | Action::EditCell(_)
+            | Action::Edit
+            | Action::AddRow
+            | Action::DeleteRow
+            | Action::ToggleRow
+            | Action::MakeSecret
+    );
+
+    // the built-in variables are only listed
+    if changes_rows && editor.table().fixed {
+        state.popup = Some(Popup::Variables(editor));
+
+        return Ok(Vec::new());
+    }
+
     match action {
         Action::Type(key) => editor.table_mut().input(key),
         Action::StopEdit => editor.table_mut().commit(),
@@ -1215,6 +1245,7 @@ fn save_variables(state: &mut State, mut editor: Box<VariablesEditor>) -> Vec<Co
                 change: Change::SaveVariables(variables),
             },
             VarTab::Globals => Command::SaveGlobals(variables),
+            VarTab::BuiltIn => continue,
         });
     }
 

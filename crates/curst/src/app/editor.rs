@@ -72,6 +72,9 @@ pub(crate) struct Table {
     pub(crate) rows: Vec<Row>,
     pub(crate) selected: usize,
     pub(crate) editing: Option<(Column, TextArea<'static>)>,
+
+    /// rows that are only listed, never edited or switched off
+    pub(crate) fixed: bool,
 }
 
 impl Table {
@@ -90,6 +93,7 @@ impl Table {
                 .collect(),
             selected: 0,
             editing: None,
+            fixed: false,
         }
     }
 
@@ -108,6 +112,7 @@ impl Table {
                 .collect(),
             selected: 0,
             editing: None,
+            fixed: false,
         }
     }
 

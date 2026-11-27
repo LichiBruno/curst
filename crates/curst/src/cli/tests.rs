@@ -351,3 +351,35 @@ fn without_a_terminal_the_passphrase_comes_from_the_environment() {
         assert!(passphrase(library.paths()).is_err_and(|f| f.message.contains("CURST_PASSPHRASE")));
     }
 }
+
+#[test]
+fn built_in_variables_get_one_value_per_run_and_unknown_ones_fail() {
+    let (_dir, library) = library();
+    let dir = library.create_collection("Ids").unwrap();
+    let request = |url: &str| Request {
+        url: url.into(),
+        headers: vec![curst_core::model::KeyValue::new("x-id", "{{ $uuid }}")],
+        ..Request::default()
+    };
+
+    dir.create_request(&[], "Make", &request("https://h/{{$uuid}}"))
+        .unwrap();
+    dir.create_request(&[], "Bad", &request("https://h/{{$nope}}"))
+        .unwrap();
+
+    let executor = fake(200, "{}");
+
+    run::run(&library, &executor, &args("Ids/Make"), &no_passphrase).unwrap();
+    run::run(&library, &executor, &args("Ids/Make"), &no_passphrase).unwrap();
+
+    let sent = executor.sent.lock().unwrap().clone();
+    let first = sent[0].url.trim_start_matches("https://h/");
+
+    assert_eq!(first.len(), 36);
+    assert_eq!(sent[0].headers[0].value, first);
+    assert_ne!(sent[1].url, sent[0].url);
+
+    let bad = run::run(&library, &executor, &args("Ids/Bad"), &no_passphrase);
+
+    assert!(bad.is_err_and(|f| f.message == "not sent: {{$nope}} not built in"));
+}

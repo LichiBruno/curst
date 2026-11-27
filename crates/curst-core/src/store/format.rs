@@ -654,6 +654,11 @@ mod tests {
 
         assert!(variables_from_file(bad.variables).is_err());
 
+        // built-in names are curst's own, so no file defines one
+        let reserved: GlobalsFile = toml::from_str("[[variables]]\nname = \"$uuid\"").unwrap();
+
+        assert!(variables_from_file(reserved.variables).is_err());
+
         let env: EnvironmentFile = toml::from_str("id = \"../x\"\nname = \"Dev\"").unwrap();
 
         assert!(env.env_id().is_err());

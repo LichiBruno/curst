@@ -319,7 +319,11 @@ pub(super) fn table(
             style = style.patch(theme.selected);
         }
 
-        let mark = if row.enabled { "[x]" } else { "[ ]" };
+        let mark = match (table.fixed, row.enabled) {
+            (true, _) => "",
+            (false, true) => "[x]",
+            (false, false) => "[ ]",
+        };
 
         frame.render_widget(Paragraph::new(Span::raw(mark)), check);
 

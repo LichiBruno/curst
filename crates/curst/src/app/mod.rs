@@ -165,7 +165,7 @@ pub(crate) struct Waiting {
 #[derive(Debug)]
 pub(crate) enum Then {
     /// a request, as typed, its templates unresolved
-    Send(Request),
+    Send(send::Outgoing),
 
     /// the step of the workflow running
     Workflow,
@@ -185,7 +185,7 @@ pub(crate) enum Then {
     Save {
         changes: Vec<SecretChange>,
         files: Vec<Command>,
-        send: Option<Request>,
+        send: Option<send::Outgoing>,
     },
 
     /// moving every secret to another backend
@@ -306,7 +306,7 @@ pub(crate) struct State {
     pub(crate) run: Option<workflow::Run>,
 
     /// the last request sent, as typed, for following a stopped redirect
-    pub(crate) last_sent: Option<Request>,
+    pub(crate) last_sent: Option<send::Outgoing>,
 
     /// where secrets are kept, `None` until the user picks
     pub(crate) backend: Option<Backend>,
