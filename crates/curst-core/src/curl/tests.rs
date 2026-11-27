@@ -205,11 +205,18 @@ fn emitted_commands_keep_placeholders_and_never_read_files() {
     // what only looks like a variable is encoded like any text
     let odd = Request {
         url: "https://h".into(),
-        params: vec![KeyValue::new("a", "{{&}}"), KeyValue::new("b", "{{ok}}")],
+        params: vec![
+            KeyValue::new("a", "{{&}}"),
+            KeyValue::new("b", "{{ok}}"),
+            KeyValue::new("c", "{{$uuid}}"),
+        ],
         ..Request::default()
     };
 
-    assert_eq!(emit(&odd), "curl 'https://h?a=%7B%7B%26%7D%7D&b={{ok}}'");
+    assert_eq!(
+        emit(&odd),
+        "curl 'https://h?a=%7B%7B%26%7D%7D&b={{ok}}&c={{$uuid}}'"
+    );
     assert_eq!(parse(&emit(&odd)).unwrap().request.params, odd.params);
 }
 

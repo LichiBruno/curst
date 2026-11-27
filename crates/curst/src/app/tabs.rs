@@ -33,7 +33,7 @@ pub(crate) struct Parked {
     pub(crate) column: usize,
     pub(crate) in_flight: Option<u64>,
     pub(crate) open: Option<OpenRequest>,
-    pub(crate) last_sent: Option<Request>,
+    pub(crate) last_sent: Option<super::send::Outgoing>,
     pub(crate) collection: Option<LocalId>,
 }
 

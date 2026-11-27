@@ -1,0 +1,18 @@
+---
+source: crates/curst/src/ui/tests.rs
+expression: "render(&state, 80, 14)"
+---
+"┏ Collections ━━━━━━━━━┓  GET new request               Ctrl+G tabs  Ctrl+T new "
+"┃▾ Pets                ┃┌ Method ─┐┌ URL ──────────────────────────────────────┐"
+"┏ Variables  Environment  Collection  Globals  Built in  ━━━━━━━━━━━━━━━━━━━━━━┓"
+"┃     Variable                    Value                                        ┃"
+"┃     $uuid                       uuid v4                                      ┃"
+"┃     $timestamp                  unix seconds                                 ┃"
+"┃     $timestamp_ms               unix milliseconds                            ┃"
+"┃     $iso_timestamp              iso 8601 utc                                 ┃"
+"┃     $random_int                 0 to 1000                                    ┃"
+"┃                                                                              ┃"
+"┃                                                                              ┃"
+"┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛"
+" ←→ tab  k j move                                                               "
+" Ctrl+S save  Esc close  Ctrl+C quit                                            "

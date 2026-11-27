@@ -8,7 +8,9 @@ use curst_core::http::{Cancel, HttpExecutor, RedirectRule, Response};
 use curst_core::model::{EnvId, Item, LocalId, SavedRequest};
 use curst_core::secrets::{Secret, SecretIndex, SecretKey};
 use curst_core::store::Library;
-use curst_core::vars::{Origin, Resolution, Scopes, SecretValues, VarName, resolve_request};
+use curst_core::vars::{
+    Generated, Origin, Resolution, Scopes, SecretValues, VarName, resolve_request,
+};
 
 use super::{Ask, Fail, RunArgs};
 use crate::app::Workspace;
@@ -239,22 +241,40 @@ fn redirect_rule(
 /// why a request with variables that are not defined was not sent, and
 /// the usual reason: no environment chosen
 fn undefined(workspace: &Workspace, unchosen: bool, resolution: &Resolution) -> Fail {
-    let names: Vec<String> = resolution
-        .missing
-        .iter()
-        .chain(&resolution.cyclic)
-        .map(|n| format!("{{{{{n}}}}}"))
-        .collect();
+    let braced = |names: &mut dyn Iterator<Item = &str>| {
+        names
+            .map(|n| format!("{{{{{n}}}}}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut reasons = Vec::new();
+
+    if !resolution.missing.is_empty() || !resolution.cyclic.is_empty() {
+        let names = &mut resolution
+            .missing
+            .iter()
+            .chain(&resolution.cyclic)
+            .map(VarName::as_str);
+
+        reasons.push(format!(
+            "{} not defined, or defined in terms of themselves",
+            braced(names)
+        ));
+    }
+
+    if !resolution.unknown.is_empty() {
+        let names = &mut resolution.unknown.iter().map(String::as_str);
+
+        reasons.push(format!("{} not built in", braced(names)));
+    }
+
     let environments: Vec<&str> = workspace
         .collection
         .environments
         .iter()
         .map(|e| e.name.as_str())
         .collect();
-    let mut message = format!(
-        "not sent: {} not defined, or defined in terms of themselves",
-        names.join(", ")
-    );
+    let mut message = format!("not sent: {}", reasons.join("; "));
 
     if unchosen && !environments.is_empty() {
         message.push_str("; no environment is chosen, pick one with --env: ");
@@ -323,18 +343,20 @@ pub(crate) fn run(
         collection: workspace.id.clone(),
         environment: environment.map(|e| e.id.clone()),
     };
+    let generated = Generated::new().map_err(Fail::setup)?;
     let resolve = |values: &Values| {
         let scopes = Scopes {
             environment: environment.map_or(&[], |e| e.variables.as_slice()),
             collection: &workspace.collection.variables,
             global: &globals,
             secrets: Some(values),
+            generated: Some(&generated),
         };
 
         resolve_request(&request, &scopes)
     };
     let (_, first) = resolve(&values);
-    if !first.missing.is_empty() || !first.cyclic.is_empty() {
+    if first.blocked() {
         return Err(undefined(workspace, environment.is_none(), &first));
     }
 

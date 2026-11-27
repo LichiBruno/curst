@@ -81,6 +81,7 @@ impl SecretKey {
                 name,
             }),
             Origin::Global => Some(Self::Global { name }),
+            Origin::BuiltIn => None,
         }
     }
 

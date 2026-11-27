@@ -7,7 +7,7 @@
 use curst_core::http::{HttpError, Response};
 use curst_core::model::{Item, LocalId, Variable, Workflow};
 use curst_core::secrets::{Approval, Secret, SecretKey};
-use curst_core::vars::{Origin, VarName};
+use curst_core::vars::{Generated, Origin, VarName};
 
 use super::popup::{Pending, Popup};
 use super::send::{self, Resolved};
@@ -36,6 +36,10 @@ pub(crate) struct Run {
 
     /// the request of the step on its way
     pub(crate) in_flight: Option<u64>,
+
+    /// the built-in values of the step running, kept while it waits for
+    /// secrets; each step gets its own
+    pub(crate) generated: Generated,
 
     /// why the run stopped, when a step failed
     pub(crate) error: Option<String>,
@@ -82,6 +86,14 @@ pub(crate) fn start(state: &mut State, collection: &LocalId, index: usize) -> Ve
         return Vec::new();
     }
 
+    let generated = match Generated::new() {
+        Ok(generated) => generated,
+        Err(err) => {
+            state.notice = Some(format!("{} did not run: {err}", workflow.name));
+
+            return Vec::new();
+        }
+    };
     let mut commands = Vec::new();
 
     if state.run.take().is_some_and(|run| run.in_flight.is_some()) {
@@ -94,6 +106,7 @@ pub(crate) fn start(state: &mut State, collection: &LocalId, index: usize) -> Ve
         workflow,
         step: 0,
         in_flight: None,
+        generated,
         error: None,
     });
     state.popup = Some(Popup::Run);
@@ -140,6 +153,7 @@ pub(crate) fn step(state: &mut State) -> Vec<Command> {
     let number = run.step + 1;
     let step = run.workflow.steps[run.step].clone();
     let collection = run.collection.clone();
+    let generated = run.generated.clone();
     let Some(workspace) = state.workspace(&collection).filter(|w| w.trusted) else {
         return fail(state, "the collection is gone".into());
     };
@@ -167,7 +181,7 @@ pub(crate) fn step(state: &mut State) -> Vec<Command> {
             )
         });
 
-    match send::resolve_in(state, &request, Some(workspace)) {
+    match send::resolve_in(state, &request, Some(workspace), &generated) {
         Resolved::Ready { request, secrets } => {
             state.next_id += 1;
 
@@ -412,8 +426,14 @@ pub(crate) fn given_up(state: &mut State) -> Vec<Command> {
 }
 
 fn next(state: &mut State) -> Vec<Command> {
+    let generated = match Generated::new() {
+        Ok(generated) => generated,
+        Err(err) => return fail(state, err),
+    };
+
     if let Some(run) = &mut state.run {
         run.step += 1;
+        run.generated = generated;
     }
 
     step(state)

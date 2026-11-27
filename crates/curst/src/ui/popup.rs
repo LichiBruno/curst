@@ -178,6 +178,7 @@ fn variables(state: &State, editor: &VariablesEditor, frame: &mut Frame) {
         }
         VarTab::Collection => format!("no collection variables, press {add} to add one"),
         VarTab::Globals => format!("no global variables, press {add} to add one"),
+        VarTab::BuiltIn => String::new(),
     };
 
     frame.render_widget(Clear, area);
@@ -1809,6 +1810,33 @@ fn import_hints(hints: &mut Hints, popup: &Popup) {
     }
 }
 
+/// the variable editor's keys: a cell's while one is edited, and only
+/// moving around on the built-in variables, which cannot change
+fn variable_hints(hints: &mut Hints<'_>, editor: &VariablesEditor) {
+    if editor.editing() {
+        if let Some((column, _)) = &editor.table().editing {
+            super::cell_hints(hints, *column);
+        }
+
+        return;
+    }
+
+    hints.pair("tab.previous", "tab.next", "tab");
+
+    if editor.tab == VarTab::BuiltIn {
+        hints.pair("up", "down", "move");
+
+        return;
+    }
+
+    hints
+        .one("row.add", "add")
+        .one("edit", "edit")
+        .one("row.toggle", "on/off")
+        .one("make-secret", "secret")
+        .one("row.delete", "delete");
+}
+
 pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
     let mut hints = Hints::here(state);
 
@@ -1881,20 +1909,7 @@ pub(super) fn hints(state: &State, popup: &Popup) -> Vec<Hint> {
                 .one("confirm", "run")
                 .one("close", "close");
         }
-        Popup::Variables(editor) if editor.editing() => {
-            if let Some((column, _)) = &editor.table().editing {
-                super::cell_hints(&mut hints, *column);
-            }
-        }
-        Popup::Variables(_) => {
-            hints
-                .pair("tab.previous", "tab.next", "tab")
-                .one("row.add", "add")
-                .one("edit", "edit")
-                .one("row.toggle", "on/off")
-                .one("make-secret", "secret")
-                .one("row.delete", "delete");
-        }
+        Popup::Variables(editor) => variable_hints(&mut hints, editor),
         Popup::SaveVariables { .. }
         | Popup::Review(_)
         | Popup::Fill(_)

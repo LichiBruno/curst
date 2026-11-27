@@ -309,7 +309,15 @@ pub(crate) fn run(state: &mut State, job: Job) -> Vec<Command> {
         .and_then(|c| state.workspace(c))
         .filter(|w| w.trusted);
 
-    match resolve_in(state, &request, workspace) {
+    // a spec's source is fetched again whenever it is asked for, so each
+    // fetch gets its own values
+    let Ok(generated) = curst_core::vars::Generated::new() else {
+        state.notice = Some("the spec was not fetched: no randomness".into());
+
+        return Vec::new();
+    };
+
+    match resolve_in(state, &request, workspace, &generated) {
         Resolved::Ready { request, secrets } => {
             let resolved = Source {
                 location: request.url,

@@ -635,7 +635,7 @@ fn encode_query_part(text: &str) -> String {
         // only a real variable name stays as it is
         let inner = &rest[start + 2..start + end];
 
-        if VarName::new(inner).is_none() {
+        if VarName::template(inner).is_none() {
             out.push_str(&percent_encode(&rest[..start + 2]));
             rest = &rest[start + 2..];
 

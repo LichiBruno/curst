@@ -30,6 +30,13 @@ fn press_key(state: &mut State, event: KeyEvent) -> Vec<Command> {
         .collect()
 }
 
+/// the uuid a URL carries after `id=`
+fn uuid_in(url: &str) -> String {
+    let at = url.find("id=").expect("no id in the URL") + 3;
+
+    url[at..at + 36].to_owned()
+}
+
 fn type_text(state: &mut State, text: &str) {
     for c in text.chars() {
         press(state, KeyCode::Char(c));
@@ -2306,7 +2313,10 @@ mod collections {
             panic!("no editor");
         };
 
-        assert_eq!(editor.tabs(), [VarTab::Collection, VarTab::Globals]);
+        assert_eq!(
+            editor.tabs(),
+            [VarTab::Collection, VarTab::Globals, VarTab::BuiltIn]
+        );
 
         // nothing changed: Esc closes at once
         press(&mut state, KeyCode::Esc);
@@ -2917,6 +2927,90 @@ mod secrets {
             Some("there is no redirect to follow")
         );
     }
+    #[test]
+    fn built_in_values_last_until_the_request_is_sent_and_change_after() {
+        let mut state = with_secret();
+
+        type_text(&mut state, "&id={{$uuid}}");
+        state.method = Method::Post;
+        state.body = BodyEditor::from_body(&Body::Json("\"{{$uuid}}\"".into()));
+
+        // the values are made before the secrets are fetched, and kept
+        let id = load_id(&press(&mut state, KeyCode::Enter));
+        let commands = update(
+            &mut state,
+            Action::SecretsLoaded {
+                id,
+                values: vec![(token_key(), Some(Secret::new("v")))],
+            },
+        );
+        let (id, request) = sent(&commands);
+        let uuid = uuid_in(&request.url);
+
+        assert_eq!(&uuid[14..15], "4");
+        assert_eq!(request.body, Body::Json(format!("\"{uuid}\"")));
+
+        // an approval sends the same values again
+        let approval = Approval {
+            origin: "https://api.example.com:443".into(),
+            keys: vec![token_key()],
+        };
+
+        update(
+            &mut state,
+            Action::NeedsApproval {
+                id,
+                approval: Box::new(approval),
+            },
+        );
+        press(&mut state, KeyCode::Char('y'));
+
+        let commands = update(&mut state, Action::Approved { id, result: Ok(()) });
+        let (id, request) = sent(&commands);
+
+        assert_eq!(uuid_in(&request.url), uuid);
+
+        // so does the redirect it is followed to
+        let mut stopped = response("{}");
+
+        stopped.status = 307;
+        stopped.stopped = Some(StoppedRedirect {
+            url: "https://other.example.com/next".into(),
+            method: Method::Post,
+            keeps_body: true,
+        });
+        update(&mut state, Action::responded(id, Ok(stopped)));
+        state.focus = Focus::Response;
+
+        let commands = press(&mut state, KeyCode::Char('f'));
+        let (id, request) = sent(&commands);
+
+        assert_eq!(request.body, Body::Json(format!("\"{uuid}\"")));
+
+        // the next send is a new one
+        update(&mut state, Action::responded(id, Ok(response("{}"))));
+        state.focus = Focus::Url;
+
+        let commands = press(&mut state, KeyCode::Enter);
+        let (_, request) = sent(&commands);
+
+        assert_ne!(uuid_in(&request.url), uuid);
+    }
+
+    #[test]
+    fn an_unknown_built_in_variable_is_not_sent() {
+        let mut state = with_secret();
+
+        type_text(&mut state, "&x={{$nope}}");
+
+        assert_eq!(press(&mut state, KeyCode::Enter), Vec::new());
+        assert!(
+            state
+                .notice
+                .as_deref()
+                .is_some_and(|n| n.contains("{{$nope}} not built in"))
+        );
+    }
 }
 
 mod secret_variables {
@@ -2967,6 +3061,47 @@ mod secret_variables {
             [Command::ChangeSecrets { id, changes }] => (*id, changes.clone()),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn built_in_variables_are_listed_and_never_change() {
+        let mut state = with_variables(vec![]);
+
+        open_editor(&mut state);
+        update(&mut state, Action::ShowTab(2));
+
+        for key in [KeyCode::Char('a'), KeyCode::Enter, KeyCode::Char(' ')] {
+            press(&mut state, key);
+        }
+
+        press(&mut state, KeyCode::Char('s'));
+        press(&mut state, KeyCode::Char('d'));
+        press(&mut state, KeyCode::Down);
+
+        let Some(Popup::Variables(editor)) = &state.popup else {
+            panic!("the editor closed");
+        };
+        let names: Vec<&str> = editor
+            .table()
+            .rows
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+
+        assert_eq!(editor.tab, VarTab::BuiltIn);
+        assert_eq!(editor.table().selected, 1);
+        assert!(!editor.editing() && !editor.is_changed());
+        assert_eq!(
+            names,
+            [
+                "$uuid",
+                "$timestamp",
+                "$timestamp_ms",
+                "$iso_timestamp",
+                "$random_int"
+            ]
+        );
+        assert_eq!(press_key(&mut state, ctrl('s')), Vec::new());
     }
 
     #[test]
@@ -4630,6 +4765,71 @@ mod workflows {
                 .and_then(|r| r.error.as_deref())
                 .is_some_and(|e| e.contains("$.access_token"))
         );
+    }
+
+    #[test]
+    fn each_step_gets_its_own_built_in_values() {
+        let mut state = loaded();
+
+        for workspace in &mut state.collections {
+            for item in &mut workspace.collection.items {
+                match item {
+                    Item::Request(login) => {
+                        login.request.url = "http://h/login?id={{$uuid}}".into();
+                    }
+                    Item::Folder(users) => {
+                        if let Some(Item::Request(list)) = users.items.first_mut() {
+                            list.request.url = "http://h/me?id={{$uuid}}".into();
+                        }
+                    }
+                }
+            }
+        }
+
+        let (id, login) = step_sent(&run(&mut state));
+        let approval = Approval {
+            origin: "http://h:80".into(),
+            keys: vec![token_key()],
+        };
+
+        // the step sent again after an approval keeps its values
+        update(
+            &mut state,
+            Action::StepNeedsApproval {
+                id,
+                approval: Box::new(approval),
+            },
+        );
+        press(&mut state, KeyCode::Char('y'));
+
+        let (id, again) = step_sent(&update(&mut state, Action::Approved { id, result: Ok(()) }));
+
+        assert_eq!(uuid_in(&again.url), uuid_in(&login.url));
+
+        let commands = answer(&mut state, id, r#"{"access_token":"abc"}"#);
+        let Some(Command::ChangeSecrets { id: change, .. }) = commands.first() else {
+            panic!("nothing stored: {commands:?}");
+        };
+        let commands = update(
+            &mut state,
+            Action::SecretsChanged {
+                id: *change,
+                result: Ok(()),
+            },
+        );
+        let Some(Command::LoadSecrets { id, .. }) = commands.last() else {
+            panic!("the token is not read: {commands:?}");
+        };
+        let commands = update(
+            &mut state,
+            Action::SecretsLoaded {
+                id: *id,
+                values: vec![(token_key(), Some(Secret::new("abc")))],
+            },
+        );
+        let (_, me) = step_sent(&commands);
+
+        assert_ne!(uuid_in(&me.url), uuid_in(&login.url));
     }
 
     #[test]

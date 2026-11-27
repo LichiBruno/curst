@@ -64,6 +64,23 @@ A variable can refer to others, as in `{{base_url}}/v1`. A request that uses a
 variable no scope defines is not sent, and curst says which and where it is
 defined, such as in an environment that is not in use.
 
+curst fills in a few variables itself, listed under **Built in** in the
+variable editor:
+
+| Variable | Value |
+|---|---|
+| `{{$uuid}}` | a random version 4 UUID |
+| `{{$timestamp}}` | Unix time in seconds |
+| `{{$timestamp_ms}}` | Unix time in milliseconds |
+| `{{$iso_timestamp}}` | the time in UTC, such as `2026-11-26T09:30:00.123Z` |
+| `{{$random_int}}` | a number from 0 to 1000 |
+
+Each gets one value per send, the same everywhere it appears in the request,
+including inside other variables, and a new one on the next send. A request
+waiting for secrets or an approval, or following a redirect, keeps its values.
+Each workflow step gets its own. They cannot be defined or changed, and any
+other name starting with `$` stops the request from being sent.
+
 Make a variable a **secret** with **s** in the variable editor, or **m** on a
 value in a request that looks like a credential.
 

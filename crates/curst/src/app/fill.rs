@@ -4,7 +4,7 @@
 //! values are typed blind, kept in memory until the end and then stored
 //! together, so a passphrase asked midway cannot lose what was typed
 
-use curst_core::model::{Request, Variable};
+use curst_core::model::Variable;
 use curst_core::secrets::{Secret, SecretKey};
 use ratatui_textarea::TextArea;
 
@@ -24,7 +24,7 @@ pub(crate) struct Fill {
     pub(crate) input: Box<TextArea<'static>>,
 
     /// a request to send once the values are stored
-    pub(crate) then_send: Option<Request>,
+    pub(crate) then_send: Option<super::send::Outgoing>,
 }
 
 fn field() -> Box<TextArea<'static>> {
@@ -32,7 +32,10 @@ fn field() -> Box<TextArea<'static>> {
 }
 
 impl Fill {
-    pub(crate) fn new(secrets: Vec<(SecretKey, String)>, then_send: Option<Request>) -> Self {
+    pub(crate) fn new(
+        secrets: Vec<(SecretKey, String)>,
+        then_send: Option<super::send::Outgoing>,
+    ) -> Self {
         Self {
             values: vec![None; secrets.len()],
             secrets,
@@ -112,7 +115,7 @@ pub(crate) fn secrets_of(workspace: &Workspace) -> Vec<(SecretKey, String)> {
 pub(crate) fn open(
     state: &mut State,
     secrets: Vec<(SecretKey, String)>,
-    then_send: Option<Request>,
+    then_send: Option<super::send::Outgoing>,
 ) {
     if !secrets.is_empty() {
         state.popup = Some(Popup::Fill(Box::new(Fill::new(secrets, then_send))));
